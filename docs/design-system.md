@@ -1,234 +1,202 @@
 # ArtQ: Design System
 
-Derived from the reference prototype's CSS (`qcraft-nine.vercel.app`) and the mobile screenshot `ArtQ Site Ref.png`.
-Implemented as **Tailwind CSS theme tokens + CSS variables** in `packages/ui`, shared by storefront and admin.
+Derived from the reference prototype's CSS (`qcraft-nine.vercel.app`) and `ArtQ Site Ref.png`, **corrected for WCAG 2.1 AA**.
+Implemented as Tailwind tokens + CSS variables in `packages/ui`, shared by storefront and admin.
 
 ---
 
 ## 1. Brand personality
-Calm, crafted and premium but approachable. Teal "resin" colour on clean white/slate surfaces, a serif display face for
-elegance, and natural product photography (wood, resin pours). Lots of whitespace, rounded imagery, no harsh shadows.
+Calm, crafted, premium but approachable: teal "resin" accents on clean white/slate surfaces, a serif display face, natural product photography, generous whitespace, soft shadows.
 
 ## 2. Colour tokens
 
-### 2.1 Core palette (from the reference CSS variables)
+### 2.1 Brand palette
+| Token | Hex | Reference var | Allowed use |
+|-------|-----|---------------|-------------|
+| `brand-50` | `#e6f4f3` | n/a | Selected chip/pill background, subtle highlights |
+| `brand-300` | `#5eead4` | n/a | Text, focus ring and selected state **on dark surfaces** (`ink-900`) |
+| `brand-400` | `#00c4c7` | `--maroon-light` | **Decorative only** (gradients, illustrations). Never text, never a white-text background |
+| `brand-500` | `#00a99d` | `--maroon` | **Decorative only**: section-title lines, large decorative icons, brand gradient. Contrast vs white is **2.93:1**, so it is never a background for white text and never small text |
+| `brand-700` | `#00756f` | *(new)* | **Primary action colour**: primary/pill buttons (white text), links and small teal text on light surfaces, selected admin nav item, focus ring on light surfaces, checked controls |
+| `brand-800` | `#005f5a` | *(replaces `--maroon-dark #007f7a`)* | Hover/pressed for primary buttons; announcement bar background |
+| `accent-500` | `#009bc2` | `--accent` | Decorative gradient start only |
+| `gradient-brand` | `linear-gradient(135deg,#009bc2,#00c4c7,#00a99d)` | `--gradient-brand` | **Decorative** surfaces without text (hero overlay accents, dividers) |
+| `gradient-brand-strong` | `linear-gradient(135deg,#00627a,#006d68,#00756f)` | *(new)* | Any gradient surface carrying text (announcement bar option, banners) |
 
-| Token | Hex | Reference var | Usage |
-|-------|-----|---------------|-------|
-| `brand-500` | `#00a99d` | `--maroon` | Primary buttons, links, active states, prices badges |
-| `brand-400` | `#00c4c7` | `--maroon-light` | Hover/light accents, gradient middle |
-| `brand-700` | `#007f7a` | `--maroon-dark` | Button hover/pressed, text on light brand bg |
-| `accent-500` | `#009bc2` | `--accent` | Secondary accents, gradient start, info |
-| `gradient-brand` | `linear-gradient(135deg,#009bc2,#00c4c7,#00a99d)` | `--gradient-brand` | Announcement bar, hero CTA, logo plate |
-| `surface-0` | `#ffffff` | `--pink-light` | Cards, header |
-| `surface-50` | `#f8fafc` | `--pink-bg` | Page background (alternating sections) |
-| `surface-100` | `#f1f5f9` | `--cream` | Section backgrounds, input bg |
-| `surface-200` | `#e2e8f0` | `--cream-dark`, `--border` | Borders, dividers |
-| `slate-400` | `#94a3b8` | `--beige` | Placeholder text, disabled |
-| `ink-900` | `#111827` | `--text-dark`, `--dark-bg` | Headings, footer background |
-| `ink-700` | `#374151` | `--text-mid` | Body text |
-| `ink-500` | `#64748b` | `--text-light` | Secondary text, captions |
-| `warm-white` | `#fffaf4` | `--white` | Text on dark footer, hero overlay text |
+### 2.2 Neutrals & feedback
+| Token | Hex | Use |
+|-------|-----|-----|
+| `surface-0` | `#ffffff` | Cards, header |
+| `surface-50` | `#f8fafc` | Page background |
+| `surface-100` | `#f1f5f9` | Section/input background |
+| `surface-200` | `#e2e8f0` | Decorative dividers only (not input borders) |
+| `border-input` | `#64748b` | Input/checkbox/select borders (meets 3:1 for UI boundaries) |
+| `ink-900` | `#111827` | Headings, footer & admin sidebar background |
+| `ink-700` | `#374151` | Body text |
+| `ink-500` | `#64748b` | Secondary text, placeholders |
+| `success-700` | `#15803d` | Success text/badges (replaces `#16a34a`, which is 3.30:1) |
+| `warning-700` | `#b45309` | Warning text (replaces `#d97706`, which is 3.19:1); `warning-bg #fef3c7` with `#7c2d12` text |
+| `danger-700` | `#b91c1c` | Errors, destructive buttons |
+| `star` | `#f5b301` | Rating stars (decorative; always paired with text "4.6 out of 5") |
 
-> The reference names its vars "maroon/pink/cream" (left over from a template) but the values are teal/slate. Use the semantic names above.
+### 2.3 Measured contrast (WCAG 2.1: 4.5:1 normal text, 3:1 large text & UI components)
+| Pair | Ratio | Result |
+|------|------:|--------|
+| White on `brand-500` `#00a99d` (reference buttons) | 2.93 | ✗ not allowed |
+| White on `brand-700` `#00756f` (primary button) | 5.56 | ✓ |
+| White on `brand-800` `#005f5a` (hover, announcement) | 7.54 | ✓ |
+| `brand-700` text on white / `surface-50` / `surface-100` | 5.56 / 5.32 / 5.08 | ✓ |
+| `brand-800` on `brand-50` (selected chip) | 6.68 | ✓ |
+| White on `gradient-brand-strong` stops (`#00627a`, `#006d68`, `#00756f`) | 6.94 / 6.20 / 5.56 | ✓ |
+| `ink-700` body on white | 10.31 | ✓ |
+| `ink-500` secondary/placeholder on white | 4.76 | ✓ |
+| `border-input` `#64748b` on white | 4.76 | ✓ (≥ 3:1) |
+| `success-700` / `warning-700` / `danger-700` text on white | 5.02 / 5.02 / 6.47 | ✓ |
+| Admin sidebar text `#e5e7eb` / muted `#9ca3af` on `ink-900` | 14.33 / 6.99 | ✓ |
+| Admin selected item: white on `brand-700` | 5.56 | ✓; item vs sidebar boundary `brand-700` on `ink-900` 3.19 ✓ |
+| Focus ring: `brand-700` on light / `brand-300` on `ink-900` | 5.56 / 11.99 | ✓ |
+| `slate-400` `#94a3b8` on white | 2.56 | ✗ decorative only (was used for placeholders in v1 of this doc) |
 
-### 2.2 Feedback colours
-| Token | Hex | Usage |
-|-------|-----|-------|
-| `success` | `#16a34a` | In stock, success toasts, savings text |
-| `warning` | `#d97706` | Low stock, pending |
-| `danger` | `#dc2626` | Errors, out of stock, cancel |
-| `star` | `#f5b301` | Rating stars |
-| `sale` | `#e11d48` | Optional "-25 %" badge (or use brand) |
-
-### 2.3 Rules
-- Body text `ink-700` on `surface-0` = contrast 10.3:1 ✓. `brand-500` on white = 3.0:1, so use it **only for large text / icons / button backgrounds with white bold text ≥ 16 px**. For small teal text links use `brand-700` (4.9:1 ✓).
-- Footer: `ink-900` background, `warm-white` headings, `#cbd5e1` links, `brand-400` hover.
-- Overlays (drawers/modals): `rgba(17,24,39,0.5)`.
-- Shadows: `--shadow: 0 2px 8px #1118270d`, `--shadow-hover: 0 8px 24px #1118271a`.
+The contrast table is checked again in CI with an automated test (axe + token unit test) in Phase 0.
 
 ## 3. Typography
+| Role | Family | Fallback |
+|------|--------|----------|
+| Display / headings | **Playfair Display** 400–700 (+ italic) | Georgia, serif |
+| Eyebrows / logo subtitle / nav | **Tenor Sans** | Inter, sans-serif |
+| Body / UI | **Inter** 300–600 | system-ui, sans-serif |
 
-Fonts (Google Fonts, `display=swap`, self-hosted via `next/font` for performance):
+Loaded via `next/font` (storefront) and self-hosted (admin), Latin subset, `display: swap`.
 
-| Role | Family | Weights | Fallback |
-|------|--------|---------|----------|
-| Display / headings | **Playfair Display** | 400, 500, 600, 700, 400 italic | Georgia, serif |
-| Eyebrows / logo subtitle / nav | **Tenor Sans** | 400 | Inter, sans-serif |
-| Body / UI | **Inter** | 300, 400, 500, 600 | system-ui, -apple-system, Segoe UI, Roboto, sans-serif |
+| Token | Mobile | Desktop | Font |
+|-------|--------|---------|------|
+| `display` | 44 | 88 | Playfair 600, tracking 0.08em |
+| `h1` | 26 | 36 | Playfair 600 |
+| `h2` | 22 | 30 | Playfair 600 |
+| `h3` | 18 | 22 | Playfair 500 |
+| `eyebrow` | 13 | 14 | Inter 600 uppercase, tracking 0.12em |
+| `subtitle` | 15 | 17 | Tenor Sans uppercase, tracking 0.3em |
+| `body-lg` / `body` / `small` | 16 / 14 / 12 | 17 / 15 / 13 | Inter 400 |
+| `price` / `price-lg` | 16 / 24 | 18 / 28 | Inter 600 / 700 |
+| `button` | 14 | 14 | Inter 600 uppercase, tracking 0.06em |
 
-### 3.1 Type scale (mobile → desktop)
-
-| Token | Mobile | Desktop | Line height | Font | Usage |
-|-------|--------|---------|-------------|------|-------|
-| `display` | 44px | 88px | 1.0 | Playfair 600, tracking 0.08em | Hero "ARTQ" |
-| `h1` | 26px | 36px | 1.2 | Playfair 600 | Page titles, PDP name |
-| `h2` | 22px | 30px | 1.25 | Playfair 600 | Section titles ("Product Category") |
-| `h3` | 18px | 22px | 1.3 | Playfair 500 | Card group titles |
-| `eyebrow` | 13px | 14px | 1.4 | Inter 600 uppercase, tracking 0.12em | "CHECK OUT OUR RANGE" |
-| `subtitle` | 15px | 17px | 1.4 | Tenor Sans uppercase tracking 0.3em | "WOOD MOULDS & RESINS" |
-| `body-lg` | 16px | 17px | 1.6 | Inter 400 | Descriptions |
-| `body` | 14px | 15px | 1.55 | Inter 400 | Default |
-| `small` | 12px | 13px | 1.45 | Inter 400 | Captions, badges, footer bottom line |
-| `price` | 16px | 18px | 1.2 | Inter 600 | Card price |
-| `price-lg` | 24px | 28px | 1.2 | Inter 700 | PDP price |
-| `button` | 14px | 14px | 1 | Inter 600 uppercase tracking 0.06em | Buttons |
+Inputs use **16 px** text on mobile (prevents iOS zoom).
 
 ## 4. Spacing, radius, layout
-
-- **Spacing scale (px):** 4, 8, 12, 16, 20, 24, 32, 40, 48, 64, 80, 96.
-- **Section vertical padding:** 40 px mobile / 72 px desktop.
-- **Container:** max-width 1320 px, side padding 16 px (mobile) / 24 px (tablet) / 32 px (desktop).
-- **Radius:** `sm` 6px (inputs, chips), `md` 10px (buttons-rect), `lg` 16px (product images, cards), `xl` 24px (reel cards, modals), `full` (pills, avatars, category circles).
-- **Breakpoints:** `sm` 480, `md` 768, `lg` 1024, `xl` 1280, `2xl` 1440.
-- **Grid gap:** 12 px mobile, 20 px desktop (reference `--grid-gap`).
-- **Product grid columns:** 2 / 3 (≥768) / 4 (≥1024) / 5 (≥1440) (reference `--cols`).
-- **Z-index scale:** header 40, dropdown 45, drawer-overlay 50, drawer 55, modal 60, toast 70.
+Spacing scale 4–96 px; section padding 40 px mobile / 72 px desktop; container max 1320 px with 16/24/32 px gutters; radius `sm 6`, `md 10`, `lg 16`, `xl 24`, `full`; breakpoints `sm 480`, `md 768`, `lg 1024`, `xl 1280`, `2xl 1440`; grid gap 12/20 px; product grid 2/3/4/5 columns; z-index header 40, dropdown 45, overlay 50, drawer 55, modal 60, toast 70.
 
 ## 5. Components
 
-### 5.1 Section title (signature element)
-```
-          CHECK OUT OUR RANGE              ← eyebrow, ink-900, centred
-──────────  Product Category  ──────────   ← h2 Playfair; lines 1.5px brand-500, flex-1 each side, 16px gap
-      Explore our newly launched products  ← optional subtitle, Inter 500 ink-900
-```
-Markup: `<div class="flex items-center gap-4"><span class="h-px flex-1 bg-brand-500"/><h2/>…</div>`.
+### 5.1 Section title
+Eyebrow (ink-900) → serif `h2` with 1.5 px `brand-500` lines on both sides (decorative, `aria-hidden`) → optional subtitle.
 
 ### 5.2 Buttons
-| Variant | Style | Usage |
-|---------|-------|-------|
-| `primary` | bg `brand-500`, text white, radius `md`, height 48 (mobile) / 44, hover `brand-700`, focus ring 3 px `brand-400/40` | Add to cart, Place order |
-| `pill-add` | bg `brand-500`, white, radius full, height 32, font 13/600 | Card "ADD" (reference) |
-| `secondary` | border 1.5 px `ink-900`, text `ink-900`, transparent bg; hover bg `ink-900` text white | Buy now, View all |
-| `ghost` | text `brand-700`, no border | Inline actions |
-| `danger` | bg `danger` | Admin delete |
-| `icon` | 40×40 round, hover bg `surface-100` | Header icons, wishlist |
-States: disabled (opacity .5, cursor not-allowed), loading (spinner replaces label, width fixed).
+| Variant | Style | Use |
+|---------|-------|-----|
+| `primary` | bg `brand-700`, white text, radius `md`, height 48 (mobile) / 44; hover/pressed `brand-800` | Add to cart, Place order, Save |
+| `pill-add` | bg `brand-700`, white 13/600, radius full, height 36 (touch target ≥ 36×36, padded to 44 hit area) | Card "ADD" |
+| `secondary` | 1.5 px `ink-900` border, `ink-900` text; hover bg `ink-900` white text | Buy now, View all |
+| `ghost` | `brand-700` text | Inline actions |
+| `danger` | bg `danger-700`, white | Delete/archive confirmations |
+| `icon` | 40×40 (44 hit area), hover `surface-100` | Header, row actions |
+States: focus-visible ring 2 px `brand-700` + 2 px offset (on dark: `brand-300`); disabled = `surface-100` bg + `ink-500` text + `aria-disabled` (never only lowered opacity); loading = spinner, width fixed, `aria-busy`.
 
 ### 5.3 Inputs
-Height 48 px (mobile, avoids iOS zoom: font 16px) / 44 px desktop; border 1px `surface-200`; radius `sm`; focus border `brand-500` + ring; label above (13px/500); error text 12px `danger` below with icon; helper text `ink-500`. Newsletter input in footer: transparent bg, bottom border only, white text, "SUBSCRIBE" text-button in `brand-400`.
+Height 48/44; border 1 px `border-input`; focus 2 px `brand-700`; label above (13/500); error text `danger-700` with icon and `aria-describedby`; helper `ink-500`. Footer newsletter: bottom border `#cbd5e1` on dark, white text, "SUBSCRIBE" in `brand-300`.
 
 ### 5.4 Category tile
-Circle image 96 px (mobile) / 120 px (desktop), `object-cover`, 1px border `surface-200`; hover: scale 1.04 + ring 2px `brand-500`; label below 14px Inter 500 `ink-900`, max 2 lines.
+96/120 px circle image; hover ring 2 px `brand-700`; label 14/500 `ink-900`.
 
 ### 5.5 Product card
-- Image: aspect 1:1, radius `lg`, bg `surface-100`, `object-cover`.
-- Name: 15px Inter 500 centred, 2-line clamp, margin-top 10px.
-- Price: "Rs. 250.00" style in reference → we render `₹250` 16px/600 `ink-900`, MRP strike 13px `ink-500`.
-- ADD pill centred below (reference); on desktop hover a ♡ appears top-right.
-- Card has no border/shadow by default; hover lifts image (`--shadow-hover`, translateY(-2px)).
+Image 1:1 radius `lg` on `surface-100` with **fixed aspect box** (no layout shift). If there's no image, show a neutral placeholder with the ArtQ mark. Name 15/500 (2-line clamp); price `ink-900` 16/600, struck MRP `ink-500`; ADD pill; ♡ (`aria-pressed`).
 
-### 5.6 Reel card
-Aspect 9:16, radius `xl`, video cover; bottom overlay: dark gradient, product row (36px thumb radius 8, name 13px white, price 13px/600 white). Play icon when paused.
+### 5.6 Reel card, testimonial card, badges, chips
+- Reel: 9:16 radius `xl`; bottom overlay gradient `rgba(17,24,39,0)` → `rgba(17,24,39,0.85)` so white text reaches ≥ 4.5:1.
+- Testimonial: quote 15 italic, stars + visually hidden "Rated 5 out of 5", arrows as buttons with labels.
+- Badges: NEW `ink-900`/white; discount `brand-700`/white; out of stock `surface-200`/`ink-700`.
+- Filter chip selected: `brand-50` bg, `brand-800` text, 1 px `brand-700` border.
+- Order/product status pills (text + colour, never colour alone): Draft (`surface-100`/`ink-700`), Active (`#dcfce7`/`success-700`), Archived (`surface-200`/`ink-700`), Pending payment/Processing (`warning-bg`/`#7c2d12`), Shipped (`#dbeafe`/`#1e40af`), Delivered (`#dcfce7`/`success-700`), Cancelled/Expired (`#fee2e2`/`danger-700`), Exception (`danger-700`/white).
 
-### 5.7 Testimonial card
-White card, radius `lg`, padding 24px, quote 15px italic centred in quotes, 5 stars 18px `star`, name 13px `ink-500`; arrows 36px icon buttons outside card.
+### 5.7 Variant selector
+Pills min 64×40, border `border-input`; selected `brand-700` border 2 px + `brand-50` bg + `brand-800` text; unavailable: strike-through + `ink-500` + `aria-disabled` + tooltip "Not available in this size". Colour swatch 32 px with the colour name in an accessible label.
 
-### 5.8 Badges / chips
-- Badge: 11px/600 uppercase, padding 4×8, radius `sm`. NEW = `ink-900` bg white text; Discount = `brand-500` bg; Out of stock = `surface-200` bg `ink-700`.
-- Header count badge: 16px circle `ink-900` (reference shows black) with white 10px number, top-right of icon.
-- Filter chip: border 1px `surface-200`, radius full, 13px; selected bg `brand-500` white text.
-- Order status pill colours: PENDING_PAYMENT grey, PLACED blue, CONFIRMED indigo, PACKED purple, SHIPPED amber, OUT_FOR_DELIVERY orange, DELIVERED green, CANCELLED/EXPIRED red, RETURN_* pink.
+### 5.8 Drawers, modals, toasts, skeletons
+Drawers (mobile menu left 85vw max 380; cart right 420/full), bottom sheets (filters, quick add); modals max 560, focus-trapped, Esc closes, focus returns to trigger; toasts `ink-900`/white, `role="status"`, 5 s (pause on hover); skeleton shimmer disabled under reduced motion.
 
-### 5.9 Variant selector
-Pill buttons min-width 64px, height 40px, border 1.5px `surface-200`, selected border `brand-500` + bg `brand-500/8` + text `brand-700` 600; unavailable: diagonal strike line + text `slate-400`. Colour swatch 32px circle with 2px white inner ring, selected outer ring `brand-500`.
+### 5.9 Icons
+lucide-react 20/22 px, stroke 1.75, `aria-hidden` unless standalone (then `aria-label`).
 
-### 5.10 Drawers, modals, toasts
-- Drawer width: 85vw (max 380px) mobile menu (left); 420px cart (right, full width on mobile); bottom sheet for filters/quick-add (max-height 85vh, drag handle, radius top `xl`).
-- Modal: max-width 560px, radius `xl`, padding 24px, close × top-right; Esc closes; focus trapped.
-- Toast: `ink-900` bg, white text, radius `md`, auto-hide 3s, with optional action ("Undo", "View cart").
+## 6. Layouts
 
-### 5.11 Skeletons
-`surface-100` blocks with shimmer gradient animation 1.2s, matching component dimensions.
-
-### 5.12 Icons
-**lucide-react** (same as reference), 20px default / 22px header, stroke 1.75. Menu, Search, User, Heart, ShoppingBag, ChevronLeft/Right, X, Plus, Minus, Truck, ShieldCheck, RotateCcw, BadgeCheck, MessageCircle (WhatsApp uses brand SVG).
-
-## 6. Page layouts (wireframes)
-
-### 6.1 Home (mobile, matches reference screenshot)
+### 6.1 Home (mobile, matches the reference screenshot)
 ```
 ┌──────────────────────────────┐
-│ ▸ Shipping all over India • Free shipping orders above 1000 ▸ │ announcement (gradient, 32px)
+│ Shipping all over India • …  │ announcement (brand-800, white)
 ├──────────────────────────────┤
-│ ☰ 🔍        [ARTQ]      👤 ♡⁰ 🛒⁰ │ header 60px, sticky
+│ ☰ 🔍        [ARTQ]   👤 ♡⁰ 🛒⁰ │ header 60px sticky
 ├──────────────────────────────┤
-│                              │
-│      A R T Q                 │ hero video 60vh
-│   WOOD MOULDS & RESINS       │
+│   A R T Q / WOOD MOULDS & RESINS │ hero video 60vh
 ├──────────────────────────────┤
-│     CHECK OUT OUR RANGE      │
+│ CHECK OUT OUR RANGE          │
 │ ─── Product Category ───     │
-│  (○)      (○)      (○)       │ 3-col circles
-│ Resins  Wooden   Multiwood   │
-│  (○)      (○)      (○)       │
-│ Hoops  Silica Gel Pigments   │
-│  (○)      (○)      (○)       │
-│Glitters UV Resin  More..     │
+│ (○) Resins (○) Wooden (○) Multiwood │ 3-col circles
+│ (○) Hoops (○) Silica Gel (○) Pigments│
+│ (○) Glitters (○) UV Resin (○) More.. │
 ├──────────────────────────────┤
-│ ───── New Arrivals ─────     │
-│ Explore our newly launched…  │
-│ [img]        [img]           │ 2-col cards
-│ UV Resin     Silica Gel      │
-│ ₹250         ₹310            │
-│ (ADD)        (ADD)           │
+│ ───── New Arrivals ─────     │ 2-col cards, ADD pills (brand-700)
 ├──────────────────────────────┤
-│ ───── Trending now ─────     │
-│ [reel 9:16]  [reel 9:16]     │
+│ ───── Trending now ─────     │ 2-col reels
 ├──────────────────────────────┤
-│ ── Stories with our product ─│
-│ ‹ "Absolutely loved…" ★★★★★ › │
+│ ── Stories with our product ─│ testimonial carousel
 ├──────────────────────────────┤
-│ SUBSCRIBE TO OUR NEWSLETTER  │ dark footer
-│ Enter your email   SUBSCRIBE │
-│         [logo]               │
-│  tagline                     │
-│ TYPE   CONNECT   POLICIES    │ 3 columns even on mobile (reference)
-│ © 2026 ART Q · powered by…   │
+│ newsletter · logo · TYPE / CONNECT / POLICIES · ©     │ dark footer
 └──────────────────────────────┘
 ```
 
-### 6.2 Desktop home
-Header becomes one row: logo left, nav centre, icons right. Category tiles in one row of 9. New arrivals 5 columns. Reels 4 columns. Testimonials show 3 cards at once. Footer: newsletter band full width, then 4 columns (logo+tagline | TYPE | CONNECT | POLICIES).
+### 6.2 Desktop home, PDP, listing
+Header single row; categories one row of 9; new arrivals 5 columns; reels 4; testimonials 3. PDP: gallery 55 % / sticky info 45 %. Listing: 260 px sticky filter sidebar + 4-column grid.
 
-### 6.3 PDP desktop
+### 6.3 Checkout states
+"Payment processing" screen: spinner + "We're confirming your payment with your bank. This usually takes under a minute." + order number; after 2 minutes: "We'll email you as soon as it's confirmed" + link to order. Never shows "failed" while status is unknown.
+
+### 6.4 Admin shell
 ```
-Home › Pigments › Gel Pigments
-┌───────┬──────────────────────┬────────────────────────────┐
-│ thumb │                      │ Metallic Gold Pigment      │
-│ thumb │      MAIN IMAGE      │ ₹90  ~~₹120~~  25% OFF     │
-│ thumb │        1:1           │ Inclusive of all taxes     │
-│       │                      │ Size: [20 gm]              │
-│       │                      │ ● In stock                 │
-│       │                      │ [– 1 +] [ADD TO CART] [♡]  │
-│       │                      │ [        BUY NOW        ]  │
-│       │                      │ Pincode [_____] Check      │
-│       │                      │ 🚚 Free > ₹1000 🔒 Secure  │
-│       │                      │ ▸ Description              │
-│       │                      │ ▸ Product details          │
-│       │                      │ ▸ Specifications & care    │
-└───────┴──────────────────────┴────────────────────────────┘
-Frequently bought together · You may also like · Recently viewed
+┌──────────────┬───────────────────────────────────────────────┐
+│ ArtQ Admin   │ Top bar: ☰ (≤1023px) · global search · 🔔 · user │
+│──────────────│───────────────────────────────────────────────│
+│ Dashboard    │                                               │
+│ Orders       │   Page header: title · primary action          │
+│ Customers    │   Filters / tabs                              │
+│ Coupons      │   Table (sticky header, 48 px rows)           │
+│ Shipping Rates│                                              │
+│ Products  ◀  │   Pagination: ‹ Previous  Page 3 of 7  Next › │
+│ Restock Req. │                                               │
+│ Product Types│                                               │
+│ Categories   │                                               │
+│ Techniques   │                                               │
+│ ── Operations│                                               │
+│ Inventory …  │  (sidebar scrolls independently ↕)            │
+└──────────────┴───────────────────────────────────────────────┘
 ```
+- Sidebar: width 248 px, `ink-900` bg, `position: sticky; top: 0; height: 100dvh; overflow-y: auto; overscroll-behavior: contain`. Group headings `#9ca3af` 11 px uppercase. Items 40 px tall, `#e5e7eb` text, hover `#1f2937`, **selected: `brand-700` background + white text + `aria-current="page"`**, focus ring `brand-300`. Long lists stay reachable at 600 px viewport height and 200 % zoom; the logo/header area is fixed and the item list scrolls.
+- < 1024 px: sidebar becomes an off-canvas drawer (☰ in the top bar, focus trap, Esc/overlay closes, returns focus).
+- Content: `surface-50` background, white cards radius `lg`, max width 1440.
 
-### 6.4 Listing desktop
-Left sidebar 260px filters (sticky), right grid 4 cols; toolbar above grid: count left, sort right; chips row for active filters.
-
-### 6.5 Admin
-Sidebar 248px (`ink-900` bg, white text, active item `brand-500` left border), content max-width 1400px on `surface-50`; cards white radius `lg`; tables with sticky header, 48px rows, zebra none, hover `surface-50`. Uses same tokens; component library **shadcn/ui** themed with these tokens.
+### 6.5 Admin Products page
+```
+Products                                    [Import] [Export] [+ Add Product]
+[Search name or SKU……]  Status ▾  Stock ▾  Readiness ▾  Image ▾
+[All 64] [Resins 3] [Wooden Frames 4] [Multiwood 4] [Hoops 1] [Pigments 44] [More ▾] [Unassigned 0]
+☐ | # | Image | Name                       | Type      | Price      | Available | Status            | Variants | Actions
+☐ | 1 | [img] | ArtQ 2:1 Epoxy Resin        | Resins    | ₹499–5,450 | 0  ⚠      | Draft  ◯ toggle ⚠ | 5        | ✎ ⋯
+☐ | 2 | [⟳ ] | Metallic Gold Gel Pigment   | Pigments  | ₹90        | 20        | Active ● toggle   | 1        | ✎ ⋯
+☐ | 3 | [▢ ] | Blow Torch                  | Unassigned| —          | 3         | Draft  ◯ toggle ⚠ | 1        | ✎ ⋯
+                                         ‹ Previous   Page 1 of 4   Next ›
+```
+Image states: ready thumbnail · ⟳ processing (spinner, "Processing") · ⚠ failed (danger icon, "Processing failed, retry") · ▢ missing (placeholder, "No image"). All 48×48 with alt text. Type "Unassigned" uses a neutral outline badge (never "Unknown"). The toggle has an accessible name ("Publish Metallic Gold Gel Pigment") and announces gate failures in a popover/live region.
 
 ## 7. Motion
-- Durations: 150ms (hover), 250ms (drawers/modals), 400ms (section fade-in).
-- Easing: `cubic-bezier(0.22, 1, 0.36, 1)`.
-- Section fade-up on first view (opacity 0→1, translateY 16→0), once.
-- Respect `prefers-reduced-motion: reduce` (disable marquee, autoplay video poster only, no fade).
+150/250/400 ms; `cubic-bezier(0.22,1,0.36,1)`; fade-up once; everything respects `prefers-reduced-motion`.
 
-## 8. Imagery guidelines (for the photographer / client)
-- Product images: **square 1:1, at least 1600×1600px**, pure white or light-wood background, product centred filling ~80 %.
-- Minimum 3 images per product: front, detail/texture, in-use/lifestyle (resin pour, framed artwork).
-- Pigments: one jar shot + one colour swatch shot (poured in clear resin).
-- Category tiles: square crops that read well inside a circle.
-- Reels: 1080×1920, 10–30 s, MP4 H.264, < 8 MB, with a first-frame thumbnail.
-- Hero video: 1920×1080 (desktop) + 1080×1350 (mobile crop), 8–15 s loop, no audio, < 4 MB.
-- File naming before upload: `{sku}-{n}.jpg`, e.g. `RES-21-300G-1.jpg`.
+## 8. Imagery guidelines (for the client)
+Square 1:1 product images ≥ 1600 px on white/light wood; minimum 3 per product (front, detail, in use); pigments: jar + resin swatch; reels 1080×1920 ≤ 8 MB; hero 1920×1080 + 1080×1350, ≤ 4 MB; file names `{sku}-{n}.jpg`. Uploaded images are re-encoded and metadata-stripped.

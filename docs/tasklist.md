@@ -1,343 +1,231 @@
-# ArtQ: Task List (phased build plan)
+# ArtQ: Delivery Plan & Task List
 
-> Each task has an ID, a description, acceptance criteria (✅ = how we know it's done) and an estimate in **developer-days (d)**.
-> Status boxes: `[ ]` todo · `[~]` in progress · `[x]` done.
-> Assumes a team of **1 full-stack lead + 1 frontend dev** (+ part-time designer/QA). Total ≈ 95–110 dev-days → **~12–14 weeks** calendar.
+> Each task: ID, scope, ✅ acceptance criteria, estimate in **developer-days (d)**. Status `[ ]` todo · `[~]` doing · `[x]` done.
+> Revised after the reliability/admin review ([review.md](review.md)). The previous plan was 94 d / "12–14 weeks". This one is re-estimated below.
 
-| Phase | Name | Goal | Est. |
-|-------|------|------|-----:|
-| 0 | Foundations | Repo, tooling, environments, design tokens | 6 d |
-| 1 | Database & catalogue backend | Schema, migrations, seed, catalogue API, import | 12 d |
-| 2 | Admin panel: catalogue | Admin can manage the whole catalogue | 11 d |
-| 3 | Storefront: browsing | Home, listing, PDP, search; matches reference | 15 d |
-| 4 | Auth & accounts | Signup/login/OTP, profile, addresses, wishlist | 8 d |
-| 5 | Cart, checkout & payments | Cart, coupons, shipping, Razorpay, COD | 14 d |
-| 6 | Orders & fulfilment | Order management, emails, invoices, tracking, returns | 11 d |
-| 7 | Content, marketing & SEO | Reels, testimonials, CMS, newsletter, restock, SEO | 8 d |
-| 8 | QA, hardening & launch | Testing, performance, security, go-live | 9 d |
-| 9 | Post-launch enhancements | Shiprocket, reviews, WhatsApp/SMS, analytics | backlog |
+## Assumptions
+- Team: **1 senior full-stack lead + 1 frontend-leaning developer**; part-time designer and QA are **not** counted in dev-days.
+- **Productive capacity:** 4 dev-days per developer per week (meetings, reviews, client calls, context switching), so **8 dev-days/week** for the team.
+- Estimates include unit/integration tests for the task. The cross-cutting acceptance suite is task 7.1.
+- Client inputs arrive on the dates in §Client inputs. Each week of delay on a blocking input moves the dependent milestone by the same amount.
+- No application code exists yet (repository contains only these docs and the client files).
 
-**Milestones**
-- **M1 (end Phase 2):** Admin demo with real catalogue loaded.
-- **M2 (end Phase 3):** Browsable storefront on staging (no checkout).
-- **M3 (end Phase 5):** Test purchase end-to-end with Razorpay test mode.
-- **M4 (end Phase 8):** Production launch.
+## Summary
 
----
+| Phase | Name | Outcome | Dev-days |
+|-------|------|---------|---------:|
+| 0 | Foundations & compatibility | Node 24 toolchain proven, CI, environments, tokens | 7 |
+| 1 | Core platform & security | Schema, customer auth, **admin MFA**, permissions, audit, outbox, inbox, idempotency, media | 17 |
+| 2 | Catalogue & admin catalogue | Products page, editor, gate, import, inventory, all behind secure admin | 16 |
+| 3 | Storefront browsing | Home, listing, PDP, search with correct caching | 13 |
+| 4 | **Purchase flow** | Cart, coupons, shipping, checkout, Razorpay, COD, reconciliation | 19.5 |
+| 5 | **Merchant operations** | Orders, fulfilment, invoices, cancellations, refunds, returns, COD, exceptions | 18 |
+| 6 | Content, SEO, admin completeness | CMS, content pages, SEO, staff/settings/audit UIs | 7 |
+| 7 | Hardening & launch | Acceptance suite, perf, security, a11y, restore drill, go-live | 12 |
+| | **MVP total** | | **109.5** |
+| | Contingency (15 %) | | **16.5** |
+| | **Planned MVP effort** | | **≈ 126 dev-days** |
 
-## Phase 0: Foundations (6 d)
+**Calendar duration:** 126 ÷ 8 dev-days/week ≈ **16 weeks** of build. With typical client-input waits (photos, counts, accountant approval, Razorpay live KYC), plan for **16–19 weeks** from kickoff to launch. Dev-days measure effort; weeks are calendar time with two people working in parallel.
 
-- [ ] **0.1 Monorepo scaffold** (1 d)
-  pnpm workspaces + Turborepo; `apps/web` (Next.js 15, App Router, TS), `apps/admin` (Vite React TS), `apps/api` (Express TS), `packages/shared`, `packages/ui`, `packages/config`.
-  ✅ `pnpm dev` starts all three apps; `pnpm build` passes; shared package importable from all apps.
-- [ ] **0.2 Code quality** (0.5 d)
-  ESLint (typescript-eslint, react, import order), Prettier, `tsc --noEmit` per app, Husky + lint-staged, commitlint (conventional commits).
-  ✅ Pre-commit blocks lint errors; `pnpm lint && pnpm typecheck` green.
-- [ ] **0.3 Local infrastructure** (0.5 d)
-  `docker-compose.yml`: Postgres 16, Redis 7, Mailpit, MinIO (S3). `.env.example` for all apps (see architecture.md §12).
-  ✅ `docker compose up` + `pnpm dev` works on a fresh machine following README in < 15 min.
-- [ ] **0.4 API skeleton** (1 d)
-  Express app with middleware chain (requestId, pino, helmet, cors, compression, cookie-parser, error handler, zod `validate()`), `config/env.ts` (zod-validated), `/health`, `/health/ready`, `AppError` classes, module folder pattern, Vitest + Supertest setup.
-  ✅ `GET /health/ready` checks DB+Redis; invalid env crashes at boot with a clear message; one sample integration test passes.
-- [ ] **0.5 Worker skeleton** (0.5 d)
-  BullMQ connection, `queues.ts`, `worker.ts` entry, a `ping` job, Bull Board UI mounted at `/admin/queues` (admin-only).
-  ✅ Enqueue `ping` from API → processed by worker → visible in Bull Board.
-- [ ] **0.6 Design tokens & UI primitives** (1.5 d)
-  Tailwind preset in `packages/ui` with all tokens from design-system.md (colours, fonts, radius, spacing, breakpoints); fonts via `next/font`; primitives: Button, IconButton, Input, Select, Checkbox, Badge, Price, Skeleton, SectionTitle, Drawer, Modal, Toast.
-  ✅ `/dev/ui` page on web (dev only) shows all primitives in all states; matches reference colours/fonts.
-- [ ] **0.7 CI pipeline** (0.5 d)
-  GitHub Actions: install (cache) → lint → typecheck → test (postgres & redis service containers) → build.
-  ✅ PRs show green/red checks; main branch protected.
-- [ ] **0.8 Staging environments** (0.5 d)
-  Vercel projects for web/admin (preview per PR), Railway/VPS for api+worker+Postgres+Redis, R2 bucket + `cdn` domain, Sentry projects, domains `staging.artq.in`, `api-staging…`, `admin-staging…`.
-  ✅ Merge to `main` auto-deploys to staging; Sentry receives a test error from each app.
+**Why it changed (126 d vs. the previous 94 d, +32 d):**
+- **+15.5 d of MVP scope (109.5 vs 94).** New reliability and security work adds about 24.5 d: admin MFA and session rotation, payment attempts and the recovery matrix, reconciliation, durable webhook inbox, transactional outbox, idempotency, reservation-based inventory, coupon reservation, refunds with item allocation, credit notes, COD remittance/RTO, the returns workflow, the publication gate, import row outcomes/resume, private media, SSRF-safe fetching, exception and jobs views, the promotion pipeline, the restore drill and the acceptance suite.
+- **−9 d moved out of the MVP:** collections, abandoned carts, advanced reports, reviews and SMS go to the post-launch backlog.
+- **+16.5 d contingency (15 %).** The previous plan had none.
+
+## Milestones
+| Milestone | End of | What is demonstrable |
+|-----------|--------|----------------------|
+| **M0** Foundations | Phase 0 | All apps build and deploy to staging on Node 24; compatibility report |
+| **M1** Secure catalogue admin | Phase 2 | Staff log in with MFA; the client's catalogue is imported as drafts with flags; the Products page matches the screenshot plus extensions; STAFF cannot change prices |
+| **M2** First working purchase | Phase 4 | On staging (Razorpay test mode): browse → cart → coupon → checkout → pay (UPI/card) or COD → order placed → emails; failure paths recover; reconciliation runs |
+| **M3** Merchant operations | Phase 5 | Confirm → pack → ship (invoice issued) → deliver; cancel with automatic refund; return → inspect → refund → credit note; COD remittance; exceptions queue |
+| **M4** Launch | Phase 7 | Production live after acceptance suite, restore drill and accountant sign-off |
+
+Reconciliation, refund safety, authorization and inventory correctness are **MVP** (Phases 1, 4, 5), not post-launch.
 
 ---
 
-## Phase 1: Database & catalogue backend (12 d)
+## Phase 0: Foundations & compatibility (7 d)
+- [ ] **0.1 Compatibility spike + monorepo** (1.5 d): pnpm + Turborepo; `apps/web` (Next.js), `apps/admin` (Vite), `apps/api` (Express), `packages/{shared,ui,config}`; `.nvmrc` 24, `engines` `>=24.11 <25`. Smoke-test on Node 24: Next build, Vite build, Prisma 6.19 generate + migrate, sharp, argon2, BullMQ/ioredis, exceljs, @react-pdf/renderer, otplib; evaluate Prisma 7.
+  ✅ `pnpm build && pnpm test` green on Node 24 in CI; pinned versions recorded in review.md §4; any incompatibility has a documented substitute.
+- [ ] **0.2 Code quality** (0.5 d): ESLint, Prettier, strict TS, Husky, commitlint; a lint rule/CI grep forbidding `app/api/**` and `"use server"` in `apps/web`.
+  ✅ CI fails if Next.js gains backend code.
+- [ ] **0.3 Local infrastructure** (0.5 d): docker-compose (Postgres 16+, Redis 7 AOF, MinIO with public+private buckets, Mailpit); `.env.example`.
+  ✅ Fresh clone → running stack in < 15 min.
+- [ ] **0.4 API skeleton** (1 d): middleware chain (architecture.md §4) incl. origin guard stub, JSON-only enforcement, strict zod, error format, `/health`, `/health/ready`.
+  ✅ Form-encoded POST → 415; unknown body key → 400.
+- [ ] **0.5 Worker skeleton** (0.5 d): BullMQ queues, repeatable schedulers registered at start, Bull Board (admin-only later).
+  ✅ Scheduler re-registers after worker restart.
+- [ ] **0.6 Design tokens & primitives** (1.5 d): tokens from design-system.md (accessible `brand-700` action colour), primitives, **contrast unit test** over the token pairs in design-system.md §2.3.
+  ✅ Test fails if any text pair < 4.5:1 or UI boundary < 3:1.
+- [ ] **0.7 CI** (0.5 d): lint → typecheck → unit → integration with Testcontainers (Postgres, Redis) → build; migration check (fails on destructive SQL without an `-- contract-phase` marker).
+  ✅ Required checks on `main`.
+- [ ] **0.8 Environments & promotion** (1 d): staging + production projects with isolated DB/Redis/R2/secrets; API image built once per SHA, deployed to staging, promoted by digest to prod after approval; Vercel promote; Sentry.
+  ✅ Promotion of the same digest demonstrated; staging cannot reach prod resources.
 
-- [ ] **1.1 Prisma schema** (2 d)
-  Implement full schema from database.md §5; migration `0001_init`; raw SQL migration `0002_constraints_and_search` (partial uniques, checks, sequence, search trigger).
-  ✅ `prisma migrate dev` from scratch succeeds; ERD generated (prisma-erd) matches database.md; check constraints verified by tests (negative stock rejected, mrp < price rejected).
-- [ ] **1.2 Shared money/slug/size helpers** (0.5 d)
-  `packages/shared`: `toPaise`, `formatINR`, `discountPercent`, `slugify` (handles "2:1" → "2-1"), `normalizeSize` ("500GM" → "500 gm"), `buildVariantLabel`, SKU generator.
-  ✅ Unit tests cover all spreadsheet edge cases listed in catalog.md.
-- [ ] **1.3 Seeds: reference data** (1 d)
-  Countries, 36 states with GST codes & zones, shipping zones/slabs, settings keys, super admin, CMS placeholders, FAQs, sample testimonials.
-  ✅ `pnpm db:seed` idempotent (re-runnable); admin can log in with seeded credentials (after Phase 4 auth; until then verified via DB).
-- [ ] **1.4 Pincode dataset** (0.5 d)
-  Script to load India Post pincode CSV into `pincodes`.
-  ✅ `GET /pincodes/682016` returns Ernakulam, Kerala.
-- [ ] **1.5 Media module** (1.5 d)
-  R2/MinIO client, presign + complete endpoints, `media.process` job (sharp → webp/avif widths 160–1600, LQIP), CDN URL builder, delete.
-  ✅ Upload a 5 MB JPG via presign → within 10 s `media.status=READY` and all sizes reachable on CDN; EXIF stripped.
-- [ ] **1.6 Catalogue read API** (2.5 d)
-  `/types`, `/types/:slug`, `/categories/:slug`, `/techniques…`, `/collections/:slug`, `/navigation`, `/products` (filters, sort, facets, pagination), `/products/:slug`, `/products/:slug/availability`, `/products/:slug/related`, `/products/by-ids`.
-  ✅ Integration tests for every filter & sort; listing p95 < 150 ms with 1k seeded products; slug redirect works; inactive/deleted products never returned.
-- [ ] **1.7 Search** (1 d)
-  tsvector trigger, `/search`, `/search/suggest` (trigram), `search_logs`.
-  ✅ "gold" finds Metallic Gold Gel Pigment; "reisn" suggests resin products; "TWF-1IN" finds teak frame by SKU.
-- [ ] **1.8 Catalogue write services** (1 d)
-  Product create/update with variants & images in one transaction, `refreshProductAggregates`, slug change → `slug_redirects`, inventory movement on stock change, audit log.
-  ✅ Changing a variant price updates `products.min_price`; renaming product creates redirect; every change appears in `audit_logs`.
-- [ ] **1.9 Excel import engine** (2 d)
-  exceljs parser for the official template **and** "Sheet1" layout (forward-fill blank cells), validators (per catalog.md §4), dry-run preview, upsert by SKU, image URL download & re-host (Drive link conversion), `import.products` job with progress, error report xlsx.
-  ✅ Importing the client's file produces a preview with the exact warnings listed in catalog.md §4; confirming creates 64 products / 98 variants (± client fixes); re-import is idempotent (updates, no duplicates).
+## Phase 1: Core platform & security (17 d)
+- [ ] **1.1 Schema & migrations** (2 d): database.md §5 + database.md §6 as `0001_init` + `0002_constraints_search_integrity`.
+  ✅ Applies on empty DB; constraint tests (publish gate, refund cap, snapshot/invoice immutability, coupon capacity, category/type FK) pass.
+- [ ] **1.2 Shared pure functions** (2 d): money, tax rounding (database.md §4.4), slug, size normalisation, pricing (architecture.md §6.4) and the **single shipping algorithm** (architecture.md §6.5) with ≥ 40 table tests (threshold edges, coupon pushing below threshold, FREE_SHIPPING coupon, > 10 kg cap, volumetric > actual, COD fee never waived, non-serviceable pincode).
+  ✅ All examples in product.md §8.2 and architecture.md §6.5 reproduced exactly.
+- [ ] **1.3 Seeds** (1 d): geo + GST codes, postal codes, zones/slabs/extra-per-kg, settings, first SUPER_ADMIN (must enrol MFA).
+  ✅ Idempotent re-run.
+- [ ] **1.4 Customer auth** (3 d): signup + email OTP, login (email+password / email OTP), cookie helper (create/clear identical attributes, env-specific names), refresh rotation with 30 s grace, reuse detection → session revoke, session cache + revocation, logout/logout-all, forgot/reset, set-password link, verified-email guest-order linking.
+  ✅ AT-11 passes; reused token outside grace revokes the session; blocked user's next request → 401.
+- [ ] **1.5 Origin/CSRF guard & rate limits** (0.5 d).
+  ✅ Cookie route POST with foreign/missing Origin → 403; webhooks exempt.
+- [ ] **1.6 Admin auth with mandatory MFA** (2 d): login → challenge, enrolment (encrypted secret, QR, recovery codes), verify, recovery code use, step-up, replay prevention, MFA reset, break-glass CLI, separate admin cookie/audience.
+  ✅ No token is issued before MFA; a recovery code works once; storefront token rejected on `/admin`.
+- [ ] **1.7 Permissions & audit** (1 d): permission map (architecture.md §5.9), `requirePermission`, per-permission strict schemas, audit middleware.
+  ✅ AT-10 (STAFF price change) passes.
+- [ ] **1.8 Outbox + email consumer** (1.5 d): writer helper (same TX), dispatcher (`SKIP LOCKED`, jobId dedupe, NOTIFY wake-up), `processed_messages`, email consumer with `email_logs` dedupe and provider idempotency key.
+  ✅ Kill dispatcher between enqueue and commit → no duplicate email; outbox DEAD → exception.
+- [ ] **1.9 Webhook inbox framework** (1 d): signature verify, durable insert, ack-after-commit, claim/lock, retry/backoff, DEAD, sweeper.
+  ✅ AT-04 passes on a synthetic provider.
+- [ ] **1.10 Idempotency middleware** (1 d): scope/operation/key, request hash, PROCESSING lock, replay, conflict, takeover after lock expiry, 24 h purge.
+  ✅ AT-02 passes.
+- [ ] **1.11 Media** (2 d): presign with size/type constraints, complete with HEAD check, worker sniff + sharp re-encode, states, private bucket + authorized redirects, SSRF-safe fetcher.
+  ✅ Spoofed MIME rejected; private URL denied to other users; fetcher refuses `http://169.254.169.254`, `localhost`, redirect-to-private, > 20 MB.
 
----
+## Phase 2: Catalogue & admin catalogue (16 d)
+- [ ] **2.1 Admin shell** (2 d): login/MFA screens, permission-aware navigation in screenshot order (product.md §7.2), **independently scrollable sidebar** + < 1024 px drawer, DataTable (server-side pagination/filter/sort, loading/empty/error, bulk selection), mutation feedback, version-conflict dialog.
+  ✅ Every nav item reachable at 1280×720, 1024×600 and 200 % zoom (Playwright); axe passes.
+- [ ] **2.2 Catalogue services** (2 d): products/variants CRUD (content), **separate pricing endpoint**, aggregates in the same TX, optimistic versions, slug redirects, search triggers.
+  ✅ Variant price change updates `min_price` in the same TX; `product_aggregate_drift` empty after 1,000 random edits.
+- [ ] **2.3 Publication gate** (1.5 d): readiness evaluation, publish/unpublish/archive endpoints, edit-guard for ACTIVE products, tax approval.
+  ✅ Each of the product.md §8.7 checks individually blocks publish.
+- [ ] **2.4 Products page** (2 d): search, Add Product, type tabs + More + Unassigned, #/Image/Name/Type/Status/Variants/Actions, activation toggle with gate popover, Edit/Delete(Archive), Previous/Next + page; price range, available stock, status/stock/readiness/image filters, bulk actions, import/export buttons, variant drawer.
+  ✅ Contract test: no row renders "Unknown"; image states rendered distinctly; STAFF sees read-only price cells and toggle.
+- [ ] **2.5 Product editor** (3 d): all sections in product.md §7.4 incl. variants grid with gated commercial columns and readiness panel.
+  ✅ Recreate "Teak Wood Frame" (14 variants) in < 5 min.
+- [ ] **2.6 Product Types / Categories / Techniques** (1 d).
+  ✅ Delete in use → 409 with guidance.
+- [ ] **2.7 Catalogue import** (3 d): parser for template + Sheet1 layout, flags (catalog.md §6), row outcomes, `NEEDS_REVIEW` on version conflicts, batch resume with advisory lock, SSRF-safe image fetch, result file; UI preview/confirm/progress/resolve.
+  ✅ Client file → 64 drafts / 98 variants with the documented flags; killing the worker mid-import and restarting completes without duplicates; re-import changes no stock.
+- [ ] **2.8 Inventory** (1.5 d): recount/adjust/write-off (on_hand only), ledger, inventory import, oversold exception, low-stock list.
+  ✅ AT-13 passes.
 
-## Phase 2: Admin panel, catalogue (11 d)
+## Phase 3: Storefront browsing (13 d)
+- [ ] **3.1 Layout shell** (2 d): announcement (accessible colours), header, mega-menu, drawer, footer, WhatsApp, toasts.
+- [ ] **3.2 Data layer & caching** (1 d): public SSR fetch (ISR 60 s) vs browser fetch (`credentials:'include'`); API cache headers per allow-list; `no-store` everywhere else.
+  ✅ Integration test asserts headers for every route group; personal routes never public-cacheable.
+- [ ] **3.3 Home** (2.5 d) ✅ LCP < 2.5 s on throttled 4G.
+- [ ] **3.4 Product card + quick add** (1 d).
+- [ ] **3.5 Listing** (3 d): same-variant filter semantics, facets, URL state.
+  ✅ Product with gold-out-of-stock + silver-in-stock does not match "Gold + in stock".
+- [ ] **3.6 PDP** (2.5 d): live availability, notify-me, pincode serviceability, JSON-LD.
+- [ ] **3.7 Search UX** (1 d).
 
-- [ ] **2.1 Admin shell** (1 d)
-  Vite + React Router + TanStack Query + shadcn/ui themed with tokens; sidebar layout, top bar, breadcrumbs, toasts, confirm dialogs, 404; API client with auth refresh (login screen wired in 4.x; temporarily dev token).
-  ✅ Responsive layout works at 1280 px and on a tablet; navigation between all module placeholders.
-- [ ] **2.2 Reusable DataTable** (1 d)
-  TanStack Table: server pagination, sorting, column filters, search, row selection + bulk actions, empty/loading states, URL-synced state.
-  ✅ Used by products, orders, customers with no copy-paste.
-- [ ] **2.3 Media uploader & library** (1 d)
-  Drag-drop multi-upload with progress, reorder (dnd-kit), set cover, alt text, pick-from-library modal.
-  ✅ Upload 10 images at once; reorder persists; cover star moves.
-- [ ] **2.4 Types / Categories / Techniques / Collections / Size charts CRUD** (1.5 d)
-  Forms with image, slug auto-gen (editable), SEO fields, drag sort, active toggles; collections product picker.
-  ✅ Creating a category under "Pigments" appears in `/navigation` within 60 s on web.
-- [ ] **2.5 Product list page** (1 d)
-  Table columns per product.md §7, filters (type, category, status, stock low/out, new/trending), quick toggles, bulk actions, duplicate.
-  ✅ Can find any product by name or SKU in < 2 s; bulk "mark trending" on 5 products works.
-- [ ] **2.6 Product editor** (3 d)
-  Sections: Basic (name, slug, type, category, techniques), Descriptions (Tiptap rich text, details list, specs & care list, how to use, specifications key/values), Media (images, video), **Variants grid** (add row, generate combinations from Size × Thickness × Colour, inline price/MRP/stock/weight/SKU, variant image, active, bulk set price/stock), Tax (HSN, GST), Relations (frequently bought together, similar), Flags & ranks, SEO with Google preview snippet; unsaved-changes guard; preview link to storefront.
-  ✅ Can recreate "Teak Wood Frame" (14 variants via 2 sizes lists × 2 depths) in under 5 minutes; validation errors show next to fields; MRP < price blocked.
-- [ ] **2.7 Inventory page** (1 d)
-  Variant-level table with inline stock edit (reason required), CSV bulk update, movement history drawer, low-stock filter.
-  ✅ Editing stock writes movement row; history shows who/when/why.
-- [ ] **2.8 Import / Export UI** (1.5 d)
-  Upload xlsx → preview table (create/update badges, errors/warnings per row, filter by severity) → confirm → live progress → report; download template; export catalogue.
-  ✅ Client's file can be imported end-to-end by a non-developer using only the UI.
-- [ ] **M1 demo**: real catalogue (with placeholder images) loaded on staging admin.
+## Phase 4: Purchase flow (19.5 d) → **M2**
+- [ ] **4.0 Razorpay spike** (0.5 d): on the test account confirm fetch-by-receipt, order payments list, capture, refunds with receipt, event-id header, late authorization behaviour, auto-capture setting.
+  ✅ Findings recorded; any gap has a documented fallback.
+- [ ] **4.1 Cart backend** (1.5 d): token cookie, re-pricing, clamping, merge.
+- [ ] **4.2 Storefront auth & account basics** (2.5 d): login/signup/OTP/forgot/reset/set-password pages; **refresh coordinator** (Web Locks + BroadcastChannel); profile, email change, addresses, wishlist.
+  ✅ AT-11 (multi-tab) passes in Playwright.
+- [ ] **4.3 Coupons** (2 d): validation, reservation lifecycle (reserve/redeem/release/reverse/over-limit), admin Coupons module.
+  ✅ AT-09 passes; expiring an unpaid order never decrements `redeemed_count`.
+- [ ] **4.4 Shipping Rates & serviceability admin** (1.5 d): zones, slabs, extra/kg, threshold/cap, packaging, pincode rules + CSV, preview.
+- [ ] **4.5 Cart page + mini-cart** (1.5 d).
+- [ ] **4.6 Checkout page** (2.5 d): contact (unverified), address + serviceability, payment options, processing/failed/retry states.
+- [ ] **4.7 Initiate** (2 d): idempotent initiate, TX1/TX2, attempts, one pending order per cart, failure matrix rows 1–6 (architecture.md §7.3).
+  ✅ AT-01, AT-02, AT-03 pass.
+- [ ] **4.8 Verify, status, retry, COD** (2 d): stored provider order id, signature, provider fetch, amount/currency/status checks, `PROCESSING` state, polling endpoint, payment retry (idempotent), COD placement.
+- [ ] **4.9 Webhooks, reconciliation, expiry, late/excess captures** (2.5 d): Razorpay handlers on the inbox, reconcile-attempts, expire-pending with pre-check, daily reconciliation, exceptions creation.
+  ✅ AT-04, AT-05, AT-06, AT-07 pass.
+- [ ] **4.10 Order notifications & confirmation** (1 d): outbox events → emails, success/processing pages, analytics `purchase` once.
+- [ ] **M2 demo** on staging.
 
----
+## Phase 5: Merchant operations (18 d) → **M3**
+- [ ] **5.1 Admin Orders** (2.5 d): list filters (4 dimensions + exceptions), detail, transitions, packing slip, address correction, resend email.
+- [ ] **5.2 Dispatch & invoices** (2 d): consume reservations, shipment (single), invoice numbering + immutable snapshot + PDF render (private).
+  ✅ Invoice sequence gap-free under 20 concurrent dispatches.
+- [ ] **5.3 Cancellation** (1.5 d): customer/admin, release, automatic refund for prepaid, coupon reversal policy.
+- [ ] **5.4 Refunds** (3 d): refundable calculator, item allocation, capacity under lock, provider send/unknown/failed, webhook + reconcile, manual COD refunds, credit notes.
+  ✅ AT-08 passes.
+- [ ] **5.5 Returns** (2.5 d): customer request (account + guest), private photos, decide → transit → receive → inspect → refund → close; quantity bounds.
+  ✅ Duplicate/excess return quantities rejected under concurrency.
+- [ ] **5.6 COD, RTO, lost** (1.5 d): COD collected/remitted, remittance recording + mismatch, RTO receive/inspect/restock, lost write-off.
+- [ ] **5.7 Customer & guest order access** (2 d): account orders, guest tracking link, email-OTP order access cookie, cancel/return/invoice, attachment authorization.
+  ✅ AT-12 passes.
+- [ ] **5.8 Exceptions & ops views** (1.5 d): Payment Exceptions, Jobs & Webhooks, alert wiring (architecture.md §13).
+- [ ] **5.9 Dashboard, Customers, Restock Requests** (1.5 d).
+- [ ] **M3 demo** with the client's admin user.
 
-## Phase 3: Storefront, browsing (15 d)
+## Phase 6: Content, SEO, admin completeness (7 d)
+- [ ] **6.1 CMS & Messages admin** (2 d).
+- [ ] **6.2 Content pages** (1 d): about, contact, custom work (private uploads), FAQs, policies, 404.
+- [ ] **6.3 Newsletter & back-in-stock** (1 d).
+- [ ] **6.4 SEO** (2 d): metadata, JSON-LD, sitemap, robots, canonical, redirects.
+- [ ] **6.5 Staff & Permissions, Settings, Audit Logs UIs** (1 d).
 
-- [ ] **3.1 Layout shell** (2 d)
-  Announcement bar (marquee, settings-driven), header (mobile + desktop variants, sticky/hide-on-scroll), mega-menu, mobile drawer, footer with newsletter, WhatsApp button, toast system, cart/wishlist badge counts (client), skip-link, focus management.
-  ✅ Pixel-close to `ArtQ Site Ref.png` at 390 px wide; keyboard can open menu/drawer and Esc closes; Lighthouse a11y ≥ 95.
-- [ ] **3.2 API client & data layer** (1 d)
-  Typed fetch wrapper (server: `next.revalidate: 60`; client: TanStack Query, `credentials: 'include'`), error boundary, `formatINR`, image loader for CDN.
-  ✅ No Next.js route handlers/Server Actions exist (lint rule or CI grep); all data from Node API.
-- [ ] **3.3 Home page** (2.5 d)
-  Hero video (poster, saveData fallback, reduced-motion), category circles grid, New Arrivals grid, Trending reels grid (autoplay-in-view, full-screen viewer with product CTA), techniques strip, testimonials carousel (swipe, auto-advance, a11y), Instagram moments; section order from `HOME_SECTIONS` setting.
-  ✅ LCP < 2.5 s on throttled 4G (Moto G Power profile); only one reel plays at a time on mobile; all sections hide gracefully when empty.
-- [ ] **3.4 Product card + quick-add** (1.5 d)
-  Card per design-system §5.5, hover image, badges, wishlist heart, ADD → direct add or variant bottom-sheet/popover; NOTIFY ME for out-of-stock.
-  ✅ Adding a single-variant product opens mini-cart; multi-variant opens picker; works with touch and keyboard.
-- [ ] **3.5 Listing template** (3 d)
-  Used by /shop, /type, /category, /technique, /collection, /new-arrivals, /trending, /search: banner, breadcrumbs, category chips, toolbar, sort, filters (sidebar desktop / bottom sheet mobile), active chips, price slider, facets, Load more + `?page=`, skeletons, empty state; URL-synced state; canonical/noindex rules.
-  ✅ Every filter combination is shareable by URL; back button restores filters & scroll; `/type/pigments?category=gel-pigments` shows 29 items.
-- [ ] **3.6 Product detail page** (3.5 d)
-  Gallery (swipe, thumbnails, zoom, lightbox, video), price block, variant selectors (size/colour/thickness with availability logic and `?variant=`), stock message, qty stepper, Add to cart / Buy now / wishlist, Notify-me modal, pincode delivery check, trust row, accordions, techniques, related/FBT ("Add all"), recently viewed, sticky mobile add-to-cart bar, live availability refetch, JSON-LD Product + Breadcrumb.
-  ✅ Selecting "12×16 / 0.5 inch" shows "unavailable" (no such variant) and the closest valid choice; Google Rich Results test passes; price never stale after stock change (live refetch).
-- [ ] **3.7 Search UX** (1 d)
-  Search overlay with debounced suggestions, recent searches, keyboard navigation, results page, zero-results state.
-  ✅ Arrow keys + Enter navigate suggestions; zero-result queries logged.
-- [ ] **3.8 Content pages** (0.5 d)
-  About, Contact (form → API), Custom work (form + uploads), FAQs (accordion + FAQPage JSON-LD), policy pages from CMS, 404, error page.
-  ✅ Contact submission lands in admin Messages (Phase 7 UI) and Mailpit shows admin email.
-- [ ] **M2**: storefront browsable on staging; client review round 1.
-
----
-
-## Phase 4: Auth & accounts (8 d)
-
-- [ ] **4.1 Auth backend** (2.5 d)
-  argon2id, signup + email OTP verify, login (email/phone + password), OTP login, refresh rotation with reuse detection, logout/logout-all, forgot/reset password, set-password for guests, lockout, rate limits (Redis), `authOptional/authRequired/requirePermission` middleware, role→permission map.
-  ✅ Test suite: reuse of rotated refresh token revokes family; 6th wrong password locks 15 min; OTP 6th attempt rejected; no user enumeration on forgot-password/OTP request.
-- [ ] **4.2 Email infrastructure** (1 d)
-  Resend client (Mailpit in dev), React Email base layout (logo, teal header, footer), `email.send` job with retries + `email_logs`; templates: otp, welcome, password_reset.
-  ✅ Emails render correctly in Gmail (web + Android) and Outlook; failed sends retried 5× and visible in logs.
-- [ ] **4.3 Storefront auth pages** (1.5 d)
-  Login (password + OTP tabs), signup + OTP screen (6-box input, resend timer, paste support), guest-login, forgot/reset; `?next=` redirect; in-memory access token + silent refresh on load and on 401.
-  ✅ Refreshing any page keeps user logged in; logging out in one tab logs out others (BroadcastChannel).
-- [ ] **4.4 Account area** (1.5 d)
-  Profile edit, change password, email change with OTP, address book (CRUD, default, pincode auto-fill), delete account; route guard.
-  ✅ Pincode 682016 auto-fills Kochi/Kerala; max 10 addresses enforced.
-- [ ] **4.5 Wishlist** (1 d)
-  API toggle/list/merge; guest wishlist in localStorage; merge on login; wishlist page with Move to cart.
-  ✅ Guest hearts 3 products → logs in → all 3 in account wishlist; badge counts correct.
-- [ ] **4.6 Admin login & staff** (0.5 d)
-  Admin login screen, TOTP 2FA setup/verify, staff CRUD (SUPER_ADMIN), permission-based menu hiding.
-  ✅ STAFF user cannot see Products/Settings menus and gets 403 from those APIs.
-
----
-
-## Phase 5: Cart, checkout & payments (14 d)
-
-- [ ] **5.1 Cart backend** (2 d)
-  `aq_cart` cookie, cart CRUD, live re-pricing & stock clamping, guest→user merge on login, `CartView` shape.
-  ✅ Adding qty > stock returns 409 with available qty; merge sums quantities and clamps; carts survive 30 days.
-- [ ] **5.2 Pricing engine** (1.5 d)
-  `priceCart()` per architecture.md §6.4: subtotal, MRP savings, coupon allocation, weight, zone shipping, free-shipping threshold, heavy cap, COD fee, GST breakup.
-  ✅ 40+ table-driven unit tests (edge cases: exactly ₹1000, coupon pushes below threshold, 30 kg resin, FREE_SHIPPING coupon, COD limits).
-- [ ] **5.3 Coupons** (1.5 d)
-  Validation chain (product.md §8.4), apply/remove on cart, public coupon list with eligibility, admin CRUD + redemptions view.
-  ✅ Every coupon error code reachable by a test; per-user limit enforced for guests by email/phone.
-- [ ] **5.4 Shipping config** (1 d)
-  Zone/slab admin UI with state mapping, SHIPPING settings form, `/pincodes/:pin` serviceability & COD flags, `/cart/estimate`.
-  ✅ Admin changes Kerala 500 g rate → cart shows new rate immediately.
-- [ ] **5.5 Cart page & mini-cart** (1.5 d)
-  Per product.md §5.5 & §5.7: line items, qty stepper, remove + undo, move to wishlist, free-shipping progress bar, coupon box + available coupons, summary, empty state, stock/price-change warnings.
-  ✅ All amounts match API exactly (no client-side math besides display).
-- [ ] **5.6 Checkout page** (2.5 d)
-  Contact → Address (saved cards / new form with pincode auto-fill / billing / GSTIN) → Shipping & payment (methods, COD availability reason, notes, terms) → sticky summary; `/checkout/quote` on each change; form validation (RHF + zod shared schemas); returning-email login hint; abandoned-cart contact capture.
-  ✅ Usable one-handed at 360 px; validation messages for every field; COD option disappears for ₹6,000 cart with reason shown.
-- [ ] **5.7 Order creation & stock reservation** (1.5 d)
-  `/checkout/initiate` with transaction from database.md §8.1, Idempotency-Key, `expectedTotal` check (`PRICE_CHANGED`), order number & tracking token, COD path, `orders.expire-pending` cron job.
-  ✅ Concurrency test: 20 parallel checkouts for a variant with stock 5 → exactly 5 orders succeed, stock = 0, never negative; expired orders restore stock.
-- [ ] **5.8 Razorpay integration** (2 d)
-  Create Razorpay order, Checkout.js (loaded only on checkout, theme `#00a99d`, prefill), `/checkout/verify` signature check, `markOrderPaid` (idempotent, amount check), webhook endpoint with raw body + signature + `webhook_events`, payment-failed handling & retry-payment, late capture after expiry → re-reserve or auto-refund.
-  ✅ Test mode: UPI success, card failure, closing modal, duplicate webhook, webhook-before-verify all leave the order in the correct state; no double emails.
-- [ ] **5.9 Success page & analytics events** (0.5 d)
-  Success page (product.md §5.8), guest "create password", GA4/Meta events (`view_item_list` … `purchase`, fired once).
-  ✅ GA4 DebugView shows full funnel with correct values in rupees.
-- [ ] **M3**: full test purchase on staging (prepaid + COD).
+## Phase 7: Hardening & launch (12 d) → **M4**
+- [ ] **7.1 Acceptance suite** (4 d): implement AT-01…AT-14 (below) in CI (integration with Testcontainers + Playwright on staging).
+- [ ] **7.2 Performance** (1.5 d): Lighthouse, bundle, `EXPLAIN` on listing/search, k6 (100 rps listing, 20 rps checkout quote).
+- [ ] **7.3 Security review** (1.5 d): auth/session, CSRF/Origin, IDOR (orders, attachments, addresses), SSRF, upload validation, permission matrix, secrets.
+- [ ] **7.4 Accessibility & browsers** (1 d): storefront **and admin** (contrast, keyboard, reachable nav).
+- [ ] **7.5 Business sign-off** (1 d): accountant approves invoice/credit-note format and tax data (D-1–D-3); catalogue readiness review; policies text.
+- [ ] **7.6 Production readiness** (1.5 d): prod infra, backups/PITR, R2 sync, alerts, on-call runbooks; **restore drill** (AT-14).
+- [ ] **7.7 Launch & hypercare** (1.5 d): live ₹1 test order + refund, monitor 48 h, admin training.
 
 ---
 
-## Phase 6: Orders & fulfilment (11 d)
+## Acceptance tests (required for launch)
 
-- [ ] **6.1 Order emails** (1.5 d)
-  Templates: order_placed (customer + admin), payment_failed nudge (delayed job), order_status (confirmed/shipped with AWB/delivered), order_cancelled, refund_processed.
-  ✅ Each status change sends exactly one email (respecting `notifyCustomer`).
-- [ ] **6.2 Admin orders list & detail** (2.5 d)
-  Filters, search by number/phone/email, CSV export; detail: items, customer, addresses, payments & Razorpay IDs, timeline, internal notes, status actions with transition rules, ship modal (courier, AWB, tracking URL), edit address before packing, resend email.
-  ✅ Invalid transitions are not offered; every action writes history + audit log.
-- [ ] **6.3 Cancellations & refunds** (1.5 d)
-  Customer cancel (allowed statuses), admin cancel with refund/restock options, partial refunds via Razorpay Refund API, refund webhooks, payment_status updates, coupon reversal.
-  ✅ Cancel prepaid order → Razorpay test refund created → order shows REFUNDED after webhook; stock restored with movement rows.
-- [ ] **6.4 Invoices & packing slips** (1.5 d)
-  @react-pdf GST invoice (store GSTIN, invoice number per FY, HSN, taxable value, CGST/SGST vs IGST by state, totals in words), packing slip with address label; download from admin & customer account.
-  ✅ CA reviews a sample invoice and approves format; Kerala order shows CGST+SGST, Karnataka shows IGST.
-- [ ] **6.5 Customer orders & tracking** (1.5 d)
-  My orders list/detail, cancel, buy again, invoice download, tracking timeline, public tracking via token link and via order number + OTP.
-  ✅ Guest can open tracking from email link without logging in; cannot see other orders.
-- [ ] **6.6 Returns** (1.5 d)
-  Customer "Report a problem" (within 48 h of delivery, photo upload), admin returns queue (approve/reject, refund amount, restock), emails.
-  ✅ Request after 48 h blocked with message; approved return with restock increments stock.
-- [ ] **6.7 Admin dashboard & notifications** (1 d)
-  KPIs, sales chart (Recharts), orders by status, top products, low stock, pending actions; in-app notifications bell (new order, low stock, return, message); daily summary & low-stock emails (cron).
-  ✅ New order appears in bell within 5 s (polling 30 s acceptable); 08:00 IST email arrives on staging.
+| ID | Scenario | Level | Pass criteria |
+|----|----------|-------|---------------|
+| **AT-01** | Concurrent checkout against limited stock: 20 carts buy the last 5 units at once | Integration (real Postgres) | Exactly 5 orders; `reserved = 5`; others 409; no negative available; drift views empty |
+| **AT-02** | Concurrent repeated idempotency keys: 10 parallel initiates with the same key + 1 with a different body | Integration | One order; 9 get replay or `REQUEST_IN_PROGRESS`; different body → 422 |
+| **AT-03** | Provider success then local failure: Razorpay order created, process killed before TX2; client retries with same key | Integration (provider stub) | Attempt adopted by receipt; single provider order; no duplicate order; reconciler resolves if no retry |
+| **AT-04** | Webhook crash after durable receipt: inbox row committed, worker killed mid-processing | Integration | Endpoint returned 200 only after commit; sweeper reclaims after lock expiry; order paid exactly once |
+| **AT-05** | Duplicate and out-of-order webhooks: `captured` ×3 then a late `authorized`; refund events reversed | Integration | One payment row, rank stays CAPTURED; refund ends PROCESSED; one email per event key |
+| **AT-06** | Multiple distinct captures for one order (two attempts both paid) | Integration | First APPLIED; second EXCESS + exception + automatic refund; `captured_amount` = order total |
+| **AT-07** | Capture racing expiry and cancellation | Integration | Before expiry → order placed, not expired; after expiry with stock → restored; after expiry without stock → refunded + exception; after cancellation → refunded, never revived |
+| **AT-08** | Concurrent refunds: 3 staff refund ₹700 each on a ₹1,000 capture; per-item bound | Integration | Exactly one accepted; others 409; sums never exceed captured or item net |
+| **AT-09** | Concurrent final coupon use: 10 checkouts with a limit-1 coupon | Integration | One RESERVED; others 422; expiry releases without touching `redeemed_count` |
+| **AT-10** | STAFF attempting price changes via inventory, variant, bulk and import endpoints | API | All rejected (403/400 unknown key); audit records attempts; prices unchanged |
+| **AT-11** | Refresh across reloads and multiple tabs: 3 tabs, reload, concurrent refresh, stolen-token replay | Playwright + API | No logout on concurrent refresh (grace); replay after grace revokes session; logout propagates to all tabs |
+| **AT-12** | Guest order and attachment access isolation | API + Playwright | Tracking link read-only; actions need email OTP; cookie scoped to one order; other orders'/users' attachments → 404/403; presigned URLs expire |
+| **AT-13** | Imports during reservations: inventory import sets on_hand while 3 orders hold reservations; catalogue re-import | Integration | `reserved` unchanged; available recalculated; count < reserved raises OVERSOLD; catalogue import changes no stock |
+| **AT-14** | Restore and rollback: PITR restore to scratch; deploy N+1 then roll back to N | Ops drill (staging) | Restore within RTO; integrity queries clean; app rollback works with the migrated schema |
+
+Each row maps to the reference SQL in database.md §8 and the flows in architecture.md §7 and architecture.md §8.
 
 ---
 
-## Phase 7: Content, marketing & SEO (8 d)
+## Post-launch backlog (prioritise after 4–6 weeks of data)
+| Item | Est. |
+|------|-----:|
+| SMS/WhatsApp OTP (DLT) and phone login with mandatory OTP for phone change | 3 d |
+| Courier API (Shiprocket): AWB, labels, tracking webhooks via inbox, live serviceability | 5 d |
+| Product reviews & ratings | 4 d |
+| Abandoned-cart reminders (consent-aware) | 2 d |
+| Collections / curated pages | 1.5 d |
+| Advanced reports (sales, GST exports, product performance) | 3 d |
+| Split shipments (`shipment_items`) | 3 d |
+| Bundles/kits, bulk pricing tiers | 7 d |
+| Google sign-in | 1 d |
+| Meta CAPI + Merchant Center feed | 2 d |
+| Blog/tutorials | 3 d |
+| PWA | 2 d |
 
-- [ ] **7.1 Content admin** (2 d)
-  Hero/home slides, announcement bar, home section order/toggles, reels (video upload, thumbnail, product link, reorder), testimonials, FAQs, CMS pages (Tiptap), Instagram moments, social links.
-  ✅ Client can change every piece of homepage text/media without a developer.
-- [ ] **7.2 Newsletter** (0.5 d)
-  Subscribe API (double-entry safe), unsubscribe link/token, admin list + CSV export.
-  ✅ Duplicate subscribe shows friendly message; unsubscribe works from email link.
-- [ ] **7.3 Back-in-stock** (1 d)
-  Notify-me API, admin grouped view + "notify now", automatic `stock.restock-notify` job on 0→>0, back_in_stock email with deep link to variant.
-  ✅ Restocking the 8-inch acrylic hoop emails all waiting subscribers once.
-- [ ] **7.4 Abandoned cart** (1 d)
-  Cron finds carts with contact & items idle 1 h/24 h, sends up to 2 reminders (consent-aware), admin list + manual remind; restores cart via signed link.
-  ✅ Reminder link restores the exact cart on another device.
-- [ ] **7.5 Messages inbox** (0.5 d)
-  Contact & custom-work messages with status workflow and notes.
-  ✅ Admin can mark replied/closed; filters by status.
-- [ ] **7.6 SEO** (2 d)
-  Metadata for every route (from entity meta or templates), Open Graph/Twitter images, JSON-LD (Organization, WebSite+SearchAction, Product, BreadcrumbList, FAQPage), `sitemap.ts` from `/seo/sitemap-entries`, `robots.ts` (staging noindex), canonical rules, redirects (Next.js middleware → `/seo/resolve`), SEO overrides admin, slug-redirect 301s.
-  ✅ Screaming Frog crawl: no broken links, no duplicate titles, all products in sitemap; Rich Results test passes for PDP and FAQs.
-- [ ] **7.7 Reports** (1 d)
-  Sales by day/month, product performance, search terms, GST monthly CSV.
-  ✅ GST CSV totals equal sum of invoices for the month.
+## Client inputs (blocking)
+| Input | Needed by | Blocks |
+|-------|-----------|--------|
+| Domain, logo SVG, sending domain (D-12) | Phase 0 | 0.8 |
+| Razorpay test account (D-16) | Phase 4 start | 4.0 |
+| COD, serviceability, courier, shipping values (D-4, D-6, D-7, D-13) | Phase 4 | 4.4 |
+| Corrected catalogue data, photos, measured weights, physical counts (D-10, D-8, D-11) | Phase 5 | Publication, M4 |
+| Accountant: HSN/GST, invoice timing/format, shipping-charge tax (D-1–D-3) | Phase 5 | 5.2, 7.5 |
+| Return/RTO/coupon policies (D-5, D-9, D-14) | Phase 5 | 5.3–5.6 |
+| Operations owner and escalation (D-15); Razorpay live KYC | Phase 7 | Launch |
 
----
-
-## Phase 8: QA, hardening & launch (9 d)
-
-- [ ] **8.1 Automated tests** (2.5 d)
-  Unit: pricing, coupons, shipping, status transitions, import parser. API integration: auth, cart, checkout, webhooks, admin permissions. Playwright E2E (mobile + desktop): browse → add → coupon → checkout (Razorpay test) → success; signup/login; admin create product → visible on site; cancel & refund.
-  ✅ CI runs all; coverage ≥ 80 % on `checkout/*`, `orders/*`, `auth/*`.
-- [ ] **8.2 Performance pass** (1.5 d)
-  Lighthouse/WebPageTest on home, listing, PDP; image sizes/`sizes` attr; bundle analysis; DB `EXPLAIN ANALYZE` on listing/search; API caching headers; k6 load test (100 rps on listing, 20 rps checkout quote).
-  ✅ Lighthouse mobile Performance ≥ 90, LCP < 2.5 s, CLS < 0.1; API p95 < 300 ms under load.
-- [ ] **8.3 Security review** (1 d)
-  OWASP checklist (architecture.md §11), dependency audit, CSP, rate limits verified, admin 2FA enforced, secrets audit, Razorpay webhook replay test, IDOR tests on orders/addresses.
-  ✅ No high/critical findings open.
-- [ ] **8.4 Accessibility & cross-browser** (1 d)
-  axe scans, keyboard-only run, screen reader smoke (VoiceOver iOS, TalkBack), Safari iOS 15+, Samsung Internet, Firefox.
-  ✅ WCAG 2.1 AA issues fixed; checkout completable with keyboard only.
-- [ ] **8.5 Content & data go-live** (1 d)
-  Final catalogue import with real photos/weights/stock, policies text from client, GST/HSN confirmed, store info, shipping rates, coupons (e.g. WELCOME10), Razorpay live KYC & keys, email domain (SPF/DKIM/DMARC).
-  ✅ Client signs off the catalogue in staging.
-- [ ] **8.6 Production setup** (1 d)
-  Prod DB with PITR + daily backups + restore test, prod Redis, R2 prod bucket, domains + SSL, `www`→apex redirect, Vercel prod, API autoscale/health checks, Sentry alerts, uptime monitors, GA4/Meta/Search Console verification, robots allow.
-  ✅ Restore drill from backup succeeds; alerts reach the team.
-- [ ] **8.7 Launch** (1 d)
-  Smoke test checklist on prod (real ₹1 order with live keys then refund), submit sitemap, monitor for 48 h, hand-over training for admin (1 h session + short video guide).
-  ✅ First real customer order processed end-to-end; client can operate admin alone.
-
----
-
-## Phase 9: Post-launch backlog (prioritise after 4–6 weeks of data)
-
-| ID | Item | Est. |
-|----|------|-----:|
-| 9.1 | **Shiprocket integration**: auto order creation, AWB, labels, pickup, tracking webhooks, live pincode serviceability & EDD | 5 d |
-| 9.2 | **Product reviews & ratings** with photos, verified-purchase badge, moderation, review request email 5 days after delivery | 4 d |
-| 9.3 | **SMS / WhatsApp** (MSG91, DLT templates): OTP, order updates, abandoned cart | 3 d |
-| 9.4 | Google sign-in (One Tap) | 1 d |
-| 9.5 | Bundles / "Build your kit" (resin + pigments + frame at combo price) | 4 d |
-| 9.6 | Bulk/wholesale price tiers (qty-based pricing for pro artists) | 3 d |
-| 9.7 | Gift wrapping & gift message | 1 d |
-| 9.8 | Loyalty points / referral codes | 5 d |
-| 9.9 | Meta Conversions API server-side events, Google Merchant Center product feed | 2 d |
-| 9.10 | Blog / tutorials (resin how-tos for SEO) | 3 d |
-| 9.11 | Multi-warehouse stock | 4 d |
-| 9.12 | PWA (add to home screen, offline cart) | 2 d |
-| 9.13 | Meilisearch upgrade if catalogue > 5k | 2 d |
-
----
-
-## Dependencies & critical path
-
-```mermaid
-flowchart LR
-  P0[Phase 0<br/>Foundations] --> P1[Phase 1<br/>DB & catalogue API]
-  P1 --> P2[Phase 2<br/>Admin catalogue]
-  P1 --> P3[Phase 3<br/>Storefront browse]
-  P0 --> P4[Phase 4<br/>Auth]
-  P4 --> P5[Phase 5<br/>Cart & checkout]
-  P3 --> P5
-  P5 --> P6[Phase 6<br/>Orders]
-  P3 --> P7[Phase 7<br/>Content & SEO]
-  P6 --> P8[Phase 8<br/>QA & launch]
-  P7 --> P8
-  P2 --> P8
-```
-
-**Parallel tracks (2 devs):** Dev A (backend-leaning): 1 → 4.1 → 5.1–5.3, 5.7–5.8 → 6.x. Dev B (frontend-leaning): 0.6 → 3.x → 2.x → 5.5–5.6 → 7.x.
-
-## Client inputs needed (with deadlines)
-
-| Needed | By end of | Blocks |
-|--------|-----------|--------|
-| Logo (SVG), brand confirmation, domain | Phase 0 | 0.8, 3.1 |
-| Answers to product.md §11 open questions | Phase 1 | 5.x, 6.4 |
-| Corrected catalogue (catalog.md §4 issues) | Phase 2 | M1 |
-| Product photos (min 1 per product, ideally 3) | Phase 3 | M2 |
-| Hero video, reels, testimonials, about-page content | Phase 7 | 7.1 |
-| Policies text, GSTIN, HSN/GST rates (CA) | Phase 6 | 6.4, launch |
-| Razorpay account with KYC done | Phase 5 (test) / Phase 8 (live) | 5.8, launch |
-| Package weights per variant | Phase 5 | 5.2 accuracy |
-
-## Definition of Done (every task)
-1. Code reviewed and merged via PR with green CI.
-2. Tests added/updated (unit and/or integration; E2E for user flows).
-3. Works on mobile (360 px) and desktop (1440 px).
-4. Loading, empty and error states handled.
-5. Accessible (keyboard, labels, contrast).
-6. Admin-facing changes audited; customer-facing text reviewed for typos.
+## Definition of Done
+1. PR reviewed, CI green (lint, types, unit, integration).
+2. Tests added; money/stock/auth changes include a concurrency or failure-path test.
+3. Mobile 360 px and desktop 1440 px; loading/empty/error/mutation states.
+4. Accessible (keyboard, labels, contrast tokens only).
+5. Permission-checked server-side and audited (admin).
+6. Migration backward-compatible with the running version.
 7. Deployed to staging and verified by someone other than the author.
-8. Docs updated if behaviour/API/schema changed.
+8. Docs updated when behaviour, API or schema changes.

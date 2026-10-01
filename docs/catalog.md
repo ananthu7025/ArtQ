@@ -6,6 +6,13 @@
 > 3. **"Sheet1"**: **latest & most complete product list from the client** (more products, stock counts, MRPs). **This document is based on Sheet1**, enriched with SKUs/techniques from sheet 2.
 >
 > Prices in ₹ (stored as paise in DB). ⚠ = data issue to confirm with the client (full list in §4).
+>
+> **Publication policy (product.md §8.7):** every product below is imported as a **DRAFT**. Nothing in this sheet is sellable as-is,
+> because **no product has an image, a measured weight, approved tax data or a confirmed physical count**. Ambiguous values are
+> imported with data flags and safe placeholders, never as sellable data: stock text such as "500KG", "Stock Out" or "min 20" is
+> flagged `STOCK_AMBIGUOUS`; copied descriptions are flagged `DESCRIPTION_SUSPECT_COPY`; 10 gm/20 gm conflicts are flagged `SIZE_CONFLICT`;
+> guessed weights are imported as `ESTIMATED`; missing prices are flagged `PRICE_MISSING`. Readiness per product is in §6.
+> HSN/GST values shown as "⚠ accountant" are placeholders: GST rates were restructured from 22 September 2025, so all rates come from the accountant (D-1).
 
 ---
 
@@ -53,7 +60,7 @@ Admin can add a "link override" on a tile, so a tile can point to a category ins
 - Description: Crystal clear 2:1 epoxy resin. Smooth and easy to mix. Ideal for resin art, casting and coating projects. Bubble-free, yellow-resistant, self-levelling.
 - Details: Crystal clear finish · Easy to mix · Low odour · Suitable for resin art and craft projects
 - Care/usage: Mix resin and hardener in a 2:1 ratio · Mix thoroughly before use · Work in a clean and dust-free area · Store in a cool dry place · Keep container tightly closed · Avoid direct sunlight and heat · Keep away from children
-- Techniques: Resin Art, Table Tops & Coasters, Deep Pour Casting, Flower Preservation · HSN 3907 · GST 18 % ⚠
+- Techniques: Resin Art, Table Tops & Coasters, Deep Pour Casting, Flower Preservation · HSN/GST: ⚠ accountant (D-1)
 
 | SKU | Size | Price | MRP | Stock |
 |-----|------|------:|----:|------:|
@@ -95,8 +102,8 @@ The customer picks *Size* + *Depth* on one page. (The import still accepts the s
 Common copy: *Teak wood frames with plywood base, suitable for photo framing, resin art, preservation projects and decorative artwork.*
 Details: Teak wood frame · Plywood base · Smooth finished frame · Suitable for resin art and photo projects.
 Care: Keep away from prolonged moisture · Clean with a soft dry cloth · Store in a dry place.
-Colour: Natural Teak · Techniques: Photo Framing, Resin Art, Flower Preservation · HSN 4414 · GST 12 % ⚠
-Stock: client note "All stock available. Pls put min 20 count stock" → **20 each**.
+Colour: Natural Teak · Techniques: Photo Framing, Resin Art, Flower Preservation · HSN/GST: ⚠ accountant (D-1)
+Stock: client note "All stock available. Pls put min 20 count stock" is an instruction, not a count → `STOCK_AMBIGUOUS`, imported with on hand 0 and **uncounted**; a physical count is required before publishing.
 
 **P4. Teak Wood Frame with Plywood Base**: `/product/teak-wood-frame`
 
@@ -178,7 +185,7 @@ Common: *Multiwood decorative frames in creative shapes, designed for art, craft
 Description pattern: *"{Colour}, premium quality pigment with a rich metallic finish"* (metallic) / *"…with a smooth finish"* (others).
 Details: {Colour} · Net Weight 20 gm · Rich metallic finish (metallic only) · Smooth and easy to mix · Premium quality.
 Care: Suitable for resin art and craft projects · Easy to mix with resin · Store in a dry place · Keep container tightly closed · Handle carefully.
-Techniques: Resin Art, Table Tops & Coasters · HSN 3206 ⚠ · GST 18 %.
+Techniques: Resin Art, Table Tops & Coasters · HSN/GST: ⚠ accountant (D-1).
 
 | # | Product name (cleaned) | Sheet name | SKU | Slug | Suggested swatch hex ⚠ |
 |---|------------------------|-----------|-----|------|-------------|
@@ -289,23 +296,23 @@ Description pattern: *"{Colour}, ultra-fine metallic mica powder."* · Technique
 | # | Severity | Issue | Rows (Sheet1) | Proposed fix |
 |---|----------|-------|---------------|--------------|
 | 1 | 🔴 Blocker | **No product images** anywhere (image columns empty) | all | Client to provide photos (see design-system.md §8); we cannot launch products without at least 1 image |
-| 2 | 🔴 Blocker | **Parcel weight missing** for almost all variants (needed for shipping) | all | Client to weigh packed items; meanwhile use category defaults (below) |
-| 3 | 🔴 | Stock values not numeric: "500KG", "Stock Out", "All stock available. Pls put min 20 count stock", blanks | 2, 7, 12, 25, 76–91 | Use 0 for "Stock Out", 20 for "min 20"; ask for real counts |
-| 4 | 🔴 | Blow Torch has no price/size/description | 96 | Ask client |
-| 5 | 🟠 | Bubble Buster & Deco Marker have UV Resin's description/size/price | 94, 95 | Ask for correct details |
+| 2 | 🔴 Blocker | **Parcel weight missing** for almost all variants (needed for shipping) | all | Client to weigh packed items. Planning estimates (below) are imported as `ESTIMATED` and **block publication** |
+| 3 | 🔴 | Stock values not numeric: "500KG", "Stock Out", "All stock available. Pls put min 20 count stock", blanks | 2, 7, 12, 25, 76–91 | Never guessed: imported as on hand 0, `STOCK_AMBIGUOUS`, uncounted; physical count via Inventory import before publishing |
+| 4 | 🔴 | Blow Torch has no price/size/description | 96 | Stays draft (`PRICE_MISSING`) until client supplies data |
+| 5 | 🟠 | Bubble Buster & Deco Marker have UV Resin's description/size/price | 94, 95 | `DESCRIPTION_SUSPECT_COPY` + `SIZE_CONFLICT`; stays draft until corrected |
 | 6 | 🟠 | Price inconsistencies: 0.5" 8×10 (₹399) > 10×10 (₹380); 0.5" 9×12 Double (₹640) > 1" (₹630); UV Resin 50 gm ₹180 vs ₹170 (sheet 2) vs ₹250 (reference site) | 28, 31, 10 | Confirm |
 | 7 | 🟠 | Resin 9–30 kg packs only in old sheet | n/a | Confirm whether sold online (shipping cost for 30 kg is high) |
 | 8 | 🟠 | Products in old sheet missing from new: Mahogany plywood-base frames, Nile Blue/Pure Black/Parrot Green/Lavender pigments, Embroidery Hoop (no acrylic) | n/a | Confirm discontinued |
 | 9 | 🟡 | Pack of 5 lists 6 colours; Pack of 10 lists only 6 | 88, 89 | Confirm colour lists |
-| 10 | 🟡 | Mica sizes "10" with no unit; details say 20 gm | 75–86 | Use 10 gm |
+| 10 | 🟡 | Mica sizes "10" with no unit; details say 20 gm | 75–86 | `SIZE_CONFLICT` until the client confirms the net weight (10 gm proposed) |
 | 11 | 🟡 | Pearl Bronze description says "Pearl White" | 82 | Fix |
 | 12 | 🟡 | Spelling: Metalic→Metallic, Emarald→Emerald, Mahagani/Mahagony→Mahogany, Elcstro→Electroplated, "Teakwood Wood Frames" | many | Fixed in this doc |
 | 13 | 🟡 | Mahogany round frame meta title says "Plywood Base" (product is Acrylic Base); Hoop description says "embroidery hoop" for "Hoops with Acrylic base" | 41, 43 | Confirm copy |
 | 14 | 🟡 | "Color" for Pregnant Mom frame = White, others blank | 33 | Confirm colour of multiwood frames |
-| 15 | 🟡 | No HSN codes / GST rates | all | CA to confirm (suggested: frames 4414 @12 %, epoxy 3907 @18 %, pigments 3206/3212 @18 %, silica gel 2811 @18 %) |
+| 15 | 🟡 | No HSN codes / GST rates | all | Accountant to classify against the current GST schedule (rates changed from 22 Sep 2025); candidate HSN headings to check: wooden frames 4414, epoxy resin 3907, pigments 3206/3212, silica gel 2811. Tax approval is a publication check |
 | 16 | 🟡 | Glitters: no MRP/stock; "9 Colours" ambiguous (set of 9, or 9 single-colour variants?) | 90, 91 | Confirm |
 
-### Default parcel weights until real weights arrive (estimates ⚠)
+### Planning weight estimates (⚠ for shipping-cost planning only; imported as `ESTIMATED`, which blocks publication)
 | Category | Default weight per unit |
 |----------|------------------------|
 | Resin | net weight × 1.15 (bottles + box), e.g. 300 gm → 350 g, 6 kg → 6.9 kg |
@@ -321,8 +328,33 @@ Description pattern: *"{Colour}, ultra-fine metallic mica powder."* · Technique
 
 ## 5. Cleaned import file
 
-During Phase 1, a script (`apps/api/prisma/seed/catalog-from-xlsx.ts`) will:
-1. Read **Sheet1**, forward-fill blank Type/Subcategory/Product/Description cells from the row above (the sheet only fills them on the first row of a product).
-2. Apply the renames and fixes in §2 & §4.
-3. Generate SKUs where missing, slugs, normalised sizes, paise prices.
-4. Output `catalog.cleaned.xlsx` in the **official import template** (sheet "2. Products & Variants" columns) so the client can review and correct it in Excel, then re-import it through Admin → Import.
+During Phase 2 (task 2.7), the CATALOG importer (database.md §9) will:
+1. Read **Sheet1**, forward-filling blank Type/Subcategory/Product/Description cells from the row above (the sheet only fills them on the first row of a product).
+2. Apply the renames in §2 (spelling, product names) and attach data flags for every §4 issue. **No flagged value is silently "fixed" into sellable data.**
+3. Generate SKUs where missing (written back to the result file so they stay stable), slugs, normalised sizes, paise prices.
+4. Create every product as **DRAFT**. Numeric stock from the sheet is stored as on hand but **uncounted**. Staff confirm counts with an INVENTORY import or recount, which sets `inventory_counted_at`.
+5. Output `catalog.cleaned.xlsx` (official template + a "Flags" column) for the client to correct in Excel and re-import. Re-imports update by SKU and never overwrite stock or publication status.
+
+---
+
+## 6. Readiness at import (all products start as DRAFT)
+
+| Group | Products | Blocking checks at import (besides image, measured weight, tax approval and physical count, which block **all** products) |
+|-------|---------:|------------------------------------------------------------------------------------------------------------------------|
+| 2:1 Epoxy Resin | 1 | `STOCK_AMBIGUOUS` ("500KG"/blank); D-8 decision for 9–30 kg variants (those variants imported inactive) |
+| 3:1 Epoxy Resin | 1 | `STOCK_AMBIGUOUS` ("Stock Out"/blank) |
+| UV Resin | 1 | Price conflict (₹180 vs ₹170 vs ₹250) → `PRICE_CONFLICT` flag for review |
+| Teak frames (frame, double, hexagon) | 3 | `STOCK_AMBIGUOUS` ("min 20"); price anomalies on 0.5" 8×10 and 0.5" 9×12 double → review flag |
+| Round mahogany frame | 1 | Meta title mismatch (review) |
+| Multiwood frames | 4 | Colour data incomplete (review) |
+| Hoop with acrylic base | 1 | Description mismatch (review) |
+| Gel pigments | 29 | Colour hex pending (D-11, non-blocking for publication) |
+| Mica powders | 12 | `SIZE_CONFLICT` (10 vs 20 gm); stock blank for 11; Pearl Bronze `DESCRIPTION_SUSPECT_COPY` |
+| Pigment kits | 3 | Colour lists inconsistent (review); stock blank |
+| Glitters | 2 | Stock/MRP blank; "9 Colours" meaning (review) |
+| Magic Silica Gel | 1 | Only the universal checks (weight 0.5 kg in old sheet still needs packed-weight confirmation) |
+| Bubble Buster, Deco Marker | 2 | `DESCRIPTION_SUSPECT_COPY`, `SIZE_CONFLICT` (copied from UV Resin) |
+| Blow Torch | 1 | `PRICE_MISSING`, no description/size |
+| UV light, metal stand | 2 | Only the universal checks |
+
+Once the client supplies photos, measured weights, physical counts and accountant-approved tax data, the only remaining blockers are the group-specific flags above. Each is cleared by a corrected re-import or an admin edit, and the readiness panel shows exactly which ones remain.

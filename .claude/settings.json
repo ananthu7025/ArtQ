@@ -15,7 +15,13 @@
       "Bash(git commit -m 'first commit *)",
       "Bash(git branch *)",
       "Bash(git remote *)",
-      "Bash(gh auth *)"
+      "Bash(gh auth *)",
+      "Bash(git ls-remote *)",
+      "Bash(gh api *)",
+      "Bash(python3 -)",
+      "Bash(npm init *)",
+      "Bash(npm i *)",
+      "Bash(DATABASE_URL=postgresql://x@localhost/x npx prisma validate)"
     ]
   }
 }

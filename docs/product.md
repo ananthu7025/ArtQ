@@ -1,468 +1,386 @@
 # ArtQ: Product Requirements Document (PRD)
 
-> Version 1.0 · Status: Draft for build · Owner: ArtQ / Eayila Consultancy
+> Version 2.0 (reliability & admin review, see [review.md](review.md)) · Owner: ArtQ / Eayila Consultancy
 > Reference prototype: https://qcraft-nine.vercel.app/ · Mobile reference: `../ArtQ Site Ref.png`
+> Single-vendor Indian D2C store. Rules in §8 are authoritative for behaviour; [architecture.md](architecture.md) and [database.md](database.md) implement them.
 
 ---
 
 ## 1. Vision & goals
 
-**Vision:** the go-to online store in India for resin artists and hobbyists, where they can buy everything for a resin project
-(resin, moulds/frames, pigments, glitters, tools) in one place, with fast delivery and trustworthy quality.
+**Vision:** the go-to online store in India for resin artists and hobbyists. They can buy everything for a resin project (resin, frames/moulds, pigments, glitters, tools) in one place, with fast delivery and trustworthy quality.
 
 ### 1.1 Business goals (first 6 months after launch)
-
 | Goal | Metric | Target |
 |------|--------|--------|
 | Sell online directly | Orders / month | 300+ |
-| Grow basket size | Average order value (AOV) | ≥ ₹1,100 (just above free-shipping threshold) |
+| Grow basket size | Average order value | ≥ ₹1,100 |
 | Convert mobile visitors | Mobile conversion rate | ≥ 1.5 % |
 | Reduce manual work | Orders processed without phone/WhatsApp back-and-forth | ≥ 90 % |
-| Build a list | Newsletter + account sign-ups | 2,000+ |
+| Money correctness | Payments/refunds unresolved > 24 h | 0 |
 
 ### 1.2 Non-goals for v1
-
-- Multi-vendor marketplace (only ArtQ sells).
-- International shipping (India only; the schema supports countries for later).
-- Native mobile apps (the website must be excellent on mobile instead; ~80 % of traffic is expected on phones).
-- Multi-language (English only in v1; copy is kept in one place so Hindi/Malayalam can be added later).
-- Live chat (a WhatsApp click-to-chat button is used instead).
+- Marketplace / multiple sellers; international shipping; native apps; multi-language; live chat (WhatsApp click-to-chat instead).
+- **Backorders** (no selling beyond available stock).
+- **Split shipments** (one shipment per order).
+- **Phone/SMS/WhatsApp OTP and phone login** (email OTP only; SMS after DLT registration, post-launch).
+- Product reviews, collections, abandoned-cart automation, advanced reports, loyalty (post-launch backlog, tasklist.md).
 
 ---
 
 ## 2. Users (personas)
-
-| Persona | Description | What they need |
-|---------|-------------|----------------|
-| **Hobbyist Hema** (primary) | 22–40, learns resin art from Instagram/YouTube, buys small quantities (300 g resin, a few pigments, a 6×6 frame) | Clear sizes/prices, beginner combos, reels showing results, free shipping nudge, COD/UPI |
-| **Pro Artist Pranav** | Sells resin art / runs workshops, buys 3–30 kg resin and frames in bulk | Quick re-order, bulk sizes, stock availability, GST invoice |
-| **Preservation Priya** | Makes wedding-garland/flower preservation frames | Teakwood/double frames, silica gel, custom work enquiry |
-| **Gift Buyer Gautam** | Buys a frame or kit as a gift, one-time | Guest checkout, no forced signup, order tracking link |
-| **Admin Anu** (store owner/staff) | Manages catalogue, stock and orders from a laptop or phone | Fast product entry, Excel import, order list with filters, print invoice/label, low-stock alerts |
+| Persona | Description | Needs |
+|---------|-------------|-------|
+| **Hobbyist Hema** (primary) | Learns resin art from Instagram, buys small quantities | Clear sizes/prices, reels, free-shipping nudge, UPI/COD |
+| **Pro Artist Pranav** | Workshops, buys 3–6 kg resin and many frames | Re-order, stock visibility, GST invoice |
+| **Preservation Priya** | Wedding-garland/flower preservation | Teak/double frames, silica gel, custom work |
+| **Gift Buyer Gautam** | One-time buyer | Guest checkout, tracking link |
+| **Admin Anu** (owner) | Runs catalogue, stock, orders, refunds | Fast product entry, import, order queue, exception queue |
+| **Staff Sanju** (packer) | Packs and ships | Order queue, packing slips, AWB entry, stock counts; **cannot change prices** |
 
 ---
 
 ## 3. Information architecture (site map)
-
 ```
 /                               Home
-/shop                           All products (filters: type, category, technique, price, availability; sort)
-/type/:slug                     All products in a Type (e.g. /type/pigments)
-/category/:slug                 All products in a Category (e.g. /category/gel-pigments)
-/technique/:slug                Products tagged with a technique (reference calls it /occasion/:slug)
-/collection/:slug               Curated collection
-/new-arrivals                   Products flagged New Arrival
-/trending                       Products flagged Trending + reels
+/shop                           All products (filters, sort)
+/type/:slug                     Products of a Type
+/category/:slug                 Products of a Category
+/technique/:slug                Products tagged with a technique
+/new-arrivals  /trending        Flagged products
 /product/:slug                  Product detail page (PDP)
 /search?q=                      Search results
 /cart                           Cart
-/checkout                       Checkout (address → shipping → payment) [new route; reference does it inside /cart]
-/checkout/success/:orderNumber  Thank-you page
-/wishlist                       Wishlist
-/login  /signup  /forgot-password  /reset-password  /guest-login
-/account                        Profile
-/account/addresses              Address book (reference: /address)
-/orders                         My orders
-/orders/:orderNumber            Order detail
-/orders/:orderNumber/track      Tracking timeline
+/checkout                       Checkout
+/checkout/success/:orderNumber  Confirmation (or "payment processing")
+/wishlist
+/login  /signup  /signup/verify  /forgot-password  /reset-password  /set-password
+/account  /account/addresses
+/orders  /orders/:orderNumber   Account orders
+/track/:orderNumber             Guest tracking (token link) + "verify email to manage this order"
 /about  /contact  /faqs  /custom-work
 /terms  /privacy-policy  /shipping-policy  /return-policy  /cancellation-policy
-/404                            Not found
-
-/admin                          Admin dashboard (separate app, see §7)
+/404
+(post-launch) /collection/:slug
 ```
-
-URL rules:
-- Slugs are lowercase, hyphenated, unique per entity (`2-1-epoxy-resin`, `teak-wood-frame-1-inch`).
-- Old slugs are kept in a `slug_redirects` table and 301-redirected when an admin renames a product.
-- Filters live in the query string so filtered pages can be shared: `/shop?type=pigments&category=gel-pigments&sort=price_asc&page=2`.
+Slugs: lowercase, hyphenated, unique; renamed slugs 301-redirect. Filters live in the query string (`/shop?type=pigments&size=20+gm&sort=price_asc&page=2`).
 
 ---
 
-## 4. Global elements (on every storefront page)
+## 4. Global elements
 
 ### 4.1 Announcement bar
-- Full-width strip at the very top, brand gradient background, white 12–13 px text.
-- Text is a **marquee** (continuous horizontal scroll) of admin-editable messages, separated by "•".
-  Default: `Shipping all over India • Free shipping on orders above ₹1000 • COD available`.
-- Pauses on hover. Respects `prefers-reduced-motion` (static, first message only).
-- Admin: Settings → Announcement bar (list of messages, on/off, speed).
+Full-width strip, **dark** brand background (`brand-800`, white text 12–13 px, contrast ≥ 4.5:1). Marquee of admin-editable messages separated by "•". Default: `Shipping all over India • Free shipping on orders above ₹1000`. Pauses on hover/focus; static under `prefers-reduced-motion`.
 
 ### 4.2 Header
 | Area | Mobile (< 768 px) | Desktop (≥ 1024 px) |
 |------|-------------------|---------------------|
-| Left | ☰ hamburger, 🔍 search icon | Logo |
-| Centre | Logo (ArtQ, 44 px tall) | Nav: HOME · SHOP ▾ · SHOP ALL · NEW ARRIVALS · ABOUT US · CONTACT |
-| Right | 👤 account, ♡ wishlist (count badge), 🛒 cart (count badge) | 🔍 search, 👤 LOGIN / SIGN UP or name, ♡ (badge), 🛒 (badge) |
+| Left | ☰, 🔍 | Logo |
+| Centre | Logo | HOME · SHOP ▾ · SHOP ALL · NEW ARRIVALS · ABOUT US · CONTACT |
+| Right | 👤, ♡ (count), 🛒 (count) | 🔍, LOGIN / SIGN UP or name, ♡, 🛒 |
 
-- **Sticky** on scroll; gains a soft shadow after 10 px scroll; hides on scroll-down and reappears on scroll-up (mobile only).
-- **SHOP ▾ mega-menu (desktop hover / mobile accordion):** columns per Type, each listing its Categories, plus a promo image.
-- **Mobile drawer** (slides in from left, 85 % width): search field, Types as accordion → Categories, links (New arrivals, Trending, About, Contact, FAQs), account links, WhatsApp/Instagram icons.
-- **Badges** show item counts (cart = total quantity, wishlist = number of products); hidden when 0? **No.** The reference shows "0", so keep it.
-- **Search** opens a full-width overlay with an input, recent searches (localStorage) and live suggestions (debounced 250 ms, min 2 chars) showing product thumbnail, name and starting price. Enter → `/search?q=`.
+Sticky; hides on scroll-down (mobile). SHOP ▾ mega-menu: types → categories. Mobile drawer (85 % width, focus-trapped). Count badges show 0 like the reference. Search overlay with debounced suggestions (≥ 2 chars, 250 ms).
 
-### 4.3 Footer (dark navy `#111827`)
-1. **Newsletter band:** "SUBSCRIBE TO OUR NEWSLETTER", email input, "SUBSCRIBE" button. Validation; success message "You're subscribed! 🎉"; duplicate email gets "You're already subscribed".
-2. Logo + tagline: *"Handcrafted resin art and wooden frames, bringing natural beauty into your everyday spaces."*
-3. Three link columns:
-   - **TYPE:** generated from active Types (Resins, Wooden Frames, Multiwood Frames, Hoops, Pigments, Glitters, Silica Gel, Resin Art Essentials, Custom Work)
-   - **CONNECT:** About Our Craft, Contact Us, FAQs, Instagram, WhatsApp
-   - **POLICIES:** Terms & Conditions, Privacy Policy, Shipping Policy, Return & Refund Policy, Cancellation Policy
-4. Payment icons (UPI, Visa, Mastercard, RuPay, COD) and social icons.
-5. Bottom line: `© {current year} ART Q. ALL RIGHTS RESERVED.` · `powered by Eayila Consultancy`.
+### 4.3 Footer
+Newsletter band → logo + tagline *"Handcrafted resin art and wooden frames, bringing natural beauty into your everyday spaces."* → columns **TYPE** (active types), **CONNECT** (About Our Craft, Contact Us, FAQs, Instagram, WhatsApp), **POLICIES** (Terms, Privacy, Shipping, Return & Refund, Cancellation) → payment icons → `© {year} ART Q. ALL RIGHTS RESERVED.` · `powered by Eayila Consultancy`.
 
 ### 4.4 Floating elements
-- **WhatsApp button** (bottom-right, 56 px circle) opens `https://wa.me/<number>?text=Hi ArtQ, I have a question about …`. On PDP it pre-fills the product name.
-- **Mini-cart drawer** slides in from the right whenever an item is added (see §5.7).
-- **Toast notifications** (bottom-centre on mobile, top-right on desktop) for add-to-wishlist, errors, etc.
+WhatsApp button (pre-filled product name on PDP), mini-cart drawer, toasts.
 
 ---
 
-## 5. Storefront pages in detail
+## 5. Storefront pages
 
 ### 5.1 Home `/`
-Sections in order (each section is admin-configurable: on/off, order, title):
+Sections (admin can reorder/toggle):
+1. **Hero**: muted looping video with poster; "ARTQ" / "WOOD MOULDS & RESINS"; optional CTA; poster only on `saveData`.
+2. **"CHECK OUT OUR RANGE": Product Category**: circular tiles for active types in sort order (Resins, Wooden Frames, Multiwood Frames, Hoops, Silica Gel, Pigments, Glitters, UV Resin (link override → category), More.. → `/shop`).
+3. **New Arrivals**: heading spelled correctly ("New Arrivals"; the reference shows "New Arivals"); "Explore our newly launched products"; up to 8 cards; "View all".
+4. **Trending now**: 9:16 reels linked to products (autoplay when ≥ 50 % visible, one at a time on mobile); fallback trending grid.
+5. **Shop by Technique** (optional).
+6. **Stories with our product**: testimonial carousel (accessible controls, pause on hover/focus).
+7. **Instagram moments** (optional).
 
-1. **Hero**
-   - Full-width autoplaying muted looping video (`hero-video.mp4`, ≤ 4 MB, H.264 + WebM), poster image shown until loaded.
-   - Overlay: big logo-style word **"ARTQ"** (Playfair Display, white, letter-spaced) + subtitle **"WOOD MOULDS & RESINS"** (Tenor Sans, letter-spacing 0.3em).
-   - Optional CTA button "Shop Now" → `/shop`.
-   - Height: 60 vh mobile, 85 vh desktop. On slow connections (`navigator.connection.saveData`) show the poster only.
-   - Admin can switch to an image carousel (up to 5 slides, each with image, mobile image, heading, sub-heading, CTA text, link).
+Only `ACTIVE` products appear anywhere on the storefront.
 
-2. **"CHECK OUT OUR RANGE": Product Category**
-   - Small caps label, then serif heading "Product Category" with horizontal teal lines on both sides (signature section-title style; see design-system).
-   - Grid of **circular tiles** (image in circle with 2 px teal ring on hover, name under it).
-   - 3 columns mobile, 5 tablet, 9 desktop (single row) or 2 rows on smaller desktops.
-   - Tiles = active Types sorted by `sort_order`: Resins, Wooden Frames, Multiwood Frames, Hoops, Silica Gel, Pigments, Glitters, UV Resin, More…
-   - Click → `/type/:slug`. "More.." → `/shop`.
+### 5.2 Listing pages
+Shared template for shop/type/category/technique/new-arrivals/trending/search: banner + breadcrumb, category chips, result count, sort (Featured, Newest, Price ↑/↓, Name, Best selling), filters (type, category, technique, price, size, colour, thickness, in stock, on sale), active-filter chips, 24 per page with "Load more" + `?page=`, skeletons, empty state.
+**Filter rule:** variant filters (size, colour, thickness, price, in stock, on sale) must all be satisfied **by the same variant**. The card's "From ₹" shows the cheapest matching variant.
 
-3. **New Arrivals**
-   - Heading "New Arivals" in reference (**typo, fix to "New Arrivals"**), sub-heading "Explore our newly launched products".
-   - Product cards (see §6.1), 2 columns mobile, 4–5 desktop; shows up to 8; "View all →" link to `/new-arrivals`.
-   - Source: products with `is_new_arrival = true` ordered by `new_arrival_rank`, then newest.
+### 5.3 Product detail page `/product/:slug`
+Gallery (swipe, thumbnails, zoom, lightbox, optional video) · name · price block (`₹849`, struck MRP, "15 % OFF", "Inclusive of all taxes") · variant selectors (Size → Colour → Thickness; only options with > 1 value; unavailable combinations marked; `?variant=<sku>`) · stock message (In stock / Only a few left / Out of stock, without exact counts) · quantity (max = min(available, 50)) · ADD TO CART / BUY NOW / ♡ · **Notify me** (email) when out of stock · pincode check (serviceability + COD + estimated days; *a known pincode is not necessarily deliverable*) · trust row · accordions (Description, Product details, Specifications & care, How to use, Shipping & returns) · technique chips · frequently bought together · similar · recently viewed · sticky mobile add-to-cart.
+Price and stock are re-fetched live after load (cached HTML may be up to ~3 minutes old). JSON-LD Product + Breadcrumb.
 
-4. **Trending now: "Discover our most popular picks"**
-   - Grid (2 col mobile, 4 desktop) of **vertical 9:16 reel cards**: muted autoplay when ≥ 50 % in viewport (IntersectionObserver), only one plays at a time on mobile.
-   - Bottom overlay on each reel: product thumbnail + product name + price (e.g. "Small mom frame – Rs. 150.00"). Tap → opens reel in a full-screen viewer with sound toggle and an **"Add to cart" / "View product"** button.
-   - Source: `reels` table (active, ordered). Falls back to trending products grid if no reels.
-
-5. **Shop by Technique** (new, optional): horizontal scroll cards for techniques (Deep Pour Casting, Flower Preservation, Jewellery, Coasters…) → `/technique/:slug`.
-
-6. **Stories with our product (Testimonials)**
-   - Single-card carousel: quote in italics, 5 gold stars (`#f5b301`), customer name, optional city and photo. ‹ › arrows + swipe + dots; auto-advance every 6 s, pauses on hover/touch.
-   - Source: `testimonials` table.
-
-7. **Instagram moments** (optional): 6-image grid linking to Instagram posts (setting `INSTAGRAM_MOMENTS`).
-
-8. Footer (newsletter is part of footer).
-
-**Home SEO:** title "ArtQ: Epoxy Resin, Wooden Frames, Pigments & Resin Art Supplies India", meta description, Organization + WebSite (SearchAction) JSON-LD.
-
-### 5.2 Listing pages: `/shop`, `/type/:slug`, `/category/:slug`, `/technique/:slug`, `/collection/:slug`, `/new-arrivals`, `/trending`, `/search`
-One shared **ProductListing** template:
-
-- **Banner**: title (Type/Category name), optional description (HTML from admin, collapsible "Read more" after 3 lines), optional banner image.
-- **Breadcrumb:** Home › Shop › Pigments › Gel Pigments.
-- **Category chips** (on Type pages): horizontal scroll of the Type's categories; active chip filled teal.
-- **Toolbar:** result count ("48 products"), Sort dropdown, Filter button (mobile) / left sidebar (desktop ≥ 1024 px).
-- **Sort options:** Featured (default: `sort_order`, then trending, then newest), Newest, Price: Low → High, Price: High → Low, Name A–Z, Best selling.
-- **Filters:**
-  - Type (checkbox list, only on /shop & /search)
-  - Category (checkbox list, scoped to selected Type)
-  - Technique (checkbox)
-  - Price range (dual slider + min/max inputs, bounds from data)
-  - Size (chips, built from variant sizes in the current result set, e.g. 300 gm, 6X6, 20gm)
-  - Colour (swatches using `color_hex` when available)
-  - Availability: In stock only (toggle)
-  - On sale: MRP > price (toggle)
-  - Mobile: filters open as a bottom sheet with "Clear all" and "Show 48 results" buttons; desktop: applied instantly.
-  - Active filters shown as removable chips above the grid.
-- **Grid:** product cards, 2 col (mobile) / 3 col (tablet ≥ 768) / 4 col (≥ 1024) / 5 col (≥ 1440). Gap 12 px mobile, 20 px desktop.
-- **Pagination:** "Load more" button (24 per page) + page number in URL (`?page=2`) so it is crawlable; infinite scroll is **not** used (bad for footer access & SEO).
-- **Empty state:** illustration, "No products match these filters", "Clear filters" button, plus 4 trending products.
-- **Loading:** skeleton cards (grey shimmer) matching card layout.
-- **SEO:** each Type/Category has its own meta title/description; `rel=canonical` strips sort/filter params except `page`; filtered combos are `noindex`.
-
-### 5.3 Product detail page (PDP) `/product/:slug`
-
-**Layout:** mobile = stacked; desktop = 2 columns (gallery 55 %, info 45 %, info column sticky).
-
-**Gallery**
-- Main image 1:1 (square), swipeable on mobile with dots; desktop: vertical thumbnails on the left + hover zoom (2×) on main image; click opens a full-screen lightbox with pinch-zoom.
-- Supports video items (e.g. a pouring video) in the gallery.
-- When a variant with its own image is selected, the gallery jumps to that image.
-- Badges on image: "NEW", "-25 %" (when MRP > price), "Only 3 left" (stock ≤ low-stock threshold), "Out of stock".
-
-**Info column (top to bottom)**
-1. Breadcrumb.
-2. Product name (H1, Playfair 24/32 px).
-3. Rating summary ★★★★☆ 4.6 (23 reviews), Phase 9; hidden until reviews exist.
-4. **Price block:** `₹849` (bold, 24 px) + `~~₹999~~` (grey strike-through, only if MRP > price) + `15 % OFF` pill (teal). Below: "Inclusive of all taxes".
-5. **Variant selectors:** one selector per option that has more than one distinct value, in the order **Size → Colour → Thickness**:
-   - Size/Thickness: pill buttons (`300 gm`, `750 gm`…). Unavailable combinations are struck-through (still clickable to show "Notify me").
-   - Colour: round swatches (`color_hex`) with name tooltip; falls back to pills if no hex.
-   - If a product has **only one variant**, no selector is shown.
-   - Selected variant is reflected in the URL `?variant=<sku>` so links to a size are shareable.
-   - Size chart link (if the category/product has a size chart) opens a modal.
-6. **Stock message:** "In stock" (green) / "Only 3 left, order soon" (amber, when `stock ≤ low_stock_threshold`, default 5) / "Out of stock" (red).
-7. **Quantity stepper** (– 1 +), min 1, max = min(stock, 50).
-8. **Buttons:** `ADD TO CART` (primary, full width on mobile) and `BUY NOW` (secondary: adds and goes straight to checkout). ♡ wishlist toggle icon button.
-   - Out of stock: buttons replaced by **"Notify me when available"**, which asks for email/phone (pre-filled when logged in) and creates a `stock_notification`.
-9. **Delivery check:** pincode input → "Delivery by Thu, 9 Oct · Shipping ₹60 (free above ₹1000)" (Phase 1: estimated from state zone; Phase 9: live Shiprocket serviceability). Also shows whether COD is available.
-10. **Trust row:** icons for "Free shipping over ₹1000", "Secure payments", "Easy returns on damage", "Made in India".
-11. **Accordions:**
-    - *Description* (rich text)
-    - *Product details* (bullet list from `product_details[]`)
-    - *Specifications & care* (bullet list from `specifications_care[]`)
-    - *How to use* (optional rich text, e.g. mixing ratio 2:1)
-    - *Shipping & returns* (global text from settings)
-12. **Techniques:** tag chips linking to `/technique/:slug`.
-
-**Below the fold**
-- "Frequently bought together" (admin-chosen related products, else same Type), with "Add all to cart".
-- "You may also like" carousel (same Category, excluding current).
-- Recently viewed (localStorage, last 10).
-- Reviews section (Phase 9).
-
-**Mobile sticky bar:** once the main Add-to-cart button scrolls out of view, a bottom bar shows price + "ADD TO CART".
-
-**SEO:** title = `meta_title || "{name} | ArtQ"`; Product JSON-LD with offers per variant (price, availability, SKU), BreadcrumbList JSON-LD; Open Graph image = cover image.
-
-### 5.4 Search `/search?q=`
-- Searches product name, category name, type name, SKU, tags, description (Postgres full-text + trigram for typos, e.g. "reisn" → resin).
-- Same listing template with filters.
-- Zero results: "No results for 'xyz'", suggestions ("Try resin, frames, pigments"), trending products.
-- Every query is logged (`search_logs`) so admin can see what people look for.
+### 5.4 Search
+Name, type, category, SKU, variant options, tags, description; typo-tolerant suggestions; zero-results state; queries logged.
 
 ### 5.5 Cart `/cart`
-- Line items: image, name, variant label ("750 gm"), unit price, quantity stepper, line total, remove (with undo toast), "Move to wishlist".
-- Stock validation: if quantity > stock, the item is clamped with a warning; out-of-stock items are shown greyed with "Remove" and excluded from totals.
-- **Free-shipping progress bar:** "Add ₹151 more for FREE shipping" → filled bar → "🎉 You've unlocked free shipping".
-- **Coupon box:** input + Apply; shows applied coupon chip with remove ×; error messages (expired, min order not met, already used, invalid). "View available coupons" lists active public coupons.
-- **Order summary:** Subtotal (MRP total), Discount on MRP, Coupon discount, Shipping (estimated; "Calculated at checkout" if no pincode), **Total**. "You save ₹X" line in green.
-- CTA: `PROCEED TO CHECKOUT`. Below: "Continue shopping".
-- Empty cart: illustration + "Your cart is empty" + "Start shopping" + trending products.
-- Cart persists: guests via `cart_token` cookie (server cart, 30 days); on login the guest cart **merges** into the user cart (quantities summed, clamped to stock).
+Line items (image, name, variant, price, qty, total, remove + undo, move to wishlist) · stock/price-change warnings · free-shipping progress ("Add ₹151 more for FREE shipping") · coupon box (validated now; **capacity is reserved only when you place the order**) · summary (subtotal, MRP savings, coupon, shipping estimate, total) · empty state. Guest carts persist 30 days and merge on login.
 
 ### 5.6 Checkout `/checkout`
-Single page, 3 collapsible steps (mobile: one at a time; desktop: steps on the left, sticky order summary on the right).
-
-**Step 1: Contact**
-- Logged in: shows name/email/phone, "Not you? Log out".
-- Guest: email + phone (10-digit Indian mobile, validated). Option "Create an account for faster checkout" (sends set-password link after order). Optional OTP verification of phone/email for guest (setting).
-- Returning email detected: "Looks like you have an account. Log in?" (non-blocking).
-
-**Step 2: Shipping address**
-- Saved addresses as selectable cards (default pre-selected) + "Add new address".
-- Address form: Full name*, Phone*, Pincode* (6 digits; auto-fills City & State via pincode lookup table / India Post API), Address line 1 (house, building)*, Address line 2 (area, street), Landmark, City*, State* (dropdown of Indian states/UTs), Address type (Home/Work/Other), "Save this address", "Make default".
-- "Billing address same as shipping" (checked); else billing form. Optional **GSTIN** + business name for GST invoice.
-
-**Step 3: Shipping & payment**
-- Shipping method: "Standard delivery: ₹60 · 4–7 days" (calculated from weight & zone; free if eligible). Future: Express.
-- Payment method radio:
-  - **Pay online** (UPI, cards, netbanking, wallets) via Razorpay (default, recommended).
-  - **Cash on Delivery** (if enabled in settings, order total between COD min/max, e.g. ₹200–₹5,000, pincode COD-serviceable). Optional COD fee (e.g. ₹40) shown.
-- Order notes (optional, 500 chars), e.g. "Gift, please don't include invoice".
-- Terms checkbox: "I agree to the Terms & Conditions and Return Policy".
-- `PLACE ORDER · ₹1,349` button.
-
-**Order summary (right/sticky):** items (collapsible on mobile), coupon box, subtotal, discount, shipping, COD fee, total, savings.
-
-**Payment flow:**
-1. Click Place order → server re-validates cart (prices, stock, coupon, shipping) → creates order `PENDING_PAYMENT` and reserves stock → creates Razorpay order → returns `razorpay_order_id`.
-2. Razorpay Checkout modal opens (prefilled name/email/phone, theme colour `#00a99d`).
-3. On success → client sends `{razorpay_payment_id, razorpay_order_id, razorpay_signature}` to `/orders/verify` → server verifies HMAC signature → marks order `PLACED`/`PAID` → clears cart → redirect to success page.
-4. Webhook `payment.captured` also marks it paid (idempotent), covering users who close the tab.
-5. Payment failed/closed → order stays `PENDING_PAYMENT`, user sees "Payment didn't go through. Retry payment / Choose COD". Unpaid orders expire after 30 min (stock released).
-6. COD → order goes directly to `PLACED` with `payment_status = PENDING`.
+**Step 1, Contact.** Logged in: account details. Guest: email + 10-digit mobile (unverified; used for this order's updates). "Email me a link to set a password" option. If the email may belong to an account: "Have an account? Log in" (never reveals whether it does).
+**Step 2, Address.** Saved addresses or a new one. Pincode auto-fills city/state from the postal directory, then serviceability is checked separately ("Sorry, we don't deliver to 7xxxxx yet"). Billing same/different; optional GSTIN + business name.
+**Step 3, Shipping & payment.** Shipping line with breakdown when a heavy surcharge applies ("Free shipping up to 10 kg + ₹120 for extra weight"). Payment: **Pay online (Razorpay)** or **Cash on Delivery** when enabled and allowed (amount within limits, pincode COD-enabled; reason shown otherwise; COD fee shown). Notes; terms checkbox; `PLACE ORDER · ₹1,349`.
+**Payment behaviour (customer view):**
+- Placing an order reserves stock for **30 minutes** while you pay.
+- After paying, you see **"Order placed"**, or **"Payment processing: we're confirming with your bank"** (polls automatically, up to 2 minutes, then "we'll email you").
+- Payment failed or closed: "Payment didn't go through" with **Retry payment** and **Switch to COD** (if allowed).
+- If a payment arrives after the order expired and an item sold out, the customer is told it is being refunded in full (§8.6).
 
 ### 5.7 Mini-cart drawer
-- Opens on add-to-cart: "✓ Added to cart", the added item, cart subtotal, free-shipping progress, `VIEW CART` and `CHECKOUT` buttons, and "You may also like" (2 small products).
-- Closes on overlay click / Esc / swipe right.
+Opens on add-to-cart: added item, subtotal, free-shipping progress, VIEW CART / CHECKOUT.
 
-### 5.8 Order success `/checkout/success/:orderNumber`
-- ✓ animation, "Thank you, Hema! Your order **AQ-10234** is placed."
-- Summary: items, total, payment method, delivery address, estimated delivery date.
-- Buttons: "Track order", "Continue shopping", "Download invoice" (after payment).
-- Guest: "Create a password to track orders easily" (one field, account created with the same email).
-- Fires analytics `purchase` event (GA4 + Meta Pixel) once only.
+### 5.8 Confirmation `/checkout/success/:orderNumber`
+"Thank you, Hema! Order **AQ10234** placed." Items, total, payment method, address, estimated delivery; buttons: Track order, Continue shopping. Guests: "Set a password" (sends the link to the order email). Analytics `purchase` fires once, only for `PLACED`.
 
-### 5.9 Auth pages
-| Page | Fields | Behaviour |
-|------|--------|-----------|
-| `/login` | Email or phone, password, "Remember me" | Also **"Login with OTP"** tab: enter email/phone → 6-digit OTP (valid 10 min, 5 attempts, resend after 30 s). Redirects to `?next=` or previous page. 5 failed password attempts → 15-min lock. |
-| `/signup` | Full name, email, phone, password (min 8, 1 letter + 1 number), confirm, newsletter opt-in | Sends OTP to email to verify (reference: `verify-signup`). Account active after verification. |
-| `/guest-login` | Email or phone | OTP login without password, used to view guest orders (reference: `verify-guest-login`). |
-| `/forgot-password` | Email | Always replies "If an account exists, we've sent a reset link" (no account enumeration). Link valid 30 min, single use. |
-| `/reset-password?token=` | New password ×2 | Logs out all other sessions. |
-| Google sign-in | (Phase 9) | One-tap. |
+### 5.9 Auth pages (email only at launch)
+| Page | Behaviour |
+|------|-----------|
+| `/login` | Email + password, or **email OTP** tab. 5 failures → 15-min lock |
+| `/signup` | Name, email, optional phone (contact only), password (≥ 8, letter + number), consent → email OTP → account active; guest orders with that email are linked |
+| `/forgot-password` → `/reset-password` | Neutral response; 30-min single-use link; logs out all sessions |
+| `/set-password?token=` | From the post-checkout email: proves email ownership, creates the account, links guest orders |
 
-### 5.10 Account area (requires login)
-- **Profile** `/account`: name, email (change requires OTP), phone, password change, newsletter preference, delete account (soft delete + anonymise after 30 days).
-- **Addresses** `/account/addresses`: list, add, edit, delete, set default (max 10).
-- **Orders** `/orders`: list with order number, date, item thumbnails, total, status pill; filter by status; pagination.
-- **Order detail** `/orders/:orderNumber`: items, price breakup, address, payment info, invoice download, **Cancel order** (allowed while status ∈ PLACED, CONFIRMED; reason required), **Report a problem** (damaged/wrong item within 48 h of delivery; upload up to 4 photos, which creates a return request), **Buy again** (adds all items to cart).
-- **Tracking** `/orders/:orderNumber/track`: vertical timeline Placed → Confirmed → Packed → Shipped (courier + AWB + "Track on courier site" link) → Out for delivery → Delivered, with timestamps. Public tracking for guests via link with signed token in the email.
-- **Wishlist** `/wishlist`: grid of cards with "Move to cart" (opens variant picker if multiple variants) and remove. Guests: wishlist stored in localStorage and merged on login.
+### 5.10 Account & guest order access
+- **Account:** profile (email change via OTP to the new email; phone is contact-only), password, addresses (max 10), orders, wishlist, delete account.
+- **Order detail:** items, price breakup, address, payment, shipment tracking, invoice (after dispatch), **Cancel** (while placed/confirmed and not yet packed), **Report a problem** (within 48 h of delivery: damaged/wrong/defective/missing; photos), **Buy again**, timeline.
+- **Guests:** the order email contains a tracking link (read-only). To cancel, report a problem, download the invoice or view uploaded photos, the guest verifies the order email with a one-time code; access lasts 1 hour for that order only.
 
 ### 5.11 Content pages
-- **About** (`/about`): story, maker photos, values (natural wood, made in India, artist-tested), Instagram embed.
-- **Contact** (`/contact`): form (name, email, phone, subject select [Order issue, Product question, Bulk/wholesale, Custom work, Other], message, optional order number) → saved to `contact_messages` + email to admin; address, phone, WhatsApp, email, business hours, Google map embed.
-- **Custom work** (`/custom-work`): enquiry form for custom-size frames / resin preservation (size, wood, quantity, reference photo upload, budget, date needed).
-- **FAQs** (`/faqs`): grouped accordions (Orders, Shipping, Payments, Products & usage, Returns) from `faqs` table; FAQPage JSON-LD.
-- **Policies:** Terms, Privacy, Shipping, Return & Refund, Cancellation. Rich text managed in admin (`cms_pages`).
-- **404:** friendly message, search box, links to popular Types.
+About, Contact (form → admin Messages), Custom work (form + private photo upload), FAQs, policy pages, 404.
 
 ---
 
-## 6. Shared components (behaviour)
-
-### 6.1 Product card
-- Square image (cover image; on desktop hover shows 2nd image with a fade).
-- Badges top-left: NEW / -X% / Out of stock. ♡ top-right (toggles wishlist; requires no login, guest wishlist in localStorage).
-- Name (2 lines max, ellipsis), centred.
-- Price: "From ₹190" when variants have different prices; else "₹250.00". Strike-through MRP when applicable. Reference format "Rs. 250.00"; **we use "₹250"** (no decimals when whole).
-- `ADD` button (teal pill, full card width on mobile):
-  - Single variant → adds to cart directly, opens mini-cart.
-  - Multiple variants → opens a **quick-add bottom sheet** (mobile) / popover (desktop) to choose size/colour, then add.
-  - Out of stock → "NOTIFY ME".
-- Whole card (except buttons) links to PDP.
-
-### 6.2 Section title
-Centred serif heading with thin teal lines extending left and right; optional small-caps eyebrow above and sub-heading below (see design-system.md §5).
-
-### 6.3 Price formatting
-`Intl.NumberFormat('en-IN', {style:'currency', currency:'INR', maximumFractionDigits: 0|2})` → ₹1,499 / ₹13,100 / ₹8,050.50.
+## 6. Shared components
+- **Product card**: cover image (placeholder if none), badges (NEW, −X %, Out of stock), ♡, name (2 lines), "From ₹190" / "₹250", struck MRP, ADD pill (single variant → add; multiple → quick-add sheet; out of stock → NOTIFY ME).
+- **Section title**: centred serif heading with teal lines (design-system.md §5.1).
+- **Price format**: `Intl.NumberFormat('en-IN', {style:'currency', currency:'INR'})`, no decimals for whole rupees.
 
 ---
 
-## 7. Admin panel (`admin.artq.in` or `/admin`)
+## 7. Admin panel (`admin.artq.in`)
 
-Login: email + password + (optional) TOTP 2FA. Roles: **SUPER_ADMIN** (everything), **ADMIN** (everything except settings/staff), **STAFF** (orders & stock only). Layout: left sidebar, top bar with global search (orders by number/phone, products by name/SKU), notifications bell.
+### 7.1 Access
+Email + password, then **mandatory TOTP** for every staff role (recovery codes; SUPER_ADMIN reset). Sensitive actions ask for the code again (step-up). Roles and permissions: architecture.md §5.9. The UI hides what the user can't do; the API enforces it.
 
-| Module | Features |
-|--------|----------|
-| **Dashboard** | Today / 7 d / 30 d: revenue, orders, AOV, new customers; sales line chart; orders by status; top 10 products; low-stock list; pending orders needing action; recent orders |
-| **Products** | Table (image, name, type, category, price range, total stock, status, new/trending toggles), search, filters, bulk actions (activate, deactivate, mark new/trending, delete); **Create/Edit form**: name, slug (auto), type, category, techniques (multi), short + long description (rich text), product details (repeatable list), specs & care (repeatable list), how-to-use, images (drag-drop multi-upload, reorder, set cover, alt text), video, **variants grid** (size, colour + hex, thickness, SKU, price, MRP, stock, low-stock threshold, weight g, variant image, active), HSN code, GST %, related products, flags (active, new arrival, trending, featured), SEO (meta title/desc/keywords, OG image), preview link; duplicate product |
-| **Import / Export** | Upload `.xlsx` in the ArtQ template (see catalog.md) → **dry-run preview** with row-level errors/warnings → confirm import (create or update by SKU) → import report. Export all products/variants to xlsx. Download blank template. |
-| **Inventory** | Variant-level stock table with inline edit, bulk stock update via CSV, stock movement history (who/when/why: order, cancel, manual adjust, import), low-stock alerts |
-| **Types / Categories / Techniques / Collections** | CRUD with image, slug, description, sort (drag), active, SEO, size chart |
-| **Orders** | Table with filters (status, payment status, method, date range, search); detail page: items, customer, addresses, payment (Razorpay IDs), timeline, internal notes, **status changes** (confirm, pack, ship with courier + AWB + tracking URL, deliver, cancel with reason & auto-refund for prepaid), partial/full refund, edit shipping address before packing, print **invoice** (GST) & **packing slip/label** (PDF), resend email |
-| **Returns** | Requests with photos, approve/reject, refund amount, restock toggle |
-| **Customers** | List (name, email, phone, orders, total spent, last order), detail (orders, addresses, wishlist, notes), block/unblock |
-| **Coupons** | CRUD: code, type (% / flat / free shipping), value, max discount, min order, start/end, total limit, per-user limit, first-order-only, applicable types/categories/products, visible-in-cart flag; usage stats |
-| **Shipping** | Zones (e.g. Kerala/local, South India, Rest of India, North-East & J&K) with weight slabs and rates; free-shipping threshold; COD on/off, fee, min/max; packaging weight; non-serviceable pincodes |
-| **Content** | Hero/slides, announcement bar, home section order, reels (upload video/thumbnail, link product), testimonials, FAQs, CMS pages (policies/about), Instagram moments, navigation menu |
-| **Marketing** | Newsletter subscribers (export CSV), restock requests (grouped by variant, "notify now"), abandoned carts (with contact, value, "send reminder"), search terms report |
-| **SEO** | Per-path meta overrides, redirects (301), sitemap regenerate, robots preview |
-| **Messages** | Contact form & custom-work enquiries inbox with status (new/replied/closed) |
-| **Settings** | Store info (name, GSTIN, address, phone, email, WhatsApp), payment (Razorpay keys, enable online/COD), tax (prices inclusive of GST), email templates, staff users & roles, audit log |
+### 7.2 Navigation
+Left sidebar, **independently scrollable** (`height: 100dvh; overflow-y: auto`, sticky). The lowest item must be reachable at 768 px height and at 200 % zoom. Below 1024 px it collapses into an off-canvas drawer opened from the top bar (focus-trapped, Esc closes). Selected item: high-contrast state (design-system.md §6.4). Order follows the provided admin screenshot, then the modules this plan already requires:
+
+| Group | Module | MVP | Permission |
+|-------|--------|:---:|-----------|
+| *(screenshot)* | Dashboard | ✓ | dashboard:read |
+| | Orders | ✓ | orders:read |
+| | Customers | ✓ | customers:read |
+| | Coupons | ✓ | coupons:write |
+| | Shipping Rates | ✓ | shipping:write |
+| | Products | ✓ | catalog:read |
+| | Restock Requests | ✓ | restock:read |
+| | Product Types | ✓ | catalog:write |
+| | Categories | ✓ | catalog:write |
+| | Techniques | ✓ | catalog:write |
+| Operations | Inventory | ✓ | inventory:read |
+| | Returns & Refunds | ✓ | returns:receive / refunds:create |
+| | COD Remittances | ✓ | cod:remit |
+| | Payment Exceptions | ✓ | payments:exceptions |
+| | Jobs & Webhooks | ✓ | jobs:read |
+| Catalogue tools | Imports | ✓ | imports:catalog / inventory:adjust |
+| | Media | ✓ | media:write |
+| Content | CMS (home, reels, testimonials, FAQs, pages, announcement) + Messages | ✓ | content:write |
+| Admin | Staff & Permissions | ✓ | staff:manage |
+| | Settings | ✓ | settings:write |
+| | Audit Logs | ✓ | audit:read |
+| Post-launch | Advanced reports, abandoned carts, newsletter campaigns, collections, reviews | Backlog | n/a |
+
+All tables are **server-side paginated/filtered**, have loading (skeleton rows), empty ("No products match. Clear filters") and error ("Couldn't load. Retry") states, and show mutation feedback (button spinner, success toast, inline error, optimistic rollback). Every mutation is permission-checked server-side and audited.
+
+### 7.3 Products page (screenshot module, extended)
+**Preserved from the screenshot:**
+- Search box (name / SKU).
+- **Add Product** button → editor (new DRAFT).
+- **Product-type tabs**: "All" + as many types (by sort order) as fit the width, at least 5 on desktop, + **More ▾** overflow menu for the rest + "Unassigned" (drafts without type). Each tab shows a count.
+- Table columns: **# (serial number)**, **Image** (48 px thumbnail), **Name**, **Type**, **Status**, **Variants** (count), **Actions**.
+- **Activation toggle** in Status = publish/unpublish. Turning it on runs the publication gate; if it fails, the toggle snaps back and a popover lists what's missing (link to fix). Requires `catalog:publish`; otherwise the toggle is shown read-only.
+- **Edit** and **Delete** actions. Delete is offered only for never-ordered drafts; otherwise the menu shows **Archive**. Both need a confirmation dialog with the product name.
+- **Previous / Next** pagination with "Page 3 of 7"; current page kept in the URL.
+
+**Added commerce controls:**
+- Columns: **Price range** (`₹90` or `₹190–₹890`), **Available stock** (Σ available; red when 0, amber when low), **Status** pill `Draft` / `Active` / `Archived`, readiness icon (✓ or ⚠ with failing checks on hover).
+- Filters: status, stock (in/low/out/oversold), readiness (ready / blocked / specific check), image state, flags; sort by updated / name / price / stock.
+- **Bulk actions** with select-all-on-page: Publish, Unpublish, Archive, Mark/Unmark New, Mark/Unmark Trending, Set type/category. Each action reports per-row success/failure.
+- **Import / Export** buttons (→ Imports module; export current filter to xlsx).
+- Row action **Variants** opens the variant drawer: inline edit of non-commercial fields; price/MRP cells editable only with `pricing:write` (otherwise read-only with a lock icon); stock shown as on hand / reserved / available with a link to Inventory.
+
+**Requirements derived from issues visible in the screenshot (to verify against the build, not assumed code bugs):**
+| Visible issue | Requirement |
+|---------------|-------------|
+| Every product's type shows "Unknown" | The list DTO includes `type {id, name}` resolved by relation (api.md §4.3). A product without a type shows a neutral **"Unassigned"** badge and can be filtered. "Unknown" must never be rendered. A contract test asserts every seeded product shows its real type name |
+| Several images missing | Distinguish **Processing** (spinner thumbnail), **Failed** (red icon + "Retry processing"), **Missing** (grey placeholder + "Add image"), with a fixed-size fallback so rows don't jump. A missing/failed cover blocks publication |
+| Sidebar cut off below "Techniques" | Independently scrollable sidebar and drawer behaviour (§7.2); E2E test: at 1280×720 and 1024×600 every nav item is reachable by scroll and keyboard |
+| Teal controls / selected nav | Contrast ≥ 4.5:1 for text and ≥ 3:1 for UI component boundaries (design-system.md §2.3) |
+
+### 7.4 Product editor
+Sections: Basics (name, slug, type, category (filtered by type), techniques) · Descriptions (rich text, details list, specs & care, how to use, specifications) · Media (upload, reorder, cover, alt, per-image state) · **Variants grid** (size + net quantity/unit, colour + hex, thickness, SKU, weight + "measured/estimated", dims, shipping class, image, active; price/MRP/cost columns gated by `pricing:write`) · Tax (HSN, GST %, "Approve tax" by `catalog:publish`) · Relations · Flags & ranks · SEO with preview · **Readiness panel** (§8.7) · version conflict handling ("This product was changed by Anu at 10:42. Reload / compare").
+
+### 7.5 Other modules (summary)
+| Module | Key capabilities |
+|--------|------------------|
+| **Dashboard** | Today/7 d/30 d revenue, orders, AOV, new customers; sales chart; pending actions (to confirm/pack/ship, returns to decide, open exceptions, restock requests, messages); low stock; top products |
+| **Orders** | Filters by order/payment/fulfilment status, method, exceptions, date; detail with timeline (all four dimensions), attempts/payments/refunds, invoice & packing slip, actions per transition; cancel (with automatic refund for prepaid) |
+| **Customers** | List/search; detail (orders, addresses, notes); block/unblock (signs out everywhere). STAFF sees masked contact details |
+| **Coupons** | Create/edit (type, value, cap, min order, window, total & per-customer limits, scope, public); redemptions with status (reserved/redeemed/released/reversed) |
+| **Shipping Rates** | Zones, slabs, extra ₹/kg, state mapping; free-shipping threshold and heavy cap; packaging weight; serviceability rules per pincode (deliverable, COD, surface only), CSV import; preview calculator |
+| **Restock Requests** | Waiting customers grouped by variant (count, oldest date, current availability); "Notify now" when back in stock |
+| **Product Types / Categories / Techniques** | CRUD with image, slug, description, order, active, home/menu flags, tile link override, SEO; delete blocked while in use |
+| **Inventory** | On hand / reserved / available per variant; recount, adjustment and damage write-off (reason required); movement ledger; inventory import; oversold alerts |
+| **Returns & Refunds** | Return queue (decide → in transit → received → inspected → refund → close); refund creation with item allocation and capacity display; refund queue with failed/unknown handling; manual COD refunds with bank reference |
+| **COD Remittances** | Record courier remittances against orders; outstanding COD list; mismatch alerts |
+| **Payment Exceptions** | Queue of excess/late captures, mismatches, stuck authorizations, failed/unknown refunds, dead webhooks/outbox, oversold, coupon over-limit; resolve/dismiss with note; manual reconcile |
+| **Jobs & Webhooks** | Queue depths, failed jobs (retry), webhook inbox status (retry dead), outbox backlog, last scheduler runs |
+| **Imports** | Upload catalogue or inventory sheet → validation preview with row outcomes and messages → confirm → progress → result file; resolve "needs review" rows; templates |
+| **Media** | Library with state (processing/ready/failed/rejected), usage, retry, delete when unused |
+| **CMS & Messages** | Hero/slides, announcement bar, home sections, reels, testimonials, FAQs, policy pages, Instagram moments; contact & custom-work inbox with private attachments |
+| **Staff & Permissions** | Staff users, roles, MFA reset, revoke sessions |
+| **Settings** | Store info/GSTIN, payment toggles (online/COD, fee, limits), order rules, tax settings, notification recipients |
+| **Audit Logs** | Filterable log of admin mutations and security events |
 
 ---
 
 ## 8. Business rules (authoritative)
 
 ### 8.1 Pricing & tax
-- All prices are **GST-inclusive** retail prices in INR. Stored in paise.
-- `mrp` optional; if present must be ≥ `price`. Discount % = round((mrp − price) / mrp × 100).
-- Each product has an `hsn_code` and `gst_rate` (frames 12 %, resin/pigments 18 %; confirm with CA) used only for the invoice breakup (taxable value = price / (1 + rate)).
-- Invoice shows CGST+SGST when shipping state = store state (Kerala), otherwise IGST.
+- Prices are **GST-inclusive** INR, stored in paise; `MRP ≥ price`; discount % = round((MRP − price) / MRP × 100).
+- Each product needs an approved **HSN code and GST rate** before publication. GST rates were restructured in September 2025, so every rate must come from the accountant against the current schedule (decision D-1). The DB only checks 0–40 %.
+- Invoice: CGST + SGST when the place of supply is the store's state (Kerala, `32`), otherwise IGST. Treatment of shipping and COD-fee charges: decision D-3.
 
 ### 8.2 Shipping
-- Shipping is charged per order, by **total chargeable weight** = Σ(variant.weight_g × qty) + packaging weight (setting, default 100 g), rounded up to the next slab.
-- Rate = slab rate of the destination **zone** (from state). Default table (editable):
+One algorithm (architecture.md §6.5): chargeable weight (actual vs volumetric + packaging) → zone slab → extra per kg beyond the last slab. **Free shipping** when (subtotal − coupon discount) ≥ ₹1,000 or a FREE_SHIPPING coupon applies; free shipping covers up to **10 kg**, and each extra kg is charged at the zone's extra rate. The COD fee is never waived.
 
+Default rates (editable; decision D-13):
 | Weight up to | Kerala | Rest of South | Rest of India | NE / J&K / islands |
 |---|---|---|---|---|
 | 500 g | ₹50 | ₹60 | ₹70 | ₹100 |
 | 1 kg | ₹70 | ₹85 | ₹100 | ₹140 |
 | 2 kg | ₹110 | ₹130 | ₹150 | ₹200 |
 | 5 kg | ₹220 | ₹260 | ₹300 | ₹400 |
-| each extra kg | ₹40 | ₹45 | ₹55 | ₹75 |
+| each extra kg (`extra_per_kg`) | ₹40 | ₹45 | ₹55 | ₹75 |
 
-- **Free shipping** when cart subtotal **after coupon discount** ≥ ₹1,000 (setting `FREE_SHIPPING_THRESHOLD`). Heavy-item exception: if weight > 10 kg (e.g. 30 kg resin), free shipping covers up to 10 kg and extra kg are charged (setting, can be turned off).
-- A `FREE_SHIPPING` coupon makes shipping 0 regardless.
-- Variants missing weight use the category default weight; import warns about missing weights.
+Serviceability and COD availability are configured separately from the postal directory (decision D-6). Resin ships **surface only** until the courier confirms handling (D-7). Bulky frames require dimensions.
 
 ### 8.3 Stock
-- Stock is tracked per variant. `stock` can never go below 0 (DB check constraint).
-- Stock is **reserved** (decremented) when an order is created (`PENDING_PAYMENT`), released if payment fails/expires (30 min) or order cancelled; for COD reserved at placement.
-- Every change writes a row in `inventory_movements`.
-- When a variant goes from 0 → >0, all pending `stock_notifications` for it are emailed (job) and marked notified.
-- Admin gets a daily low-stock email (variants with stock ≤ threshold).
+- `available = on hand − reserved`. You can only buy what is available; there are no backorders.
+- Checkout reserves stock (30 minutes for online payment, until dispatch for COD/paid orders). Unpaid orders release it on expiry or cancellation. Dispatch consumes it (on hand decreases).
+- Recounts and imports change on-hand only and never overwrite reservations. A recount below reserved is allowed (physical truth) but raises an **oversold** alert.
+- Returns add stock back only for units inspected as sellable; damaged units are recorded but not restocked.
 
 ### 8.4 Coupons
-- Code is case-insensitive, stored upper-case. One coupon per order.
-- Validation order: exists & active → within date window → total usage limit → per-user limit (by user id or email/phone for guests) → first-order-only → min order value (on eligible items subtotal) → eligibility scope.
-- Percentage discounts capped by `max_discount`. Discount never exceeds eligible subtotal.
-- Discount is distributed proportionally across eligible order items (stored per item, needed for partial refunds & GST invoice).
-- Redemption is recorded only when the order is paid/placed; released if cancelled before shipping.
+- One coupon per order; code case-insensitive. Validation order: exists & active → time window → total capacity → per-customer limit (account, or guest email; best-effort for guests) → first-order-only → minimum order (eligible items) → scope.
+- **Capacity is reserved atomically when the order is placed**, redeemed when payment is captured (or a COD order is placed), released if the unpaid order expires or is cancelled, and reversed (use restored) if a paid order is cancelled before dispatch (decision D-14).
+- A coupon that expires while the customer is paying is still honoured for that order.
+- If a late payment arrives after the last use was taken, the order is honoured at the price paid and flagged.
 
-### 8.5 Orders & statuses
-```
-PENDING_PAYMENT ──pay──▶ PLACED ──▶ CONFIRMED ──▶ PACKED ──▶ SHIPPED ──▶ OUT_FOR_DELIVERY ──▶ DELIVERED
-      │                    │            │                                                     │
-      └─expire─▶ EXPIRED   └──cancel────┴──▶ CANCELLED                                       └─▶ RETURN_REQUESTED ─▶ RETURNED / RETURN_REJECTED
-                                                                                    (refund) ─▶ payment_status = REFUNDED / PARTIALLY_REFUNDED
-```
-- Order number format: `AQ` + 5+ digit sequence starting at 10001 (`AQ10001`). Human-friendly, not guessable for tracking (tracking also needs email/phone or signed token).
-- Customer can cancel only in PLACED/CONFIRMED. Prepaid cancellations auto-refund via Razorpay (full amount).
-- Returns: only for damaged/wrong/defective items, reported within **48 h of delivery** with photos (resin is a chemical, so there are no change-of-mind returns; confirm policy).
-- Every status change → row in `order_status_history` + customer email (and SMS/WhatsApp in Phase 9).
+### 8.5 Order states (customer view)
+The system tracks lifecycle, payment, fulfilment and returns separately (database.md §3.9). Customers see one derived label:
 
-### 8.6 Accounts & privacy
-- Email is unique and required for accounts; phone unique if present.
-- Guest orders are linked to an account automatically when the user later signs up with the same verified email.
-- Passwords hashed with argon2id. Sessions: 15-min access token + 30-day refresh cookie.
-- Marketing emails only with consent (newsletter opt-in). Unsubscribe link in every marketing mail.
+| Situation | Label |
+|-----------|-------|
+| Pending payment | "Awaiting payment" (with retry) |
+| Payment authorized / unknown | "Payment processing" |
+| Placed / confirmed, unfulfilled | "Order placed" / "Confirmed" |
+| Packed / shipped / out for delivery / delivered | "Packed" / "Shipped" / "Out for delivery" / "Delivered" |
+| Return open | "Return in progress" |
+| Refund processed | "Refunded" / "Partially refunded" |
+| Cancelled / expired | "Cancelled" / "Payment not completed" |
+
+### 8.6 Cancellations, late payments, refunds
+- Customers can cancel while the order is placed/confirmed **and not yet packed**. Staff can cancel until it is shipped. Prepaid cancellations are refunded in full automatically (including shipping and COD fee if any).
+- A payment that arrives after the order expired: the order is restored if all items are still available; otherwise it is refunded in full and the customer is emailed. A payment for a cancelled order is always refunded. A duplicate (second) payment is refunded automatically.
+- Refunds never exceed what was captured (enforced atomically). Item refunds are limited to what was paid for each item after discounts. Shipping is refunded only for full cancellation before dispatch or merchant-fault returns (staff choice). The COD fee is refunded only for full cancellation before dispatch.
+- Online refunds go back to the original payment method (5–7 working days). COD refunds are made by bank/UPI transfer with a recorded reference.
+
+### 8.7 Publication gate (product readiness)
+A product can be **published** (status ACTIVE, visible) only when all of the following are approved. Imported or new products start as **Draft**.
+
+| Check | Rule |
+|-------|------|
+| Type & category | Assigned (category belongs to type) |
+| Price & size | Every active variant has a price, MRP ≥ price (if MRP set), a normalised size/unit, and no `PRICE_MISSING` / `SIZE_CONFLICT` flag |
+| Physical inventory | Every active variant has a **counted** on-hand quantity (`inventory_counted_at` set; ambiguous imported stock like "500KG" or "Stock Out" is never treated as counted) |
+| Image | At least one `READY` cover image |
+| Shipping data | Every active variant has a **measured** weight (estimated weights block publication); bulky variants have dimensions; shipping class set |
+| Description | Non-empty description; no `DESCRIPTION_SUSPECT_COPY` flag (copied text must be reviewed and cleared) |
+| Tax classification | HSN code and GST rate set and **approved** |
+| Data flags | All import flags resolved |
+
+Breaking a check on a published product is blocked; unpublish first.
+
+### 8.8 Returns
+Damaged, wrong, defective or missing items only, reported **within 48 hours of delivery** with photos (decision D-5). Steps: request → approve/reject → item returned (or not needed for "missing") → received → inspected → refund → closed. Quantities can never exceed what was delivered, across all requests.
+
+### 8.9 COD
+Enabled by setting (decision D-4): fee (default ₹40), order total ₹200–₹5,000, COD-enabled pincodes only. The order is placed immediately (stock reserved). Cash collected on delivery → remitted by the courier → recorded by staff. RTO (refused/undeliverable): stock restocked after inspection, order cancelled, no money collected.
+
+### 8.10 Invoices
+GST tax invoice issued **at dispatch** (decision D-2), numbered consecutively per financial year (`AQ/26-27/000001`), immutable. Corrections and post-dispatch refunds produce **credit notes** (`CN/26-27/000001`). The accountant approves the format before launch.
+
+### 8.11 Accounts, guests & privacy
+- Accounts are identified by **email**. Phone is a contact field at launch.
+- Guest checkout needs no account. A guest order becomes visible in an account once the customer proves ownership of the order email (signup verification or the set-password link).
+- Guest order management requires an email code to the order email.
+- Marketing only with consent; unsubscribe in every marketing email; data export/deletion on request (DPDP Act 2023).
 
 ---
 
-## 9. Notifications (emails; SMS/WhatsApp later)
+## 9. Notifications
+Sent through the outbox (architecture.md §8.2). **At-least-once**: a rare duplicate email is possible; a missing email is not.
 
-| Trigger | To | Template |
-|---------|----|----------|
-| Signup OTP / login OTP | Customer | `otp` |
-| Welcome after verify | Customer | `welcome` (with first-order coupon, optional) |
-| Password reset | Customer | `password_reset` |
-| Order placed | Customer + admin | `order_placed` (items, totals, address) |
-| Payment failed (after 15 min) | Customer | `payment_failed` (retry link) |
-| Order confirmed / shipped (AWB + link) / delivered | Customer | `order_status` |
-| Order cancelled / refunded | Customer | `order_cancelled`, `refund_processed` |
-| Back in stock | Subscriber | `back_in_stock` |
-| Abandoned cart (1 h and 24 h, only with consent/contact) | Customer | `abandoned_cart` |
-| Contact / custom-work enquiry | Admin | `admin_enquiry` |
-| Daily low stock / daily sales summary | Admin | `admin_low_stock`, `admin_daily_summary` |
-
-Emails are branded (logo, teal header, footer with policies), mobile-friendly, plain-text fallback.
+| Trigger | To |
+|---------|----|
+| Signup/login/guest-access/email-change codes | Customer |
+| Password reset, set-password link | Customer |
+| Order placed (prepaid captured or COD placed) | Customer + admin |
+| Payment not completed (unpaid order expired) | Customer (with "shop again" link) |
+| Confirmed / shipped (AWB) / delivered | Customer |
+| Cancelled; refund requested; refund processed; refund for late/duplicate payment | Customer |
+| Return decided / received / refunded | Customer |
+| Back in stock | Restock-request subscribers |
+| New payment exception, refund failed, oversold | Admin (email + bell) |
+| Contact / custom-work message | Admin |
+| Daily summary + low stock | Admin |
 
 ---
 
 ## 10. Non-functional requirements
-
 | Area | Requirement |
 |------|-------------|
-| Performance | Lighthouse mobile ≥ 90 Performance, LCP < 2.5 s on 4G, CLS < 0.1, INP < 200 ms; product images WebP/AVIF, responsive `srcset`; API p95 < 300 ms |
-| SEO | SSR/ISR pages, unique titles/descriptions, JSON-LD (Product, BreadcrumbList, Organization, FAQPage), XML sitemap, robots.txt, canonical URLs, 301 redirects on slug change |
-| Accessibility | WCAG 2.1 AA: colour contrast, keyboard navigation, focus rings, alt text, ARIA on carousels/drawers, form labels & errors |
-| Security | OWASP top 10; HTTPS only; rate limits; Razorpay signature + webhook verification; server-side price calculation (never trust client totals); admin 2FA; audit log |
-| Reliability | 99.9 % uptime; daily DB backups (7 daily + 4 weekly), point-in-time recovery; idempotent payment handling |
-| Browser support | Last 2 versions of Chrome, Safari (iOS 15+), Firefox, Edge, Samsung Internet |
-| Legal (India) | Privacy policy per DPDP Act 2023, consent for marketing, GST invoice, grievance officer contact, return/refund policy visible, prices incl. taxes |
-| Analytics | GA4 e-commerce events (view_item_list, view_item, add_to_cart, begin_checkout, add_payment_info, purchase), Meta Pixel + Conversions API, Search Console |
+| Performance | Lighthouse mobile ≥ 90; LCP < 2.5 s (4G); CLS < 0.1; API p95 < 300 ms |
+| Correctness | No oversell; no refund above capture; no lost payment events; idempotent client retries; all money states reconciled daily |
+| Availability & recovery | 99.9 % monthly; **RPO ≤ 5 min, RTO ≤ 4 h** (architecture.md §13) |
+| SEO | SSR/ISR, unique titles, JSON-LD, sitemap, canonical, 301s |
+| Accessibility | WCAG 2.1 AA, including the admin (contrast, keyboard, focus, reachable navigation) |
+| Security | architecture.md §11; admin MFA; audit |
+| Browsers | Last 2 versions of Chrome, Safari (iOS 16+), Firefox, Edge, Samsung Internet |
+| Legal (India) | DPDP Act 2023 privacy notice & consent, GST invoices/credit notes, grievance contact, visible policies, tax-inclusive prices |
 
 ---
 
-## 11. Open questions for the client
+## 11. Open decisions (business inputs only)
+Engineering defaults are shown; the build proceeds with them unless the client decides otherwise.
 
-1. Confirm **GST rates & HSN codes** per product type and the store's GSTIN/registered address (state).
-2. COD: allowed? fee? limits?
-3. Return policy wording (damaged-only?) and cancellation window.
-4. Courier: self-ship (manual AWB) at launch, or Shiprocket integration from day one?
-5. Large resin packs (9–30 kg) from the older sheet: are they sold online? (Latest sheet stops at 6 kg.)
-6. **Product photos** for all items (none in the sheet), plus logo SVG, hero video, about-page photos.
-7. Weight (grams) per variant, needed for shipping.
-8. Domain name (artq.in / artq.com?) and business email.
-9. Pigment colour hex codes (for swatches), or should we sample them from photos?
-10. Who will receive admin emails/notifications? WhatsApp business number?
+| # | Decision | Owner | Default until decided | Needed by |
+|---|----------|-------|-----------------------|-----------|
+| D-1 | HSN codes and GST rates per product (current schedule) | Accountant | Products stay draft (tax not approved) | Before publishing |
+| D-2 | Invoice timing (dispatch vs payment) and format | Accountant | At dispatch | Phase 5 |
+| D-3 | GST treatment of shipping and COD-fee charges | Accountant | Same rate as the order's highest-rate item | Phase 5 |
+| D-4 | COD on/off, fee, min/max order value | Owner | On, ₹40, ₹200–₹5,000 | Phase 4 |
+| D-5 | Return/refund policy wording, window, merchant-fault shipping refund | Owner | 48 h, damaged/wrong/defective/missing, shipping refunded on merchant fault | Phase 5 |
+| D-6 | Serviceability policy: deliver to all pincodes unless blocked, or only listed ones; COD pincodes | Owner + courier | All except blocked; COD everywhere serviceable | Phase 4 |
+| D-7 | Courier(s) and whether resin/hardener can travel by air (dangerous goods) | Owner + courier | Surface only for resin | Phase 4 |
+| D-8 | Sell 9–30 kg resin packs online? | Owner | No (draft) | Catalogue cleanup |
+| D-9 | Prepaid RTO refund: full, or minus forward shipping? | Owner | Full refund of items; shipping not refunded | Phase 5 |
+| D-10 | Product data: photos, measured weights/dims, counted stock, corrected descriptions/sizes/prices (catalog.md §4) | Owner | Affected products stay draft | Before launch |
+| D-11 | Pigment swatch hex colours | Owner | Sampled from photos, approved by owner | Before launch |
+| D-12 | Domain and sending email domain | Owner | `artq.in` | Phase 0 |
+| D-13 | Free-shipping threshold, heavy cap, slab rates | Owner | ₹1,000; 10 kg; table §8.2 | Phase 4 |
+| D-14 | Restore coupon use when a paid order is cancelled before dispatch? | Owner | Yes | Phase 4 |
+| D-15 | Who handles payment exceptions and COD remittance day-to-day; escalation phone | Owner | Owner (business hours) | Before launch |
+| D-16 | Razorpay account: KYC, auto-capture setting, settlement account | Owner | Auto-capture on | Phase 4 (test), launch (live) |
