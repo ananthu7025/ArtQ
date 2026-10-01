@@ -87,9 +87,9 @@ Redis runs with AOF persistence, but **no correctness property depends on it**.
 | Layer | Choice | Version policy | Reason |
 |-------|--------|----------------|--------|
 | Runtime | **Node.js 24 LTS** ("Krypton") | `engines.node >=24.11 <25`; `.nvmrc` = 24; CI runs 24. Node 20 is end-of-life (Apr 2026) and is not used | Supported LTS through Apr 2028; upgrade to Node 26 LTS once it is LTS and dependencies are verified |
-| Language | TypeScript (strict) | 5.x | Shared types |
-| Monorepo | pnpm workspaces + Turborepo | pnpm 10, turbo 2 | Shared packages, cached builds |
-| Storefront | Next.js (App Router) + React | current stable at Phase 0, pinned | SSR/ISR, image optimisation. Frontend only |
+| Language | TypeScript (strict) | **6.0.3** (not 7.x until `typescript-eslint` supports it; docs/compatibility.md) | Shared types |
+| Monorepo | pnpm workspaces + Turborepo | pnpm 10.34.6 (corepack), turbo 2.11.6 | Shared packages, cached builds |
+| Storefront | Next.js (App Router) + React | Next **16.3.8**, React 19.3.0 (admin: Vite **8.3.2**) | SSR/ISR, image optimisation. Frontend only |
 | Admin | React + Vite + React Router + TanStack Query/Table + shadcn/ui | pinned | CRUD-heavy SPA |
 | Styling | Tailwind CSS + CSS variables | 4 | Token-based design system |
 | Forms/validation | React Hook Form + Zod | Zod schemas shared in `packages/shared` | One validation source |
@@ -108,7 +108,7 @@ Redis runs with AOF persistence, but **no correctness property depends on it**.
 | Testing | Vitest, Supertest, Testcontainers (Postgres 16/Redis), Playwright; `tools/doc-validation` for the DB layer | n/a | Real DB for concurrency tests |
 | Monitoring | Sentry, pino logs, uptime checks, Bull Board (admin-only) | n/a | n/a |
 
-**Compatibility spike (task 0.1):** before writing feature code, scaffold all apps on Node 24 and confirm install + build + a smoke test for Next.js, Vite, Prisma (generate + migrate), sharp (prebuilt binary), argon2 (prebuilt), BullMQ/ioredis, exceljs, @react-pdf/renderer, otplib. Record pinned versions in `docs/review.md` §6.
+**Compatibility spike (task 0.1):** before writing feature code, scaffold all apps on Node 24 and confirm install + build + a smoke test for Next.js, Vite, Prisma (generate + migrate), sharp (prebuilt binary), argon2 (prebuilt), BullMQ/ioredis, exceljs, @react-pdf/renderer, otplib. Done: results and pinned versions are in [compatibility.md](compatibility.md).
 
 ---
 
@@ -156,7 +156,7 @@ artq/
 │   ├── ui/                     # Tailwind preset (tokens), primitives
 │   └── config/                 # eslint, tsconfig, prettier
 ├── docs/
-├── docker-compose.yml          # postgres, redis, mailpit, minio
+├── docker-compose.yml          # postgres 16, redis 7, s3mock (R2 stand-in), mailpit
 └── .github/workflows/
 ```
 
@@ -621,7 +621,7 @@ Staff record each courier remittance (reference, date, amount, list of order num
 
 | Env | Web | Admin | API | DB / Redis / R2 | Payments | Notes |
 |-----|-----|-------|-----|-----------------|----------|-------|
-| local | `localhost:3000` | `localhost:5173` | `localhost:4000` | docker Postgres/Redis, MinIO, Mailpit | Razorpay test | `aq_*_dev` cookies |
+| local | `localhost:3000` | `localhost:5173` | `localhost:4000` | docker Postgres/Redis, S3Mock (R2 stand-in; MinIO no longer publishes community images), Mailpit | Razorpay test | `aq_*_dev` cookies |
 | staging | `staging.artq.in` | `admin-staging.artq.in` | `api-staging.artq.in` | **separate** DB, Redis, buckets | Razorpay **test** keys + test webhook | `noindex`, basic-auth on web, synthetic data only (no production PII) |
 | production | `artq.in` (`www` → 301) | `admin.artq.in` | `api.artq.in` | managed **PostgreSQL 16** with PITR, Redis with AOF, R2 | live keys | MFA mandatory |
 

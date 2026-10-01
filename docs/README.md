@@ -3,7 +3,7 @@
 ArtQ is a single-vendor Indian D2C store selling **wood frames/moulds, epoxy & UV resins, pigments, glitters, silica gel and resin-art essentials**.
 These documents are the single source of truth for building it. Reference prototype: https://qcraft-nine.vercel.app/ (mobile homepage: `ArtQ Site Ref.png`).
 
-> **Status (2026-10-01):** planning only. The repository contains documentation, the client's source files and `tools/doc-validation` (executable checks of the database layer embedded in database.md). **No application code exists yet.**
+> **Status (2026-10-01):** planning only. The repository contains documentation, the client's source files and `tools/doc-validation` (executable checks of the database layer embedded in database.md). Phase 0 has started: the monorepo scaffold (`apps/api`, `apps/web`, `apps/admin`, `packages/*`) builds and passes its smoke tests; no product features exist yet.
 
 ## Read in this order
 | # | File | What it answers |
@@ -16,7 +16,8 @@ These documents are the single source of truth for building it. Reference protot
 | 6 | [catalog.md](catalog.md) | **The products**: cleaned catalogue from the client sheet, flags, readiness |
 | 7 | [tasklist.md](tasklist.md) | **Delivery**: phases, estimates, milestones, acceptance tests |
 | 8 | [review.md](review.md) | **Change log** of both architecture reviews: issue-to-fix matrices, validation results, limitations |
-| 9 | [../tools/doc-validation](../tools/doc-validation/README.md) | **Executable checks** of the schema, integrity SQL and money/stock functions (PostgreSQL 16 + Redis/BullMQ) |
+| 9 | [compatibility.md](compatibility.md) | **Toolchain**: pinned versions and the Node 24 compatibility results (task 0.1) |
+| 10 | [../tools/doc-validation](../tools/doc-validation/README.md) | **Executable checks** of the schema, integrity SQL and money/stock functions (PostgreSQL 16 + Redis/BullMQ) |
 
 ## One-paragraph summary
 A **modular monolith**. The **Next.js storefront** (rendering and customer UI only, no backend code) and a **React/Vite admin** are clients of a **Node.js 24 + Express/TypeScript API**, the only backend. **PostgreSQL 16 (Prisma)** is the source of truth, including the durable webhook inbox, the transactional outbox with per-consumer deliveries, idempotency keys and payment attempts; the money/stock transactions are database functions called by the API. **Redis + BullMQ** deliver and schedule background work (emails, reconciliation, expiry, imports, image processing) but hold no state that correctness depends on. **Cloudflare R2** stores public catalogue media (CDN) and private customer files. **Razorpay** handles online payments; COD is supported. Prices are server-calculated in integer paise; orders and invoices are immutable snapshots.

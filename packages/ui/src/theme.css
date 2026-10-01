@@ -1,0 +1,27 @@
+/* Tailwind v4 theme: exposes the tokens as utilities (bg-brand-700, text-ink-700, border-border-input …). */
+@theme {
+  --color-brand-50: #e6f4f3;
+  --color-brand-300: #5eead4;
+  --color-brand-400: #00c4c7;
+  --color-brand-500: #00a99d;
+  --color-brand-700: #00756f;
+  --color-brand-800: #005f5a;
+  --color-accent-500: #009bc2;
+  --color-surface-0: #ffffff;
+  --color-surface-50: #f8fafc;
+  --color-surface-100: #f1f5f9;
+  --color-surface-200: #e2e8f0;
+  --color-border-input: #64748b;
+  --color-ink-900: #111827;
+  --color-ink-700: #374151;
+  --color-ink-500: #64748b;
+  --color-success-700: #15803d;
+  --color-warning-700: #b45309;
+  --color-warning-bg: #fef3c7;
+  --color-warning-ink: #7c2d12;
+  --color-danger-700: #b91c1c;
+  --color-sidebar-text: #e5e7eb;
+  --color-sidebar-muted: #9ca3af;
+  --font-display: "Playfair Display", Georgia, serif;
+  --font-body: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+}

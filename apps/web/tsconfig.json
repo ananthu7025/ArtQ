@@ -1,0 +1,13 @@
+{
+  "extends": "@artq/config/tsconfig.react.json",
+  "compilerOptions": {
+    "jsx": "preserve",
+    "allowJs": false,
+    "incremental": true,
+    "exactOptionalPropertyTypes": false,
+    "plugins": [{ "name": "next" }],
+    "paths": { "@/*": ["./*"] }
+  },
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
+  "exclude": ["node_modules"]
+}

@@ -1,0 +1,6 @@
+{
+  "extends": "@artq/config/tsconfig.node.json",
+  "compilerOptions": { "outDir": "dist", "rootDir": "src", "jsx": "react-jsx", "declaration": false },
+  "include": ["src"],
+  "exclude": ["src/**/*.test.ts"]
+}

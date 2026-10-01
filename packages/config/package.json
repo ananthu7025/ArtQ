@@ -1,0 +1,18 @@
+{
+  "name": "@artq/config",
+  "version": "0.0.0",
+  "private": true,
+  "files": [
+    "tsconfig.base.json",
+    "tsconfig.node.json",
+    "tsconfig.react.json",
+    "check-web-boundaries.mjs"
+  ],
+  "type": "module",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "vitest": "5.0.3"
+  }
+}

@@ -1,0 +1,99 @@
+# CI (tasks 0.7 + 0.9). Required checks for main: verify, compose, doc-validation.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, "phase-*"]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "24"          # latest Node 24 LTS on the runner (engines: >=24.11 <25)
+
+jobs:
+  verify:
+    name: build · typecheck · lint · test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16.14-alpine
+        env: { POSTGRES_USER: artq, POSTGRES_PASSWORD: artq, POSTGRES_DB: artq_test }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U artq -d artq_test" --health-interval 5s --health-timeout 3s --health-retries 20
+      redis:
+        image: redis:7.4-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgresql://artq:artq@localhost:5432/artq_test
+      TEST_REDIS_URL: redis://localhost:6379
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with: { node-version: "${{ env.NODE_VERSION }}" }
+      - run: corepack enable pnpm
+      - name: Cache pnpm store
+        uses: actions/cache@v6
+        with:
+          path: ~/.local/share/pnpm/store
+          key: pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: pnpm-${{ runner.os }}-
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @artq/api prisma:generate
+      - run: pnpm build
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - name: Test (unit + integration against PostgreSQL 16 / Redis service containers)
+        run: pnpm test
+
+  compose:
+    name: docker compose stack
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with: { node-version: "${{ env.NODE_VERSION }}" }
+      - run: corepack enable pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @artq/api prisma:generate
+      - run: pnpm --filter @artq/shared build
+      - run: docker compose up -d --wait
+      - run: pnpm --filter @artq/api test:compose
+      - run: pnpm --filter @artq/api test:compose:integration
+      - name: Logs on failure
+        if: failure()
+        run: docker compose logs --no-color | tail -300
+      - if: always()
+        run: docker compose down -v
+
+  doc-validation:
+    name: database design validation (docs/database.md)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with: { node-version: "${{ env.NODE_VERSION }}" }
+      - name: Install redis-server
+        run: sudo apt-get update -q && sudo apt-get install -y -q redis-server
+      - working-directory: tools/doc-validation
+        run: npm ci
+      - name: Validate on PostgreSQL 16.14 (embedded) + Redis
+        working-directory: tools/doc-validation
+        run: npm run validate
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: doc-validation-results
+          path: tools/doc-validation/.tmp/*.json
+          if-no-files-found: warn
