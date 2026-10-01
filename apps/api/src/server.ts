@@ -2,6 +2,9 @@ import { PrismaClient } from '@prisma/client';
 import { Redis } from 'ioredis';
 import { pino } from 'pino';
 import { createApp } from './app.js';
+import { authRouter } from './auth/routes.js';
+import { DEFAULT_AUTH_TIMINGS, AuthService } from './auth/service.js';
+import { RedisSessionCache } from './auth/session-cache.js';
 import { ConfigError, loadEnv } from './config/env.js';
 import { makeReadinessChecks } from './lib/readiness.js';
 
@@ -17,11 +20,18 @@ const prisma = new PrismaClient({ datasourceUrl: env.DATABASE_URL });
 const redis = new Redis(env.REDIS_URL, { lazyConnect: true, maxRetriesPerRequest: 1 });
 redis.on('error', (err) => log.warn({ err: err.message }, 'redis connection error'));
 
+const jwt = { secret: new TextEncoder().encode(env.AUTH_JWT_SECRET), issuer: env.AUTH_JWT_ISSUER };
+const cache = new RedisSessionCache(redis, 60, (op, err) => log.warn({ op, err: String(err) }, 'session cache unavailable'));
+const service = new AuthService(prisma, cache, {
+  ...DEFAULT_AUTH_TIMINGS, jwt, otpPepper: env.AUTH_OTP_PEPPER, linkSecret: env.AUTH_LINK_SECRET, webUrl: env.WEB_URL,
+});
+
 const app = createApp({
   version: env.APP_VERSION,
   corsOrigins: env.CORS_ORIGINS,
   log,
   readiness: makeReadinessChecks(prisma, redis),
+  routes: [authRouter({ prisma, cache, jwt, service, env: env.NODE_ENV, allowedOrigins: env.CORS_ORIGINS, refreshMaxAgeS: DEFAULT_AUTH_TIMINGS.refreshIdleS })],
 });
 
 const server = app.listen(env.PORT, () => log.info({ port: env.PORT }, 'api listening'));
