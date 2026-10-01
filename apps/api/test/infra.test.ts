@@ -38,8 +38,8 @@ describe('.env.example', () => {
     expect(() => loadEnv(exampleEnv)).not.toThrow();
   });
   it('points the API at the compose services', () => {
-    expect(exampleEnv.DATABASE_URL).toContain('localhost:5432');
-    expect(exampleEnv.REDIS_URL).toBe('redis://localhost:6379');
+    expect(exampleEnv.DATABASE_URL).toContain('localhost:55432');
+    expect(exampleEnv.REDIS_URL).toBe('redis://localhost:56379');
     expect(exampleEnv.S3_ENDPOINT).toBe('http://localhost:9090');
   });
 });

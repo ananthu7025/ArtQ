@@ -43,7 +43,9 @@ describe('/health/ready against real PostgreSQL 16 and Redis', () => {
     expect(res.body.checks.redis.ok).toBe(true);
   });
   it('503 when the database credentials are wrong', async () => {
-    const bad = pg.url.replace('postgres:postgres@', 'postgres:wrong@');
+    const u = new URL(pg.url); u.password = 'definitely-wrong';
+    const bad = u.toString();
+    expect(bad).not.toBe(pg.url);
     const { app, close } = appWith(bad, rd.url);
     const res = await request(app).get('/health/ready');
     await close();

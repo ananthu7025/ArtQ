@@ -26,4 +26,12 @@ pnpm --filter @artq/api dev      # API on :4000  (GET /health)
 pnpm --filter @artq/web dev      # storefront on :3000
 pnpm --filter @artq/admin dev    # admin on :5173
 ```
-Local PostgreSQL 16 / Redis / MinIO / Mailpit via Docker Compose arrive in task 0.3.
+### Local services (Docker)
+```bash
+docker compose up -d --wait          # PostgreSQL 16 :55432, Redis 7 :56379, S3Mock :9090, Mailpit SMTP :1025 / UI :8025
+cp .env.example apps/api/.env
+pnpm --filter @artq/api test:compose               # smoke tests against the running stack
+pnpm --filter @artq/api test:compose:integration   # integration suites against the containers
+docker compose down                  # (add -v to delete data)
+```
+Without Docker, `pnpm test` still runs the integration tests using a throwaway PostgreSQL 16.14 (embedded-postgres) and `redis-server` from PATH.
