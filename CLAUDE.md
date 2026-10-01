@@ -10,8 +10,8 @@ Read `docs/README.md` first; `docs/tasklist.md` is the plan and `docs/architectu
      dependency failures (database, Redis, provider down or timing out).
 2. **Run the whole automated suite before declaring work done**, not just the new tests:
    `pnpm build && pnpm typecheck && pnpm lint && pnpm test` (plus `pnpm validate:docs` when `docs/database.md` or
-   `tools/doc-validation/**` changed, and `pnpm --filter @artq/api test:compose test:compose:integration` with
-   `docker compose up -d --wait` when infrastructure or integration code changed). Report the real results; never claim a pass that was not run. If a test cannot run
+   `tools/doc-validation/**` changed, and, with `docker compose up -d --wait`, both `pnpm --filter @artq/api test:compose` and
+   `pnpm --filter @artq/api test:compose:integration` when infrastructure or integration code changed). Report the real results; never claim a pass that was not run. If a test cannot run
    locally (e.g. Docker unavailable), say exactly what was not executed.
 3. Do not weaken or delete a test to make it pass; fix the code or explain why the test is wrong.
 
