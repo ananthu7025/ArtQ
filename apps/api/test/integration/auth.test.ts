@@ -14,6 +14,7 @@ import { MemorySessionCache, RedisSessionCache, type SessionCache } from '../../
 import { randomToken, sha256, signAccessToken, signLink } from '../../src/auth/tokens.js';
 import * as fn from '../../src/db/functions.js';
 import { createMigratedDatabase, type TestDb } from '../helpers/db.js';
+import type { RateLimiter } from '../../src/middleware/rateLimit.js';
 import { order as makeOrder, catalog, tx, uniq } from '../helpers/fixtures.js';
 import { startPostgres, startRedis, type Service } from '../helpers/services.js';
 
@@ -22,13 +23,15 @@ const JWT = { secret: new TextEncoder().encode('test-jwt-secret-0123456789abcdef
 const LINK_SECRET = 'test-link-secret-0123456789abcdef0123';
 const COOKIE = cookieSpec('refresh', 'test').name;
 const PASSWORD = 'correct-horse-9';
+const NO_LIMIT: RateLimiter = { hit: async () => ({ count: 0, resetMs: 60_000 }) };
 
 let pg: Service, rd: Service, db: TestDb, prisma: PrismaClient, redis: Redis, cache: SessionCache, service: AuthService, app: Express;
 
 function build(c: SessionCache): { app: Express; service: AuthService } {
   const s = new AuthService(prisma, c, { ...DEFAULT_AUTH_TIMINGS, jwt: JWT, otpPepper: 'test-otp-pepper-0123', linkSecret: LINK_SECRET, webUrl: ORIGIN });
-  const a = createApp({ version: 't', corsOrigins: [ORIGIN], readiness: { database: async () => {}, redis: async () => {} },
-    routes: [authRouter({ prisma, cache: c, jwt: JWT, service: s, env: 'test', allowedOrigins: [ORIGIN], refreshMaxAgeS: DEFAULT_AUTH_TIMINGS.refreshIdleS })] });
+  // Rate limits are exercised in rate-limit.test.ts; here they would only throttle the suite's own traffic.
+  const a = createApp({ version: 't', origins: { storefront: [ORIGIN], admin: ['http://localhost:5173'] }, readiness: { database: async () => {}, redis: async () => {} },
+    routes: [authRouter({ prisma, cache: c, jwt: JWT, service: s, env: 'test', refreshMaxAgeS: DEFAULT_AUTH_TIMINGS.refreshIdleS, limiter: NO_LIMIT })] });
   return { app: a, service: s };
 }
 

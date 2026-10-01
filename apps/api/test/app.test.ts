@@ -1,10 +1,15 @@
 import { Router } from 'express';
 import request from 'supertest';
 import { z } from 'zod';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import { createApp, type AppDeps } from '../src/app.js';
 import { AppError } from '../src/lib/errors.js';
 import { originGuard } from '../src/middleware/originGuard.js';
+import { createServer } from 'node:http';
+import express from 'express';
+import { pino } from 'pino';
+import { errorHandler } from '../src/middleware/errorHandler.js';
+import { MemoryRateLimiter, RATE_LIMITS, rateLimit, type RateLimiter } from '../src/middleware/rateLimit.js';
 import { validate } from '../src/middleware/validate.js';
 
 const ORIGINS = ['https://artq.in', 'https://admin.artq.in'];
@@ -19,9 +24,16 @@ function testRoutes() {
   r.get('/cookie-route', originGuard(ORIGINS), (_req, res) => { res.json({ ok: true }); });
   r.get('/boom', () => { throw new Error('secret internal detail'); });
   r.get('/conflict', (_req, _res, next) => next(new AppError(409, 'OUT_OF_STOCK', 'Only 2 left', { available: 2 })));
+  r.post('/webhooks/test', (_req, res) => { res.json({ ok: true }); });
+  r.post('/webhooksfake', (_req, res) => { res.json({ ok: true }); });
+  r.post('/admin/thing', (_req, res) => { res.json({ ok: true }); });
+  for (const m of ['put', 'patch', 'delete'] as const) r[m]('/echo', (_req, res) => { res.json({ ok: true }); });
   return r;
 }
-const app = (over: Partial<AppDeps> = {}) => createApp({ version: 'test', corsOrigins: ORIGINS, readiness: { database: ok, redis: ok }, routes: [testRoutes()], ...over });
+const SF = 'https://artq.in';
+const ADMIN = 'https://admin.artq.in';
+const app = (over: Partial<AppDeps> = {}) => createApp({ version: 'test', origins: { storefront: [SF], admin: [ADMIN] }, readiness: { database: ok, redis: ok }, routes: [testRoutes()], ...over });
+const sfPost = (path: string, a = app()) => request(a).post(path).set('Origin', SF);
 
 describe('health', () => {
   it('GET /health → 200, no-store, security headers, no x-powered-by', async () => {
@@ -90,27 +102,27 @@ describe('errors', () => {
 
 describe('JSON-only bodies', () => {
   it('accepts application/json', async () => {
-    const res = await request(app()).post('/v1/echo').send({ name: 'resin', qty: 2 });
+    const res = await sfPost('/v1/echo').send({ name: 'resin', qty: 2 });
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ got: { name: 'resin', qty: 2 } });
   });
   it('rejects form-encoded, multipart and text/plain with 415', async () => {
     for (const [type, body] of [['application/x-www-form-urlencoded', 'name=resin&qty=2'], ['text/plain', 'hello'], ['multipart/form-data; boundary=x', '--x--']]) {
-      const res = await request(app()).post('/v1/echo').set('Content-Type', type).send(body);
+      const res = await sfPost('/v1/echo').set('Content-Type', type).send(body);
       expect(res.status).toBe(415);
       expect(res.body.error.code).toBe('UNSUPPORTED_MEDIA_TYPE');
     }
   });
   it('allows a bodyless POST', async () => {
-    expect((await request(app()).post('/v1/empty')).status).toBe(200);
+    expect((await sfPost('/v1/empty')).status).toBe(200);
   });
   it('malformed JSON → 400 INVALID_JSON', async () => {
-    const res = await request(app()).post('/v1/echo').set('Content-Type', 'application/json').send('{"name":');
+    const res = await sfPost('/v1/echo').set('Content-Type', 'application/json').send('{"name":');
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('INVALID_JSON');
   });
   it('body over 1 MB → 413', async () => {
-    const res = await request(app()).post('/v1/echo').send({ name: 'x'.repeat(1_100_000), qty: 1 });
+    const res = await sfPost('/v1/echo').send({ name: 'x'.repeat(1_100_000), qty: 1 });
     expect(res.status).toBe(413);
     expect(res.body.error.code).toBe('PAYLOAD_TOO_LARGE');
   });
@@ -118,13 +130,13 @@ describe('JSON-only bodies', () => {
 
 describe('validation (strict schemas)', () => {
   it('rejects unknown keys', async () => {
-    const res = await request(app()).post('/v1/echo').send({ name: 'resin', qty: 2, price: 1 });
+    const res = await sfPost('/v1/echo').send({ name: 'resin', qty: 2, price: 1 });
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('VALIDATION_ERROR');
     expect(res.body.error.details[0].location).toBe('body');
   });
   it('rejects missing and invalid fields with one detail each', async () => {
-    const res = await request(app()).post('/v1/echo').send({ qty: -1 });
+    const res = await sfPost('/v1/echo').send({ qty: -1 });
     expect(res.status).toBe(400);
     expect(res.body.error.details.map((d: { path: string }) => d.path).sort()).toEqual(['name', 'qty']);
   });
@@ -180,3 +192,78 @@ describe('CORS (browser read permission only)', () => {
     expect(res.headers['access-control-allow-origin']).toBeUndefined();
   });
 });
+
+describe('app-wide origin policy (task 1.5)', () => {
+  const send = (method: 'post' | 'put' | 'patch' | 'delete', path: string, origin?: string) => {
+    let r = request(app())[method](path).set('Content-Type', 'application/json');
+    if (origin) r = r.set('Origin', origin);
+    return r.send('{}');
+  };
+  it.each(['post', 'put', 'patch', 'delete'] as const)('%s on a route without its own guard: missing/foreign Origin → 403', async (m) => {
+    expect((await send(m, '/v1/echo')).body.error.code).toBe('ORIGIN_REJECTED');
+    expect((await send(m, '/v1/echo', 'https://evil.example')).status).toBe(403);
+    expect((await send(m, '/v1/echo', SF)).status).not.toBe(403);
+  });
+  it('webhooks are exempt (signature-authenticated), but only under /v1/webhooks/', async () => {
+    expect((await send('post', '/v1/webhooks/test')).status).toBe(200);
+    expect((await send('post', '/v1/webhooksfake')).status).toBe(403);
+  });
+  it('admin paths accept only admin origins; storefront paths only storefront origins', async () => {
+    expect((await send('post', '/v1/admin/thing', ADMIN)).status).toBe(200);
+    expect((await send('post', '/v1/admin/thing', SF)).status).toBe(403);
+    expect((await send('post', '/v1/empty', ADMIN)).status).toBe(403);
+  });
+  it('case variations of the path cannot bypass the policy', async () => {
+    expect((await send('post', '/V1/ECHO')).status).toBe(403);
+    expect((await send('post', '/V1/Admin/thing', SF)).status).toBe(403);
+    expect((await send('post', '/V1/WEBHOOKS/test')).status).toBe(200);
+  });
+  it('safe methods are not origin-checked', async () => {
+    expect((await request(app()).get('/v1/items')).status).toBe(200);
+    expect((await request(app()).head('/v1/items')).status).toBe(200);
+  });
+});
+
+describe('default rate limit (api.md §6: 300/min/IP)', () => {
+  it('allows 300 requests per minute per client, then 429 with Retry-After; /health is never limited', async () => {
+    const a = createServer(app({ rateLimiter: new MemoryRateLimiter() })).listen(0);   // one server for all 300 calls
+    onTestFinished(() => { a.close(); });
+    for (let i = 0; i < 300; i++) {
+      const r = await request(a).get('/v1/items').set('X-Forwarded-For', '203.0.113.7');
+      if (r.status !== 200) throw new Error(`request ${i + 1} → ${r.status}`);
+      if (i === 0) expect(r.headers).toMatchObject({ 'ratelimit-limit': '300', 'ratelimit-remaining': '299' });
+    }
+    const blocked = await request(a).get('/v1/items').set('X-Forwarded-For', '203.0.113.7');
+    expect(blocked.status).toBe(429);
+    expect(blocked.body.error).toMatchObject({ code: 'RATE_LIMITED', details: { retryAfterSeconds: expect.any(Number) } });
+    expect(Number(blocked.headers['retry-after'])).toBeGreaterThan(0);
+    expect(blocked.headers['ratelimit-remaining']).toBe('0');
+    expect((await request(a).get('/v1/items').set('X-Forwarded-For', '203.0.113.8')).status).toBe(200);   // another client
+    expect((await request(a).get('/health').set('X-Forwarded-For', '203.0.113.7')).status).toBe(200);
+  });
+
+  it('the window resets; a null key skips limiting', async () => {
+    let now = 0;
+    const limiter = new MemoryRateLimiter(() => now);
+    const mini = express();
+    mini.set('trust proxy', 1);
+    mini.get('/x', rateLimit({ limiter, name: 't', rule: { limit: 2, windowS: 60 } }), (_q, r) => { r.json({ ok: 1 }); });
+    mini.get('/skip', rateLimit({ limiter, name: 's', rule: { limit: 0, windowS: 60 }, key: () => null }), (_q, r) => { r.json({ ok: 1 }); });
+    mini.use(errorHandler(pino({ level: 'silent' })));
+    const hit = () => request(mini).get('/x');
+    expect([(await hit()).status, (await hit()).status, (await hit()).status]).toEqual([200, 200, 429]);
+    now += 60_001;
+    expect((await hit()).status).toBe(200);
+    expect((await request(mini).get('/skip')).status).toBe(200);
+    expect(RATE_LIMITS.default).toEqual({ limit: 300, windowS: 60 });
+  });
+
+  it('fails open (and reports) when the limiter is down', async () => {
+    const errors: unknown[] = [];
+    const broken: RateLimiter = { hit: async () => { throw new Error('redis down'); } };
+    const res = await request(app({ rateLimiter: broken, onRateLimitError: (e) => errors.push(e) })).get('/v1/items');
+    expect(res.status).toBe(200);
+    expect(errors).toHaveLength(1);
+  });
+});
+

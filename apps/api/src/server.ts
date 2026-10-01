@@ -7,6 +7,7 @@ import { DEFAULT_AUTH_TIMINGS, AuthService } from './auth/service.js';
 import { RedisSessionCache } from './auth/session-cache.js';
 import { ConfigError, loadEnv } from './config/env.js';
 import { makeReadinessChecks } from './lib/readiness.js';
+import { RedisRateLimiter } from './middleware/rateLimit.js';
 
 let env;
 try { env = loadEnv(); }
@@ -26,12 +27,17 @@ const service = new AuthService(prisma, cache, {
   ...DEFAULT_AUTH_TIMINGS, jwt, otpPepper: env.AUTH_OTP_PEPPER, linkSecret: env.AUTH_LINK_SECRET, webUrl: env.WEB_URL,
 });
 
+const limiter = new RedisRateLimiter(redis);
+const onRateLimitError = (err: unknown) => log.warn({ err: String(err) }, 'rate limiter unavailable; request allowed');
+
 const app = createApp({
   version: env.APP_VERSION,
-  corsOrigins: env.CORS_ORIGINS,
+  origins: { storefront: env.STOREFRONT_ORIGINS, admin: env.ADMIN_ORIGINS },
   log,
   readiness: makeReadinessChecks(prisma, redis),
-  routes: [authRouter({ prisma, cache, jwt, service, env: env.NODE_ENV, allowedOrigins: env.CORS_ORIGINS, refreshMaxAgeS: DEFAULT_AUTH_TIMINGS.refreshIdleS })],
+  rateLimiter: limiter,
+  onRateLimitError,
+  routes: [authRouter({ prisma, cache, jwt, service, env: env.NODE_ENV, refreshMaxAgeS: DEFAULT_AUTH_TIMINGS.refreshIdleS, limiter, onRateLimitError })],
 });
 
 const server = app.listen(env.PORT, () => log.info({ port: env.PORT }, 'api listening'));

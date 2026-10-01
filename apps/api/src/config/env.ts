@@ -4,6 +4,7 @@ function isBareOrigin(u: string): boolean {
   try { return new URL(u).origin === u.replace(/\/$/, ''); } catch { return false; }
 }
 const origin = z.string().refine(isBareOrigin, 'must be an origin (scheme://host[:port])');
+const origins = z.string().min(1).transform((s) => s.split(',').map((x) => x.trim()).filter(Boolean)).pipe(z.array(origin).min(1));
 
 // Validated at boot: a missing or malformed variable stops the process with a clear message (task 0.4).
 export const envSchema = z.object({
@@ -13,7 +14,10 @@ export const envSchema = z.object({
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
   DATABASE_URL: z.string().url().refine((u) => u.startsWith('postgresql://') || u.startsWith('postgres://'), 'must be a postgresql:// URL'),
   REDIS_URL: z.string().url().refine((u) => u.startsWith('redis://') || u.startsWith('rediss://'), 'must be a redis:// URL'),
-  CORS_ORIGINS: z.string().min(1).transform((s) => s.split(',').map((x) => x.trim()).filter(Boolean)).pipe(z.array(origin).min(1)),
+  /** Exact storefront origins allowed to call the API (architecture.md §5.5), comma-separated. */
+  STOREFRONT_ORIGINS: origins,
+  /** Exact admin SPA origins; only these may call `/v1/admin/*`. */
+  ADMIN_ORIGINS: origins,
   // Auth (architecture.md §5.1): one set per environment, never shared between environments.
   AUTH_JWT_SECRET: z.string().min(32),
   AUTH_JWT_ISSUER: z.string().min(1).optional(),
@@ -35,9 +39,10 @@ export function loadEnv(source: Record<string, string | undefined> = process.env
   const r = envSchema.safeParse(source);
   if (!r.success) throw new ConfigError(r.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`));
   const issues: string[] = [];
-  if (r.data.NODE_ENV === 'production' && r.data.CORS_ORIGINS.some((o) => !o.startsWith('https://'))) {
-    issues.push('CORS_ORIGINS: production origins must use https://');
+  for (const k of ['STOREFRONT_ORIGINS', 'ADMIN_ORIGINS'] as const) {
+    if (r.data.NODE_ENV === 'production' && r.data[k].some((o) => !o.startsWith('https://'))) issues.push(`${k}: production origins must use https://`);
   }
+  if (r.data.STOREFRONT_ORIGINS.some((o) => r.data.ADMIN_ORIGINS.includes(o))) issues.push('ADMIN_ORIGINS: must not overlap STOREFRONT_ORIGINS');
   if (r.data.AUTH_JWT_SECRET === r.data.AUTH_LINK_SECRET) issues.push('AUTH_LINK_SECRET: must differ from AUTH_JWT_SECRET');
   if (r.data.NODE_ENV === 'production' || r.data.NODE_ENV === 'staging') {
     for (const k of ['AUTH_JWT_SECRET', 'AUTH_OTP_PEPPER', 'AUTH_LINK_SECRET'] as const) {

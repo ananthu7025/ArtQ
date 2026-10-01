@@ -113,7 +113,7 @@ describe.skipIf(!enabled)('docker-compose stack', () => {
       const prisma = new PrismaClient({ datasourceUrl: env!.DATABASE_URL });
       const redis = new Redis(env!.REDIS_URL, { lazyConnect: true });
       closers.push(() => prisma.$disconnect(), () => redis.disconnect());
-      const app = createApp({ version: 'compose', corsOrigins: env!.CORS_ORIGINS, readiness: makeReadinessChecks(prisma, redis) });
+      const app = createApp({ version: 'compose', origins: { storefront: env!.STOREFRONT_ORIGINS, admin: env!.ADMIN_ORIGINS }, readiness: makeReadinessChecks(prisma, redis) });
       const res = await request(app).get('/health/ready');
       expect(res.status).toBe(200);
       expect(res.body.checks).toEqual({ database: { ok: true }, redis: { ok: true } });

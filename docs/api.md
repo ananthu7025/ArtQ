@@ -380,9 +380,13 @@ CRUD `/admin/product-types`, `/admin/categories`, `/admin/techniques` (image med
 | `/auth/login`, `/admin/auth/login` | 10/min/IP; 5 failures → 15-min account lock |
 | `/admin/auth/mfa/*` | 5 attempts per challenge; 20/min/IP |
 | `/auth/otp/request`, `/orders/:n/access/request` | 5/hour/target, 20/hour/IP, 30 s cooldown |
+| `/auth/signup`, `/auth/password/forgot` | Share the 20/hour/IP email-sending budget with `/auth/otp/request` (each sends an email) |
+| `/auth/signup/verify`, `/auth/otp/verify`, `/auth/password/reset`, `/auth/set-password` | 30/min/IP (in addition to per-code attempt caps) |
 | OTP verify | 5 attempts per code |
-| `/auth/refresh` | 30/min/session |
+| `/auth/refresh` | 30/min/session (session found from the cookie's hash; unknown cookies count against the IP) |
 | `/checkout/*`, `/orders/:n/payment/retry` | 20/min/cart |
 | `/contact`, `/custom-work`, `/newsletter/subscribe`, `/uploads/presign` | 5/min/IP |
 | `/search/suggest` | 60/min/IP |
 | Default | 300/min/IP; admin 600/min/user |
+
+Fixed windows counted in Redis (`rl:<bucket>:<key>`); IPv6 clients are keyed by /64. 429 `RATE_LIMITED` carries `Retry-After` and `details.retryAfterSeconds`; every limited response has `RateLimit-Limit/-Remaining/-Reset`. If Redis is unavailable requests are allowed (logged): the account lockout and OTP caps in PostgreSQL still apply.
