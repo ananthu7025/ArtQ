@@ -1,0 +1,47 @@
+{
+  "name": "artq",
+  "private": true,
+  "packageManager": "pnpm@10.34.6",
+  "engines": {
+    "node": ">=24.11 <25"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "compat:smoke": "pnpm --filter @artq/api compat:smoke",
+    "validate:docs": "npm --prefix tools/doc-validation run validate",
+    "lint": "eslint . --max-warnings=0 && pnpm lint:boundaries",
+    "lint:boundaries": "node packages/config/check-web-boundaries.mjs apps/web",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "turbo": "2.11.6",
+    "typescript": "6.0.3",
+    "@eslint/js": "10.0.1",
+    "eslint": "10.11.0",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "globals": "17.13.0",
+    "prettier": "3.9.9",
+    "typescript-eslint": "8.71.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@prisma/client",
+      "@prisma/engines",
+      "prisma",
+      "argon2",
+      "sharp",
+      "esbuild",
+      "msgpackr-extract",
+      "unrs-resolver",
+      "@tailwindcss/oxide",
+      "@embedded-postgres/darwin-arm64",
+      "@embedded-postgres/darwin-x64",
+      "@embedded-postgres/linux-x64",
+      "@embedded-postgres/linux-arm64"
+    ]
+  }
+}

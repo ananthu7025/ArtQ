@@ -1,0 +1,48 @@
+# Local development services (task 0.3). Versions match production majors (architecture.md §2, §12).
+name: artq
+services:
+  postgres:
+    image: postgres:16.14-alpine
+    environment:
+      POSTGRES_USER: artq
+      POSTGRES_PASSWORD: artq
+      POSTGRES_DB: artq
+    ports: ["5432:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U artq -d artq"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    ports: ["6379:6379"]
+    volumes: ["redisdata:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # S3-compatible stand-in for Cloudflare R2 (MinIO no longer publishes community images).
+  # S3Mock does not enforce credentials or bucket privacy; private-file access control is enforced by the API
+  # (presigned URLs after authorization) and verified against real R2 on staging.
+  s3:
+    image: adobe/s3mock:5.2.3
+    environment:
+      COM_ADOBE_TESTING_S3MOCK_STORE_INITIAL_BUCKETS: artq-public,artq-private
+      COM_ADOBE_TESTING_S3MOCK_STORE_ROOT: /s3mockroot
+      COM_ADOBE_TESTING_S3MOCK_STORE_RETAIN_FILES_ON_EXIT: "true"
+    ports: ["9090:9090"]
+    volumes: ["s3data:/s3mockroot"]
+
+  mailpit:
+    image: axllent/mailpit:v1.31.3
+    ports: ["1025:1025", "8025:8025"]
+
+volumes:
+  pgdata: {}
+  redisdata: {}
+  s3data: {}

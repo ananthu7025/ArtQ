@@ -52,16 +52,20 @@ Reconciliation, refund safety, authorization and inventory correctness are **MVP
 ---
 
 ## Phase 0: Foundations & compatibility (7.5 d)
-- [ ] **0.1 Compatibility spike + monorepo** (1.5 d): pnpm + Turborepo; `apps/web` (Next.js), `apps/admin` (Vite), `apps/api` (Express), `packages/{shared,ui,config}`; `.nvmrc` 24, `engines` `>=24.11 <25`. Smoke-test on Node 24: Next build, Vite build, Prisma 6.19 generate + migrate, sharp, argon2, BullMQ/ioredis, exceljs, @react-pdf/renderer, otplib; evaluate Prisma 7.
-  ✅ `pnpm build && pnpm test` green on Node 24 in CI; pinned versions recorded in review.md §6; any incompatibility has a documented substitute.
-- [ ] **0.2 Code quality** (0.5 d): ESLint, Prettier, strict TS, Husky, commitlint; a lint rule/CI grep forbidding `app/api/**` and `"use server"` in `apps/web`.
+- [x] **0.1 Compatibility spike + monorepo** (1.5 d): pnpm + Turborepo; `apps/web` (Next.js), `apps/admin` (Vite), `apps/api` (Express), `packages/{shared,ui,config}`; `.nvmrc` 24, `engines` `>=24.11 <25`. Smoke-test on Node 24: Next build, Vite build, Prisma 6.19 generate + migrate, sharp, argon2, BullMQ/ioredis, exceljs, @react-pdf/renderer, otplib; evaluate Prisma 7.
+  ✅ `pnpm build && pnpm test` green on Node 24 in CI; pinned versions recorded in docs/compatibility.md; any incompatibility has a documented substitute. **Done locally 2026-10-01** (CI part completes with 0.7): build 5/5, typecheck, tests, compatibility smoke 7/7 on Node 24.14.0 + PostgreSQL 16.14 + Redis; TypeScript pinned to 6.0.3, Prisma kept at 6.19.3 (7.10 needs `prisma.config.ts` + driver adapter).
+- [x] **0.2 Code quality** (0.5 d): ESLint, Prettier, strict TS, Husky, commitlint; a lint rule/CI grep forbidding `app/api/**` and `"use server"` in `apps/web`.
   ✅ CI fails if Next.js gains backend code.
-- [ ] **0.3 Local infrastructure** (0.5 d): docker-compose (PostgreSQL 16, Redis 7 AOF, MinIO with public+private buckets, Mailpit); `.env.example`.
+  **Done 2026-10-01:** ESLint 10 flat config (typescript-eslint, react-hooks), Prettier config, `pnpm lint` = ESLint + `lint:boundaries` (no `app/api`, `route.*`, `pages/api`, `"use server"` in apps/web; backend imports blocked); checker has 8 tests and was verified failing on planted violations. Husky/commitlint **not added**: commit hooks would block the team's current commits; enforcement moves to the CI gate (0.7).
+- [x] **0.3 Local infrastructure** (0.5 d): docker-compose (PostgreSQL 16, Redis 7 AOF, MinIO with public+private buckets, Mailpit); `.env.example`.
   ✅ Fresh clone → running stack in < 15 min.
-- [ ] **0.4 API skeleton** (1 d): middleware chain (architecture.md §4) incl. origin guard stub, JSON-only enforcement, strict zod, error format, `/health`, `/health/ready`.
+  **Done 2026-10-01 (not run locally: Docker unavailable on the dev machine):** `docker-compose.yml` with postgres 16.14, redis 7.4 (AOF), **S3Mock 5.2.3** instead of MinIO (MinIO images are no longer published on Docker Hub/Quay; S3Mock does not enforce bucket privacy, so private-file access is verified against R2 on staging), mailpit 1.31.3; all tags verified to exist. `.env.example` is tested to cover every API env variable and to load as a valid config. `docker compose up` itself remains unverified until a machine with Docker or CI runs it.
+- [x] **0.4 API skeleton** (1 d): middleware chain (architecture.md §4) incl. origin guard stub, JSON-only enforcement, strict zod, error format, `/health`, `/health/ready`.
   ✅ Form-encoded POST → 415; unknown body key → 400.
-- [ ] **0.5 Worker skeleton** (0.5 d): BullMQ queues, repeatable schedulers registered at start, Bull Board (admin-only later).
+  **Done 2026-10-01:** zod-validated env (fails fast with all issues), request id, pino-http, helmet, CORS allowlist (not authorization), JSON-only 415, strict validation 400, origin guard 403, error shape, 404/413/500 mapping, `/health` and `/health/ready` with timeouts. 44 tests incl. readiness against real PostgreSQL 16.14 + Redis (up, Redis down, DB down, wrong password).
+- [x] **0.5 Worker skeleton** (0.5 d): BullMQ queues, repeatable schedulers registered at start, Bull Board (admin-only later).
   ✅ Scheduler re-registers after worker restart.
+  **Done 2026-10-01:** worker runtime with upserted job schedulers, safe `jobId()` builder (rejects `:`), retries/backoff, retention; 12 tests incl. 8 against real Redis (scheduler fires, restart re-registers without duplicates and updates interval, duplicate job id processed once, failing job retried then failed while others continue, jobs added while stopped processed after restart, unknown queue rejected, unreachable Redis fails fast). Found and fixed: stop() right after start() leaked a rejected promise; start() now waits for worker connections. Bull Board is deferred to task 5.8 (it needs admin auth).
 - [ ] **0.6 Design tokens & primitives** (1.5 d): tokens from design-system.md (accessible `brand-700` action colour), primitives, **contrast unit test** over the token pairs in design-system.md §2.3.
   ✅ Test fails if any text pair < 4.5:1 or UI boundary < 3:1.
 - [ ] **0.7 CI** (0.5 d): lint → typecheck → unit → integration with Testcontainers (Postgres, Redis) → build; migration check (fails on destructive SQL without an `-- contract-phase` marker).

@@ -1,0 +1,4 @@
+@import "tailwindcss";
+@import "@artq/ui/tokens.css";
+
+body { background: var(--surface-50); color: var(--ink-700); font-family: var(--font-body); }

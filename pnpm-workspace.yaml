@@ -1,0 +1,4 @@
+# tools/doc-validation stays a standalone npm package until task 1.1 folds it into apps/api.
+packages:
+  - "apps/*"
+  - "packages/*"
