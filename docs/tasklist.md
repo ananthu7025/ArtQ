@@ -1,37 +1,40 @@
 # ArtQ: Delivery Plan & Task List
 
 > Each task: ID, scope, ✅ acceptance criteria, estimate in **developer-days (d)**. Status `[ ]` todo · `[~]` doing · `[x]` done.
-> Revised after the reliability/admin review ([review.md](review.md)). The previous plan was 94 d / "12–14 weeks". This one is re-estimated below.
+> Revised after two reviews ([review.md](review.md)). **Baseline: the original plan (commit `fe85b89`) totals 94 dev-days**: its phase table and its 69 task estimates both sum to 94 (6+12+11+15+8+14+11+8+9). Its header text said "≈ 95–110 dev-days". The second review's "104" could not be reproduced from the repository, so 94 is kept (review.md §5, finding 11).
 
 ## Assumptions
 - Team: **1 senior full-stack lead + 1 frontend-leaning developer**; part-time designer and QA are **not** counted in dev-days.
 - **Productive capacity:** 4 dev-days per developer per week (meetings, reviews, client calls, context switching), so **8 dev-days/week** for the team.
 - Estimates include unit/integration tests for the task. The cross-cutting acceptance suite is task 7.1.
 - Client inputs arrive on the dates in §Client inputs. Each week of delay on a blocking input moves the dependent milestone by the same amount.
-- No application code exists yet (repository contains only these docs and the client files).
+- No application code exists yet. The repository contains these docs, the client files and `tools/doc-validation` (executable checks of the database layer only).
 
 ## Summary
 
 | Phase | Name | Outcome | Dev-days |
 |-------|------|---------|---------:|
-| 0 | Foundations & compatibility | Node 24 toolchain proven, CI, environments, tokens | 7 |
-| 1 | Core platform & security | Schema, customer auth, **admin MFA**, permissions, audit, outbox, inbox, idempotency, media | 17 |
+| 0 | Foundations & compatibility | Node 24 toolchain proven, CI (incl. doc validation), environments, tokens | 7.5 |
+| 1 | Core platform & security | Schema + money/stock functions, customer auth, **admin MFA**, permissions, audit, outbox deliveries, fenced inbox, idempotency, media | 19 |
 | 2 | Catalogue & admin catalogue | Products page, editor, gate, import, inventory, all behind secure admin | 16 |
 | 3 | Storefront browsing | Home, listing, PDP, search with correct caching | 13 |
 | 4 | **Purchase flow** | Cart, coupons, shipping, checkout, Razorpay, COD, reconciliation | 19.5 |
-| 5 | **Merchant operations** | Orders, fulfilment, invoices, cancellations, refunds, returns, COD, exceptions | 18 |
+| 5 | **Merchant operations** | Orders, fulfilment, invoices, cancellations, refunds (attempts + provider idempotency), returns, COD, exceptions | 18.5 |
 | 6 | Content, SEO, admin completeness | CMS, content pages, SEO, staff/settings/audit UIs | 7 |
-| 7 | Hardening & launch | Acceptance suite, perf, security, a11y, restore drill, go-live | 12 |
-| | **MVP total** | | **109.5** |
-| | Contingency (15 %) | | **16.5** |
-| | **Planned MVP effort** | | **≈ 126 dev-days** |
+| 7 | Hardening & launch | Acceptance suite (AT-01…AT-21), perf, security, a11y, restore drill, go-live | 12.5 |
+| | **MVP total** | | **113** |
+| | Contingency (15 %) | | **17** |
+| | **Planned MVP effort** | | **130 dev-days** |
 
-**Calendar duration:** 126 ÷ 8 dev-days/week ≈ **16 weeks** of build. With typical client-input waits (photos, counts, accountant approval, Razorpay live KYC), plan for **16–19 weeks** from kickoff to launch. Dev-days measure effort; weeks are calendar time with two people working in parallel.
+**Calendar duration:** 130 ÷ 8 dev-days/week ≈ **16.5 weeks** of build. With typical client-input waits (photos, counts, accountant approval, Razorpay live KYC), plan for **17–20 weeks** from kickoff to launch. Dev-days measure effort; weeks are calendar time with two people working in parallel.
 
-**Why it changed (126 d vs. the previous 94 d, +32 d):**
-- **+15.5 d of MVP scope (109.5 vs 94).** New reliability and security work adds about 24.5 d: admin MFA and session rotation, payment attempts and the recovery matrix, reconciliation, durable webhook inbox, transactional outbox, idempotency, reservation-based inventory, coupon reservation, refunds with item allocation, credit notes, COD remittance/RTO, the returns workflow, the publication gate, import row outcomes/resume, private media, SSRF-safe fetching, exception and jobs views, the promotion pipeline, the restore drill and the acceptance suite.
-- **−9 d moved out of the MVP:** collections, abandoned carts, advanced reports, reviews and SMS go to the post-launch backlog.
-- **+16.5 d contingency (15 %).** The previous plan had none.
+**Why it changed (130 d vs. the 94 d baseline, +36 d):**
+- **+19 d of MVP scope (113 vs 94):**
+  - First review: about +24.5 d of new reliability and security work (admin MFA and session rotation, payment attempts and the recovery matrix, reconciliation, durable inbox, outbox, idempotency, reservation-based inventory, coupon reservation, refunds with item allocation, credit notes, COD remittance/RTO, returns workflow, publication gate, import row outcomes/resume, private media, SSRF-safe fetching, exception and jobs views, promotion pipeline, restore drill, acceptance suite).
+  - Second review: +3.5 d. Doc-validation CI gate +0.5 (0.9); money/stock database functions +1 (1.1); per-consumer outbox deliveries with fenced leases +0.5 (1.8); fenced webhook leases +0.5 (1.9); refund attempts with `X-Refund-Idempotency` +0.5 (5.4); seven additional acceptance scenarios +0.5 (7.1).
+  - −9 d moved to the post-launch backlog: collections, abandoned carts, advanced reports, reviews, SMS.
+  - Check: 94 + 24.5 + 3.5 − 9 = 113.
+- **+17 d contingency (15 % of 113).** The baseline plan had none.
 
 ## Milestones
 | Milestone | End of | What is demonstrable |
@@ -46,12 +49,12 @@ Reconciliation, refund safety, authorization and inventory correctness are **MVP
 
 ---
 
-## Phase 0: Foundations & compatibility (7 d)
+## Phase 0: Foundations & compatibility (7.5 d)
 - [ ] **0.1 Compatibility spike + monorepo** (1.5 d): pnpm + Turborepo; `apps/web` (Next.js), `apps/admin` (Vite), `apps/api` (Express), `packages/{shared,ui,config}`; `.nvmrc` 24, `engines` `>=24.11 <25`. Smoke-test on Node 24: Next build, Vite build, Prisma 6.19 generate + migrate, sharp, argon2, BullMQ/ioredis, exceljs, @react-pdf/renderer, otplib; evaluate Prisma 7.
-  ✅ `pnpm build && pnpm test` green on Node 24 in CI; pinned versions recorded in review.md §4; any incompatibility has a documented substitute.
+  ✅ `pnpm build && pnpm test` green on Node 24 in CI; pinned versions recorded in review.md §6; any incompatibility has a documented substitute.
 - [ ] **0.2 Code quality** (0.5 d): ESLint, Prettier, strict TS, Husky, commitlint; a lint rule/CI grep forbidding `app/api/**` and `"use server"` in `apps/web`.
   ✅ CI fails if Next.js gains backend code.
-- [ ] **0.3 Local infrastructure** (0.5 d): docker-compose (Postgres 16+, Redis 7 AOF, MinIO with public+private buckets, Mailpit); `.env.example`.
+- [ ] **0.3 Local infrastructure** (0.5 d): docker-compose (PostgreSQL 16, Redis 7 AOF, MinIO with public+private buckets, Mailpit); `.env.example`.
   ✅ Fresh clone → running stack in < 15 min.
 - [ ] **0.4 API skeleton** (1 d): middleware chain (architecture.md §4) incl. origin guard stub, JSON-only enforcement, strict zod, error format, `/health`, `/health/ready`.
   ✅ Form-encoded POST → 415; unknown body key → 400.
@@ -63,9 +66,11 @@ Reconciliation, refund safety, authorization and inventory correctness are **MVP
   ✅ Required checks on `main`.
 - [ ] **0.8 Environments & promotion** (1 d): staging + production projects with isolated DB/Redis/R2/secrets; API image built once per SHA, deployed to staging, promoted by digest to prod after approval; Vercel promote; Sentry.
   ✅ Promotion of the same digest demonstrated; staging cannot reach prod resources.
+- [ ] **0.9 Doc-validation gate** (0.5 d): run `tools/doc-validation` (PostgreSQL 16.14 + Redis) in CI on every change to `docs/database.md` or `tools/doc-validation/**`; publish the results JSON as a build artifact.
+  ✅ A PR that breaks the embedded schema, SQL or functions cannot merge.
 
-## Phase 1: Core platform & security (17 d)
-- [ ] **1.1 Schema & migrations** (2 d): database.md §5 + database.md §6 as `0001_init` + `0002_constraints_search_integrity`.
+## Phase 1: Core platform & security (19 d)
+- [ ] **1.1 Schema, migrations & money/stock functions** (3 d): database.md §5 + database.md §6 + database.md §6b as `0001_init` + `0002_constraints_search_integrity` + `0003_money_stock_functions`, copied verbatim from the validated doc blocks; thin typed wrappers in `apps/api` for every `aq_*` function (no re-implementation of their logic).
   ✅ Applies on empty DB; constraint tests (publish gate, refund cap, snapshot/invoice immutability, coupon capacity, category/type FK) pass.
 - [ ] **1.2 Shared pure functions** (2 d): money, tax rounding (database.md §4.4), slug, size normalisation, pricing (architecture.md §6.4) and the **single shipping algorithm** (architecture.md §6.5) with ≥ 40 table tests (threshold edges, coupon pushing below threshold, FREE_SHIPPING coupon, > 10 kg cap, volumetric > actual, COD fee never waived, non-serviceable pincode).
   ✅ All examples in product.md §8.2 and architecture.md §6.5 reproduced exactly.
@@ -79,9 +84,9 @@ Reconciliation, refund safety, authorization and inventory correctness are **MVP
   ✅ No token is issued before MFA; a recovery code works once; storefront token rejected on `/admin`.
 - [ ] **1.7 Permissions & audit** (1 d): permission map (architecture.md §5.9), `requirePermission`, per-permission strict schemas, audit middleware.
   ✅ AT-10 (STAFF price change) passes.
-- [ ] **1.8 Outbox + email consumer** (1.5 d): writer helper (same TX), dispatcher (`SKIP LOCKED`, jobId dedupe, NOTIFY wake-up), `processed_messages`, email consumer with `email_logs` dedupe and provider idempotency key.
+- [ ] **1.8 Outbox deliveries + email consumer** (2 d): consumer map for `aq_emit`; dispatcher loop claim (short TX) → `queue.add` with `outbox-<deliveryId>-<generation>` outside any TX → fenced `aq_outbox_mark_published` / `aq_outbox_publish_failed`; consumer wrapper `aq_outbox_begin_consume` … `aq_outbox_complete`; email consumer with `email_logs` dedupe and provider idempotency key; retention jobs.
   ✅ Kill dispatcher between enqueue and commit → no duplicate email; outbox DEAD → exception.
-- [ ] **1.9 Webhook inbox framework** (1 d): signature verify, durable insert, ack-after-commit, claim/lock, retry/backoff, DEAD, sweeper.
+- [ ] **1.9 Webhook inbox framework** (1.5 d): signature verify, durable insert, ack-after-commit, `wh-<id>` enqueue, fenced lease (`aq_webhook_claim/begin/renew/complete/fail`), retry/backoff, DEAD, sweeper.
   ✅ AT-04 passes on a synthetic provider.
 - [ ] **1.10 Idempotency middleware** (1 d): scope/operation/key, request hash, PROCESSING lock, replay, conflict, takeover after lock expiry, 24 h purge.
   ✅ AT-02 passes.
@@ -136,12 +141,12 @@ Reconciliation, refund safety, authorization and inventory correctness are **MVP
 - [ ] **4.10 Order notifications & confirmation** (1 d): outbox events → emails, success/processing pages, analytics `purchase` once.
 - [ ] **M2 demo** on staging.
 
-## Phase 5: Merchant operations (18 d) → **M3**
+## Phase 5: Merchant operations (18.5 d) → **M3**
 - [ ] **5.1 Admin Orders** (2.5 d): list filters (4 dimensions + exceptions), detail, transitions, packing slip, address correction, resend email.
-- [ ] **5.2 Dispatch & invoices** (2 d): consume reservations, shipment (single), invoice numbering + immutable snapshot + PDF render (private).
+- [ ] **5.2 Dispatch & invoices** (2 d): convert database.md §8.4 into an `aq_dispatch_order` function (consume reservations, shipment, invoice numbering + immutable snapshot, outbox) **and add a doc-validation check for it**; PDF render (private).
   ✅ Invoice sequence gap-free under 20 concurrent dispatches.
 - [ ] **5.3 Cancellation** (1.5 d): customer/admin, release, automatic refund for prepaid, coupon reversal policy.
-- [ ] **5.4 Refunds** (3 d): refundable calculator, item allocation, capacity under lock, provider send/unknown/failed, webhook + reconcile, manual COD refunds, credit notes.
+- [ ] **5.4 Refunds** (3.5 d): refundable calculator (reserved vs available at item/shipping/COD-fee/order/payment level), `aq_request_refund`/`aq_retry_refund`/`aq_cancel_manual_refund`, `refund.send` consumer with `X-Refund-Idempotency` + stored immutable body, outcome mapping (architecture.md §10.2), webhook + reconcile by receipt/notes, manual COD refunds, credit notes.
   ✅ AT-08 passes.
 - [ ] **5.5 Returns** (2.5 d): customer request (account + guest), private photos, decide → transit → receive → inspect → refund → close; quantity bounds.
   ✅ Duplicate/excess return quantities rejected under concurrency.
@@ -159,8 +164,8 @@ Reconciliation, refund safety, authorization and inventory correctness are **MVP
 - [ ] **6.4 SEO** (2 d): metadata, JSON-LD, sitemap, robots, canonical, redirects.
 - [ ] **6.5 Staff & Permissions, Settings, Audit Logs UIs** (1 d).
 
-## Phase 7: Hardening & launch (12 d) → **M4**
-- [ ] **7.1 Acceptance suite** (4 d): implement AT-01…AT-14 (below) in CI (integration with Testcontainers + Playwright on staging).
+## Phase 7: Hardening & launch (12.5 d) → **M4**
+- [ ] **7.1 Acceptance suite** (4.5 d): implement AT-01…AT-21 (below) in CI (integration with Testcontainers + Playwright on staging).
 - [ ] **7.2 Performance** (1.5 d): Lighthouse, bundle, `EXPLAIN` on listing/search, k6 (100 rps listing, 20 rps checkout quote).
 - [ ] **7.3 Security review** (1.5 d): auth/session, CSRF/Origin, IDOR (orders, attachments, addresses), SSRF, upload validation, permission matrix, secrets.
 - [ ] **7.4 Accessibility & browsers** (1 d): storefront **and admin** (contrast, keyboard, reachable nav).
@@ -178,18 +183,25 @@ Reconciliation, refund safety, authorization and inventory correctness are **MVP
 | **AT-02** | Concurrent repeated idempotency keys: 10 parallel initiates with the same key + 1 with a different body | Integration | One order; 9 get replay or `REQUEST_IN_PROGRESS`; different body → 422 |
 | **AT-03** | Provider success then local failure: Razorpay order created, process killed before TX2; client retries with same key | Integration (provider stub) | Attempt adopted by receipt; single provider order; no duplicate order; reconciler resolves if no retry |
 | **AT-04** | Webhook crash after durable receipt: inbox row committed, worker killed mid-processing | Integration | Endpoint returned 200 only after commit; sweeper reclaims after lock expiry; order paid exactly once |
-| **AT-05** | Duplicate and out-of-order webhooks: `captured` ×3 then a late `authorized`; refund events reversed | Integration | One payment row, rank stays CAPTURED; refund ends PROCESSED; one email per event key |
-| **AT-06** | Multiple distinct captures for one order (two attempts both paid) | Integration | First APPLIED; second EXCESS + exception + automatic refund; `captured_amount` = order total |
+| **AT-05** | Duplicate captured payment via **browser verify + webhook + reconciler** (concurrently and repeated), then a late `authorized`; refund events reversed | Integration | Exactly one `APPLIED`; coupon, sold count, cart, history, `order.placed` each once; rank stays CAPTURED; refund ends PROCESSED; one email per dedupe key (DB-level: C03) |
+| **AT-06** | Multiple distinct captures for one order (two attempts both paid) | Integration | First APPLIED; second EXCESS + exception + automatic refund; `captured_amount` = order total (C04) |
 | **AT-07** | Capture racing expiry and cancellation | Integration | Before expiry → order placed, not expired; after expiry with stock → restored; after expiry without stock → refunded + exception; after cancellation → refunded, never revived |
-| **AT-08** | Concurrent refunds: 3 staff refund ₹700 each on a ₹1,000 capture; per-item bound | Integration | Exactly one accepted; others 409; sums never exceed captured or item net |
+| **AT-08** | Concurrent refunds targeting **the same item** while the payment still has room; concurrent shipping/COD-fee refunds; COD manual refunds | Integration | Item, shipping, COD-fee, order and payment limits all hold; losers get 409 `REFUND_EXCEEDS_CAPACITY` with scope (C05) |
 | **AT-09** | Concurrent final coupon use: 10 checkouts with a limit-1 coupon | Integration | One RESERVED; others 422; expiry releases without touching `redeemed_count` |
 | **AT-10** | STAFF attempting price changes via inventory, variant, bulk and import endpoints | API | All rejected (403/400 unknown key); audit records attempts; prices unchanged |
 | **AT-11** | Refresh across reloads and multiple tabs: 3 tabs, reload, concurrent refresh, stolen-token replay | Playwright + API | No logout on concurrent refresh (grace); replay after grace revokes session; logout propagates to all tabs |
 | **AT-12** | Guest order and attachment access isolation | API + Playwright | Tracking link read-only; actions need email OTP; cookie scoped to one order; other orders'/users' attachments → 404/403; presigned URLs expire |
 | **AT-13** | Imports during reservations: inventory import sets on_hand while 3 orders hold reservations; catalogue re-import | Integration | `reserved` unchanged; available recalculated; count < reserved raises OVERSOLD; catalogue import changes no stock |
 | **AT-14** | Restore and rollback: PITR restore to scratch; deploy N+1 then roll back to N | Ops drill (staging) | Restore within RTO; integrity queries clean; app rollback works with the migrated schema |
+| **AT-15** | Excess capture after `PARTIALLY_REFUNDED` and after `REFUNDED` | Integration | Allocation `EXCESS`, automatic refund, order totals unchanged, `order.placed` not re-emitted (C04) |
+| **AT-16** | Failed refund retried after a newer refund reused its capacity; then retried after capacity frees | API + integration | First retry 409 and refund stays FAILED; second retry creates attempt n+1 with a new `X-Refund-Idempotency` key and receipt; UNKNOWN outcomes resend the same key and body (C06 + provider stub) |
+| **AT-17** | Redis loses an outbox job after `PUBLISHED`; a stale duplicate job also arrives | Integration (real Redis) | Delivery republished as next generation after timeout; effect once; delivery COMPLETED (C07) |
+| **AT-18** | Webhook worker stalls past its lease, another worker reclaims and completes, the first resumes | Integration | Stale complete/fail/renew rejected; domain change once; event PROCESSED (C08) |
+| **AT-19** | Multi-variant checkouts + releases + inventory imports + catalogue variant edits + taxonomy renames + search worker at concurrency ≥ 20 | Integration | No deadlocks (40P01); reservation/aggregate drift empty; search vectors current after the queue drains (C09) |
+| **AT-20** | Same idempotency key + identical body reused against a different order (cancel, payment retry, refund, return) | API | 422 `IDEMPOTENCY_KEY_REUSED`; first order's response never replayed (C10) |
+| **AT-21** | Role change and block with live storefront + admin sessions | API | Role change: admin session 401 on next request, storefront session keeps working; block: both 401 (C13) |
 
-Each row maps to the reference SQL in database.md §8 and the flows in architecture.md §7 and architecture.md §8.
+Each row maps to database.md §8 and architecture.md §7–§8. Where a row cites a C-check, the **database-level** behaviour already has an executable check in `tools/doc-validation`. The AT itself (through HTTP, the services, Razorpay test mode and the browser) is **not implemented** until task 7.1.
 
 ---
 

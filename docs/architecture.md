@@ -72,10 +72,10 @@ Next.js is used **only as a rendering layer**:
 ### 1.2 What Redis + BullMQ are used for (and what they are not trusted with)
 | Use | Example | If Redis is lost |
 |-----|---------|------------------|
-| Job delivery with retries | email sends, image processing, import batches, webhook processing | Outbox / inbox / import rows are still `PENDING` in Postgres → sweepers re-enqueue |
+| Job delivery with retries | email sends, image processing, import batches, webhook processing | Outbox deliveries stay `PENDING`/`LEASED`/`PUBLISHED` (not `COMPLETED`) and inbox rows stay unprocessed in Postgres → claim/sweeper republish them (§8) |
 | Delayed & repeatable jobs | expire unpaid orders (every minute), reconcile payments, daily reports | Schedulers are re-registered at worker start |
 | Rate limiting & OTP throttling | login 10/min/IP, OTP 5/h/target | Limits reset (acceptable; argon2 + lockouts in Postgres still apply) |
-| Session-state cache | `session:<sid>` → status/role/authVersion (TTL 60 s, deleted on revoke) | Falls back to Postgres lookup |
+| Session-state cache | `session:<sid>` → result of `aq_session_valid` (TTL 60 s, deleted on every revoke/version change) | Falls back to `aq_session_valid` in Postgres |
 | App cache | navigation, settings, types/categories | Rebuilt from Postgres |
 
 Redis runs with AOF persistence, but **no correctness property depends on it**.
@@ -95,8 +95,8 @@ Redis runs with AOF persistence, but **no correctness property depends on it**.
 | Forms/validation | React Hook Form + Zod | Zod schemas shared in `packages/shared` | One validation source |
 | API | Express | 5 | Simple, known |
 | ORM | **Prisma 6.19.x** | pinned; schema validated on 6.19.3. Prisma 7 (config moves to `prisma.config.ts`) evaluated in the Phase 0 spike, adopted only if all tooling passes | Type-safe queries, migrations |
-| Database | PostgreSQL | 16+ (managed); validated on 18 | Transactions, row locks, FTS, `pg_trgm` |
-| Queue/cache | Redis 7 + BullMQ 5 | pinned | Jobs, schedulers, rate limits |
+| Database | **PostgreSQL 16** (managed; minor upgrades follow the provider) | Major pinned to 16 in every environment. The doc validator runs on 16.14 (and 18.3 as a forward-compatibility check); a major upgrade requires a green validator + acceptance run on the new major first | Transactions, row locks, FTS, `pg_trgm` |
+| Queue/cache | Redis 7+ + **BullMQ 5.81.5** | pinned; 6.x evaluated before upgrading (same job-id rule verified on 6.3.11) | Jobs, schedulers, rate limits |
 | Storage | Cloudflare R2: `artq-public` (CDN) and `artq-private` (no public access) | n/a | Cheap, S3 API |
 | Images | sharp | pinned | Re-encode, resize, strip metadata |
 | Payments | Razorpay Orders API + Checkout.js + webhooks | API v1 | UPI/cards/netbanking |
@@ -105,10 +105,10 @@ Redis runs with AOF persistence, but **no correctness property depends on it**.
 | PDF | @react-pdf/renderer | n/a | Invoices, credit notes, packing slips |
 | Excel | exceljs | n/a | Imports/exports |
 | Password/MFA | argon2id; TOTP (RFC 6238) via `otplib`; AES-256-GCM secret encryption | n/a | n/a |
-| Testing | Vitest, Supertest, Testcontainers (Postgres/Redis), Playwright | n/a | Real DB for concurrency tests |
+| Testing | Vitest, Supertest, Testcontainers (Postgres 16/Redis), Playwright; `tools/doc-validation` for the DB layer | n/a | Real DB for concurrency tests |
 | Monitoring | Sentry, pino logs, uptime checks, Bull Board (admin-only) | n/a | n/a |
 
-**Compatibility spike (task 0.1):** before writing feature code, scaffold all apps on Node 24 and confirm install + build + a smoke test for Next.js, Vite, Prisma (generate + migrate), sharp (prebuilt binary), argon2 (prebuilt), BullMQ/ioredis, exceljs, @react-pdf/renderer, otplib. Record pinned versions in `docs/review.md` §4.
+**Compatibility spike (task 0.1):** before writing feature code, scaffold all apps on Node 24 and confirm install + build + a smoke test for Next.js, Vite, Prisma (generate + migrate), sharp (prebuilt binary), argon2 (prebuilt), BullMQ/ioredis, exceljs, @react-pdf/renderer, otplib. Record pinned versions in `docs/review.md` §6.
 
 ---
 
@@ -204,9 +204,9 @@ HTTP codes: 400 validation, 401 unauthenticated, 403 forbidden/origin rejected, 
 
 ### 5.2 Refresh-token rotation and reuse detection
 `POST /v1/auth/refresh` (cookie only, empty JSON body, Origin-checked):
-1. Hash the presented token; `SELECT … FROM refresh_tokens JOIN sessions … FOR UPDATE`.
+1. Hash the presented token; `SELECT … FROM refresh_tokens JOIN sessions … FOR NO KEY UPDATE` (serialises concurrent refreshes of the same token).
 2. Unknown hash → 401 `SESSION_INVALID` + clear cookie.
-3. Session revoked/expired, user not `ACTIVE`, or `session.auth_version < user.auth_version` → revoke session, 401, clear cookie.
+3. `aq_session_valid(sid)` false (revoked/expired, user not `ACTIVE`, or `session.auth_version` ≠ the user's version **for the session's audience**) → revoke session, 401, clear cookie.
 4. Token `ACTIVE` and not expired → mark `ROTATED` (`rotated_at = now`), insert successor (`parent_id`), extend session idle expiry, return new access token + `Set-Cookie` new refresh token.
 5. Token `ROTATED`:
    - **within 30 s grace** of `rotated_at` *and* its successor is still `ACTIVE` (two tabs refreshed at once): return a new access token **without** `Set-Cookie` (the browser already holds the successor from the first response). No new refresh token is minted.
@@ -224,12 +224,12 @@ HTTP codes: 400 validation, 401 unauthenticated, 403 forbidden/origin rejected, 
 | Event | Effect |
 |-------|--------|
 | Logout | Revoke current session; clear cookie |
-| Logout everywhere / password change / password reset | `auth_version++`; revoke all sessions (reset also revokes the current one) |
-| Staff blocks a user | `status = BLOCKED`, `auth_version++`, revoke all sessions; pending unpaid orders are left to expire normally; paid orders are still fulfilled unless staff cancels |
-| Role change / permission-relevant change | `auth_version++`; revoke all **admin** sessions of that user; customer sessions unaffected |
-| MFA reset by SUPER_ADMIN | Delete factor + recovery codes, `auth_version++`, revoke admin sessions; user must re-enrol |
+| Logout everywhere / password change / password reset / email change | `aq_revoke_all_sessions`: `storefront_auth_version++` **and** `admin_auth_version++`; revoke all sessions |
+| Staff blocks a user | `aq_revoke_all_sessions(…, block)`: `status = BLOCKED`, both versions++, revoke all sessions; pending unpaid orders expire normally; paid orders are still fulfilled unless staff cancels |
+| Role change / permission-relevant change | `aq_change_role`: **`admin_auth_version++` only**; revoke the user's **admin** sessions; storefront sessions stay valid (their version is unchanged) |
+| MFA reset by SUPER_ADMIN | Delete factor + recovery codes, `admin_auth_version++`, revoke admin sessions; user must re-enrol |
 
-Every authenticated request checks the session: `session:<sid>` from Redis (TTL 60 s; **deleted synchronously on revoke**), falling back to Postgres. A request is rejected if the session is revoked/expired, `session.auth_version < user.auth_version`, the user is not `ACTIVE`, or the token audience is wrong. Revocation therefore takes effect on the next request, not at access-token expiry.
+Users have two versions, `storefront_auth_version` and `admin_auth_version`. A session copies the version for its audience at creation; access tokens carry it as `ver` with `aud`. Every authenticated request checks `session:<sid>` in Redis (TTL 60 s; the key is **deleted synchronously** by every revoke or version change), falling back to `aq_session_valid(sid)` in Postgres. It is rejected if the session is revoked/expired, its version differs from the user's version for that audience, the user is not `ACTIVE`, a `CUSTOMER`-role user presents an admin session, or the token audience is wrong. Revocation therefore takes effect on the next request (C13 in review.md §6 exercises these rules at the database level).
 
 ### 5.5 CSRF and Origin protection
 Bearer-token requests cannot be forged cross-site, because browsers never attach the header automatically. **Cookie-authenticated** endpoints can be, so they get these layers:
@@ -258,7 +258,7 @@ SMS/WhatsApp are post-launch (DLT registration needed). At launch:
 - Login: **email + password**, or **email OTP**. Phone login is disabled.
 - Phone is a contact field only, stored unverified and **not** unique. Changing it needs no OTP because it confers no access.
 - When SMS launches (post-launch backlog), phone becomes a login identifier: a phone change then **requires an OTP to the new number** (`PHONE_CHANGE`), and a verified phone becomes unique.
-- Email change always requires an OTP to the **new** email plus a notification to the old one; `auth_version++`.
+- Email change always requires an OTP to the **new** email plus a notification to the old one; then `aq_revoke_all_sessions` (both versions++).
 
 ### 5.8 Admin authentication with mandatory MFA
 All staff roles (`STAFF`, `ADMIN`, `SUPER_ADMIN`) require TOTP. **No admin access or refresh token is issued before the MFA step completes.**
@@ -324,7 +324,7 @@ Permissions are declared in `packages/shared/permissions.ts` and checked by `req
 
 ## 6. Catalogue, caching, pricing & shipping
 
-### 6.1 Cache layers and maximum staleness
+### 6.1 Cache layers and staleness
 | Layer | What | Policy |
 |-------|------|--------|
 | Next.js ISR | Home, listing, product, content pages (HTML) | `revalidate: 60` |
@@ -333,7 +333,13 @@ Permissions are declared in `packages/shared/permissions.ts` and checked by `req
 | Redis app cache | navigation, settings, taxonomy | TTL 300 s, deleted on admin write |
 | Cloudflare (CDN host) | Public media renditions | Immutable URLs (content-addressed keys), 1 year |
 
-**Maximum staleness for public catalogue display:** about **3 minutes** (60 s ISR + 60 s edge + 60 s SWR). This is acceptable because price and stock are always re-validated live in cart and checkout.
+**Normal-case staleness** of public catalogue display is about **3 minutes** (60 s ISR + 60 s edge + 60 s stale-while-revalidate). This is **not an enforced maximum**: neither ISR nor `stale-while-revalidate` stops serving an old page when regeneration fails.
+
+**During API outages or failed regeneration:** Next.js keeps serving the last successfully generated HTML, and the CDN may serve its last cached copy, for as long as the outage lasts. Correctness does not depend on freshness:
+- the PDP's live availability call (`no-store`) fails, so Add to cart is disabled and the page shows "Prices and stock are temporarily unavailable";
+- cart, checkout and account calls fail closed with a maintenance message, and nothing can be bought at a stale price;
+- prices are always recomputed server-side at checkout; a changed price returns `PRICE_CHANGED`.
+After recovery the next request triggers regeneration; an admin "purge" action clears the CDN cache for urgent price corrections.
 
 **Never cached by any shared cache** (`Cache-Control: private, no-store`): everything under `/v1/auth`, `/v1/me`, `/v1/cart`, `/v1/checkout`, `/v1/orders`, `/v1/admin`, `/v1/uploads`, `/v1/products/:slug/availability`, `/v1/pincodes/*/serviceability`, and any response that depends on a cookie or `Authorization`. The PDP fetches availability client-side after hydration.
 
@@ -351,7 +357,7 @@ WHERE p.status = 'ACTIVE' AND p.deleted_at IS NULL
 So "20 gm + Metallic Gold + in stock" never matches a product whose gold variant is out of stock while another colour is in stock. The card's displayed "From ₹" uses the cheapest **matching** variant. Price sorting uses the matching variants' minimum. Facet counts apply all other filters (excluding the facet's own dimension) with the same `EXISTS` semantics.
 
 ### 6.3 Search
-`products.search_vector` is rebuilt by DB triggers when the product, its variants (SKU/size/colour/thickness/active), its category name or its type name change (database.md §6). `pg_trgm` handles typo-tolerant suggestions. A `search.rebuild` admin action recomputes everything.
+`products.search_vector` is computed by a BEFORE trigger when the product's own text/taxonomy columns change. Changes to variants (SKU/size/colour/thickness/active), category names or type names **append to `search_reindex_queue`** instead of locking the product inside the trigger (that pattern deadlocked; database.md §4.1). The search worker (`aq_process_search_queue`, every 2 s and on NOTIFY) locks each product and then recomputes it, so search reflects those changes within seconds. `pg_trgm` handles typo-tolerant suggestions. A `search.rebuild` admin action recomputes everything.
 
 ### 6.4 Pricing engine (`packages/shared/pricing.ts`, called only by the API)
 ```
@@ -398,7 +404,7 @@ Product status changes to `ACTIVE` only through `POST /v1/admin/products/:id/pub
 ## 7. Checkout & payments
 
 ### 7.1 Principles
-1. **A Razorpay checkout signature proves authenticity, not capture.** We mark an order `PAID` only after fetching the payment from Razorpay and confirming: `status = captured`, `payment.order_id` equals the **stored** `payment_attempts.provider_order_id` for this order, `amount` equals the attempt amount, `currency = INR`.
+1. **A Razorpay checkout signature proves authenticity, not capture.** The signature is checked against the **stored** `payment_attempts.provider_order_id` (the client's order id is ignored). The payment is then fetched from Razorpay and passed to **`aq_apply_provider_payment`**, the single function used by browser verification, the webhook worker and the reconciler. It binds payment → provider order → ArtQ order through the stored attempt, checks amount and currency, requires `captured`, decides the allocation under the order lock, and performs each side effect at most once (database.md §8.2).
 2. **Persist before calling out.** The payment attempt row (with our `receipt`) exists before `orders.create` is called; results are written after.
 3. **No DB transaction spans a network call.**
 4. **Everything is idempotent and monotonic**: idempotency keys on client mutations, unique provider ids, status ranks, inbox dedupe, outbox + consumer dedupe.
@@ -424,11 +430,11 @@ sequenceDiagram
   API->>DB: load open attempt → stored provider_order_id
   API->>API: HMAC_SHA256(stored_order_id|payment_id, key_secret) == signature?
   API->>RZ: GET /payments/{payment_id}
-  API->>DB: applyPayment TX (database.md §8.3) + outbox order.placed
+  API->>DB: TX aq_apply_provider_payment(...) (database.md §8.2): gated side effects + outbox
   API-->>C: 200 {status:"PLACED"} or 202 {status:"PROCESSING"}
   RZ-->>API: webhook payment.captured / order.paid
   API->>DB: inbox insert (commit) → 200
-  WK->>RZ: fetch payment (source of truth) → applyPayment (no-op if already applied)
+  WK->>RZ: fetch payment (source of truth) → aq_apply_provider_payment → DUPLICATE (no side effects)
   WK->>DB: outbox → email jobs
 ```
 
@@ -438,17 +444,18 @@ sequenceDiagram
 | Stock unavailable | TX1 conditional update returns 0 rows | Rollback; idempotency COMPLETED with 409 response | Cart refreshed with "only N left" |
 | Razorpay `orders.create` definitively fails (4xx) | Provider response | TX: attempt `CREATION_FAILED`; order stays `PENDING_PAYMENT` with reservations until expiry; idempotency COMPLETED with `201 {payment:null, retryPayment:true}` | "Payment couldn't start. Retry" → `/payment/retry` |
 | Razorpay timeout / 5xx / network error | Exception | Attempt `PROVIDER_UNKNOWN`; response 202 `{status:"PAYMENT_STARTING", retryAfter:3}`; idempotency left `PROCESSING` with short lock | Spinner, then automatic retry with the same key |
-| API crashes after Razorpay created the order, before TX2 | Attempt still `CREATING`; idempotency `PROCESSING` with expired lock | On client retry (same key) or the reconciler (every minute): `GET /orders?receipt=AQA_n` → if found, adopt `provider_order_id` → `CREATED`; if not found after 2 min → create a new provider order for the **same attempt receipt** (or mark `CREATION_FAILED`) | Same as success once adopted |
+| API crashes after Razorpay created the order, before TX2 | Attempt still `CREATING`; idempotency `PROCESSING` with expired lock (`TAKEOVER`) | Razorpay has **no idempotency header for order creation**; recovery is by our `receipt`. On client retry (same key) or the reconciler (every minute): look the order up by `receipt = AQA_n` → if found, adopt `provider_order_id` → `CREATED`; if not found 2 min after the attempt started → create the provider order (same receipt) or mark `CREATION_FAILED`. If two provider orders ever exist for one attempt, payments on either still bind via whichever id is stored, and payments on an unstored id are `UNLINKED` (reconciliation) | Same as success once adopted |
 | Client repeats initiate (double click, retry) | Same key | `COMPLETED` → replay stored response; `PROCESSING` + live lock → 409 `REQUEST_IN_PROGRESS` + `Retry-After`; same key + different body → 422 `IDEMPOTENCY_KEY_REUSED` | Single order |
 | Client sends a new key for the same cart while an order is pending | `orders_one_pending_per_cart_uq` | Return the existing pending order (200) instead of creating another | Same order |
 | Signature invalid | HMAC mismatch | 422 `PAYMENT_VERIFICATION_FAILED`; audit; the webhook/reconciler remains the source of truth | "Verifying payment…" then real status |
 | Provider fetch fails during verify | Timeout | `payment_status = PROCESSING`; 202 `{status:"PROCESSING"}`; client polls `GET /v1/checkout/status/:orderNumber` (every 3 s, up to 2 min) | "We're confirming your payment" |
-| Payment `authorized` not captured | Fetch status | `PROCESSING`; reconciler captures after 15 min if the order is still valid, else exception `CAPTURE_STUCK_AUTHORIZED` | "Processing" |
+| Payment `authorized` not captured | Fetch status | `PROCESSING`; after 15 min the reconciler calls `POST /payments/{id}/capture` (amount + currency) only if the order is still `PENDING_PAYMENT`. **Capture recovery is by re-fetch, not by an idempotency key**: on timeout or error it fetches the payment; `captured` ⇒ apply; still `authorized` ⇒ retry later; an "already captured" error ⇒ fetch and apply. Otherwise exception `CAPTURE_STUCK_AUTHORIZED` | "Processing" |
 | Amount/currency/order mismatch | Fetch compare | Not applied; `AMOUNT_MISMATCH` / `CURRENCY_MISMATCH` exception | "Verifying", then staff contacts the customer |
 | Payment failed | Fetch / webhook `payment.failed` | Record payment `FAILED` (rank 1); order stays `PENDING_PAYMENT`; customer can retry with Razorpay or switch to COD (new idempotency key, op `payment.retry`) | "Payment failed. Retry" |
 | Capture races expiry | Expiry job | **Pre-expiry check**: before expiring, fetch payments for every open attempt (outside TX). Captured/authorized ⇒ apply instead of expiring. The expiry TX requires `payment_status = UNPAID` | Correct state |
 | Capture after expiry or cancellation | Webhook/reconciler | database.md §4.6 rules | Confirmation or refund notice |
-| Second distinct capture | `applyPayment` sees order already `PAID` | `EXCESS` allocation + auto refund + exception | Duplicate-payment refund notice |
+| Second distinct capture (also after partial/full refund) | Another `APPLIED` payment exists for the order | `EXCESS` allocation + automatic refund + exception | Duplicate-payment refund notice |
+| Same payment reported again (verify + webhook + reconciler, any order, any number of times) | `payments.allocation` already set | `DUPLICATE`: no side effects | Nothing changes |
 
 **Payment retry** (`POST /v1/orders/:orderNumber/payment/retry`, Idempotency-Key, op `payment.retry`): allowed while `PENDING_PAYMENT` and not expired. It closes the previous open attempt (`CLOSED`) after checking with the provider that it has no authorized/captured payment, creates a new attempt (`CREATING` → provider → `CREATED`), and extends `expires_at` by at most 15 minutes (maximum total 60 minutes).
 
@@ -456,13 +463,13 @@ sequenceDiagram
 | Job | Schedule | Action |
 |-----|----------|--------|
 | `payments.reconcile-attempts` | every 1 min | Attempts in `CREATING`/`PROVIDER_UNKNOWN` older than 60 s: find the provider order by receipt; adopt or create/mark failed. Attempts `CREATED` for `PENDING_PAYMENT`/`PROCESSING` orders: `GET /orders/{id}/payments` → apply any captured, capture stale authorized |
-| `orders.expire-pending` | every 1 min | Pre-expiry provider check, then the database.md §8.4 TX |
-| `refunds.reconcile` | every 5 min | Refunds `REQUESTED` (not sent) → send; `UNKNOWN`/`PENDING` → `GET /payments/{id}/refunds`, match by `receipt` → update status |
+| `orders.expire-pending` | every 1 min | Pre-expiry provider check, then `aq_release_unpaid_order` (database.md §8.3) |
+| `refunds.reconcile` | every 5 min | `UNKNOWN` attempts: first `GET /payments/{id}/refunds` and match `receipt`/`notes.aq_refund_id` → found ⇒ record result; not found ⇒ resend the **same attempt** (same `X-Refund-Idempotency` key, same stored request). `PENDING` → fetch refund by id → `aq_mark_refund_processed` when processed. `REQUESTED` whose delivery is not completed → handled by the outbox (§8.2) |
 | `payments.reconcile-daily` | 02:30 IST | List the previous day's Razorpay payments and refunds; compare with DB: missing → `UNLINKED_PAYMENT`; amount/status differences → `RECON_MISMATCH` |
 | `inventory.drift-check` | 03:00 IST | `variant_reservation_drift`, `product_aggregate_drift`, coupon counters → alert |
 | `cod.remittance-overdue` | daily | COD orders `COD_COLLECTED` > 14 days without remittance → notification |
 
-Razorpay API capabilities assumed here (fetch order by `receipt`, list payments of an order, capture, refund with `receipt`, list refunds of a payment, `x-razorpay-event-id` header) are **verified in the Phase 4 payment spike against the test account before implementation**. Any gap is recorded in review.md §4.
+**Provider contracts.** Verified from Razorpay's published API documentation during this review: refunds accept `X-Refund-Idempotency` (key ≥ 10 characters, letters, digits, `-`, `_`); a retry must reuse the same key and an identical body; Razorpay's documentation reports a conflict (HTTP 409, or `BAD_REQUEST` on another page) when the same key arrives with a different body or while the first request is still being processed; the refund body accepts `amount`, `speed`, `notes`, `receipt` (Razorpay also rejects a reused `receipt` on the same payment). **Still unverified against a live test account** (task 4.0): order lookup by `receipt`, the exact status codes and error bodies above, late-authorization behaviour, the `x-razorpay-event-id` header, and how long Razorpay retains refund idempotency keys.
 
 ---
 
@@ -472,15 +479,15 @@ Razorpay API capabilities assumed here (fetch order by `receipt`, list payments 
 `POST /v1/webhooks/razorpay`:
 1. Read the raw body and verify `X-Razorpay-Signature` = HMAC-SHA256(rawBody, `RAZORPAY_WEBHOOK_SECRET`) with a constant-time compare. Invalid → 400 (not stored).
 2. `INSERT … ON CONFLICT (provider, event_id) DO NOTHING` with `event_id` from the `x-razorpay-event-id` header, then **commit**.
-3. Best-effort `queue.add('webhook.process', {id}, {jobId: 'wh:'+id})`.
+3. Best-effort `queue.add('webhook.process', {id}, {jobId: 'wh-' + id})`. (BullMQ rejects custom ids containing `:`; verified on 5.81.5 and 6.3.11.)
 4. Respond **200 only after step 2 committed**. If the DB is unavailable, respond 503 so Razorpay retries.
 5. Duplicate delivery: if the row is `PROCESSED`/`IGNORED`, respond 200. If `RECEIVED`/`FAILED`, or `PROCESSING` with an expired lock, re-enqueue and respond 200.
 
-**Processing** (worker): claim (database.md §8.7), then **re-fetch the authoritative object from Razorpay** (payment, refund or order) and apply it with monotonic rules. Event order therefore does not matter: an old `payment.authorized` arriving after `payment.captured` cannot lower the rank. Mark `PROCESSED` in the same transaction as the domain change. On error, mark `FAILED` with exponential backoff (30 s × 2ⁿ, max 1 h); after 10 attempts mark `DEAD` and raise a `WEBHOOK_DEAD` exception.
-A **sweeper** (every minute) re-enqueues `RECEIVED`/`FAILED` rows due for retry and `PROCESSING` rows whose lock expired (worker crash).
+**Processing** (worker, database.md §8.6): `aq_webhook_claim` returns a fresh **lease token** (5-minute lease; `NULL` if another worker holds a live lease). The worker **re-fetches the authoritative object from Razorpay** outside any transaction, renewing the lease every 60 s if the fetch is slow (`aq_webhook_renew`, fenced). It then runs one transaction: `aq_webhook_begin(id, token)` (locks the row, proves ownership) → domain function(s) → `aq_webhook_complete(id, token)`, which raises `LEASE_LOST` if the token no longer matches, rolling back the domain change. Failures call `aq_webhook_fail(id, token)`, which is also fenced, so a stale worker can neither overwrite a newer worker's result nor reschedule its retry. Backoff 30 s × 2ⁿ (max 1 h); after 10 attempts → `DEAD` + `WEBHOOK_DEAD`. Because the worker re-fetches and the functions are monotonic and gated, event order does not matter.
+A **sweeper** (every minute) enqueues `wh-<id>` for `RECEIVED`/`FAILED` rows that are due and for `PROCESSING` rows whose lease expired.
 
 ### 8.2 Transactional outbox
-Domain transactions insert `outbox_events` rows for every critical side effect:
+Domain transactions call `aq_emit(…)`, which inserts one `outbox_events` row and one **`outbox_deliveries` row per consumer** in the same transaction:
 
 | Event | Consumers |
 |-------|-----------|
@@ -494,22 +501,28 @@ Domain transactions insert `outbox_events` rows for every critical side effect:
 | `return.status_changed` | customer email |
 | `account.email_verified` | guest-order linker |
 
-The **dispatcher** (worker, every second, plus `LISTEN/NOTIFY` wake-up) runs database.md §8.8: `FOR UPDATE SKIP LOCKED` batch → `queue.add(consumer, payload, {jobId:'outbox:'+id+':'+consumer})` → mark `DISPATCHED`. A crash re-enqueues the same jobIds, and BullMQ ignores a duplicate jobId while the job exists. Completed jobs are kept for 7 days so late duplicates are still recognised.
+The **dispatcher** (worker, every second, plus `LISTEN/NOTIFY` wake-up) follows database.md §8.7, and **no PostgreSQL transaction is open while it talks to Redis**:
+1. **Claim** (short TX): `aq_outbox_claim` leases up to 100 deliveries (`LEASED`, new `lease_token`, `generation + 1`, 30 s lease) that are `PENDING` and due, `LEASED` with an expired lease, or `PUBLISHED` but not `COMPLETED` within the **redelivery timeout (30 min, longer than BullMQ's own retry window)**. Rows past 10 generations become `DEAD` + `OUTBOX_DEAD`.
+2. **Publish** (no TX): `queue.add(consumer, {deliveryId}, {jobId: 'outbox-<deliveryId>-<generation>'})`. The id is deterministic per generation, so a repeated add within one generation is ignored by BullMQ.
+3. **Ack** (short TX): `aq_outbox_mark_published(id, token)` succeeds only for the current lease owner. A dispatcher whose lease expired gets `false` and does nothing further: the newer owner's publication stands, and any duplicate job is absorbed by consumer dedupe. On an `add` error: `aq_outbox_publish_failed` (fenced) → `PENDING` with backoff.
+
+**Broker acceptance is not completion.** `PUBLISHED` means Redis accepted a job; `COMPLETED` is set only by the consumer. If Redis loses an accepted job (failover, eviction, flush), the delivery is still `PUBLISHED` in PostgreSQL and is republished as the next generation after the redelivery timeout. Outstanding work is always reconstructable from `outbox_deliveries` alone. Retention: `COMPLETED` deliveries 30 days, then events with no open deliveries are purged; `DEAD` rows are kept until resolved in the Jobs & Webhooks view; BullMQ keeps completed jobs 7 days and failed jobs 30 days.
 
 ### 8.3 Consumers: at-least-once with dedupe
-- **DB side effects** (refund sender, guest linker, credit-note issuer): insert into `processed_messages(consumer, message_id)` in the same transaction as the effect; on conflict, skip.
-- **Emails:** `email_logs.dedupe_key` (`<event>:<aggregate>:<recipient>`). Insert `SENDING` → call the provider with the same idempotency key → mark `SENT`. If a `SENT` row exists, skip. **Delivery is at-least-once, not exactly-once**: a crash between provider acceptance and the `SENT` update can produce a duplicate, mitigated by the provider idempotency key where supported.
-- **Provider calls** (refund send, capture): idempotent by our `receipt`; before retrying an `UNKNOWN` call, query the provider by receipt.
-- BullMQ retries: 8 attempts, exponential backoff (5 s base); final failure → job moved to failed set + `OUTBOX_DEAD` or `REFUND_FAILED` exception as applicable.
+- **Durable dedupe is the delivery row.** Every consumer starts its transaction with `aq_outbox_begin_consume(deliveryId)` (locks the row; `false` when already `COMPLETED`/`DEAD`, in which case the job is acknowledged and nothing happens) and ends a successful effect with `aq_outbox_complete(deliveryId)`.
+- **DB-only effects** (guest-order linker, credit-note issuer, restock notifier bookkeeping): effect + `aq_outbox_complete` in **one** transaction, so they happen exactly once in the database even if jobs are duplicated (C07).
+- **External effects** are at-least-once with provider-side dedupe:
+  - **email:** TX `email_logs` insert (`SENDING`, `dedupe_key`; skip if `SENT`) → provider call with the same idempotency key → TX mark `SENT` + `aq_outbox_complete`. A crash between provider acceptance and the final commit can produce a duplicate email unless the provider honours the key. **Exactly-once email delivery is not promised.**
+  - **refund send:** the provider idempotency key lives on the refund attempt (§10.2), so a duplicate job resends the same key and body and Razorpay returns the original result.
+- BullMQ retries: 8 attempts, exponential backoff (5 s base). After the final failure the delivery stays `PUBLISHED` (not completed) and is republished by the dispatcher until the generation limit, then `DEAD` + `OUTBOX_DEAD`.
 
 ### 8.4 Job catalogue
 | Queue / job | Trigger | Notes |
 |-------------|---------|-------|
-| `webhook.process` | inbox insert / sweeper | §8.1 |
-| `outbox.dispatch` | scheduler 1 s + NOTIFY | §8.2 |
-| `email.send` | outbox | §8.3 |
-| `refund.send` | outbox `refund.requested` / reconciler | Razorpay refund with `receipt` |
-| `invoice.render` | outbox | Private PDF |
+| `webhook.process` | inbox insert / sweeper | jobId `wh-<eventRowId>`; §8.1 |
+| `outbox.dispatch` | scheduler 1 s + NOTIFY | claim → publish → fenced ack; §8.2 |
+| consumer queues (`email.customer`, `email.admin`, `notify.admin`, `refund.send`, `invoice.render`, `invoice.credit_note`, `restock.notify`, `account.link_orders`) | outbox deliveries | jobId `outbox-<deliveryId>-<generation>`; §8.3 |
+| `search.reindex` | scheduler 2 s + NOTIFY | `aq_process_search_queue` |
 | `media.process` | upload complete | §9 |
 | `import.apply` | admin confirm | Batches of 25 rows, resumable |
 | `payments.*`, `orders.expire-pending`, `refunds.reconcile`, `inventory.drift-check`, `cod.remittance-overdue` | schedulers | §7.4 |
@@ -547,11 +560,23 @@ Return photos, custom-work attachments, invoice/credit-note PDFs and import file
 Confirm → Pack (packing slip PDF) → Ship (courier, AWB, tracking URL, actual weight). Shipping consumes reservations and issues the tax invoice in one transaction (database.md §8.5) → Out for delivery → Delivered (COD: `COD_COLLECTED`). RTO: `RTO_IN_TRANSIT` → `RTO_RECEIVED` (inspect → `RTO_RESTOCK` for sellable units; order `CANCELLED`; prepaid refund per policy, decision D-9; COD `NOT_COLLECTED`; credit note if an invoice exists). Lost: `LOST` → prepaid full refund or manual reship (a new admin order); courier claim tracked in the admin note; `LOST_WRITE_OFF` movement.
 
 ### 10.2 Refund flow
-1. Admin (or the system, for cancellation/excess/late capture) calls `POST /v1/admin/orders/:id/refunds` (Idempotency-Key, op `refund.create`, step-up for staff) with an item allocation (`[{orderItemId, quantity, amount}]`) + shipping/COD-fee components + reason/kind (+ `returnRequestId`).
-2. TX: lock order → lock payment → validate the item bounds and the capacity rule → insert refund `REQUESTED` + items + outbox `refund.requested` (database.md §8.6).
-3. Worker `refund.send`: POST Razorpay refund (`amount`, `receipt = AQR_n`, notes). Success → `PENDING` with `provider_refund_id`; timeout → `UNKNOWN` (reconciler queries by receipt); definitive error → `FAILED` + `REFUND_FAILED` exception (capacity released automatically because `FAILED` is excluded from the sum).
-4. Webhook `refund.processed` / reconciler → `PROCESSED`: update `payments.amount_refunded`, `orders.refunded_amount`, `order_items.refunded_*`, `payment_status`; outbox → customer email + credit note (if invoiced).
-5. COD refunds: method `MANUAL_BANK`. Staff records the bank/UPI transfer reference → `PROCESSED`. Requires the order to be `COD_COLLECTED` or `COD_REMITTED`.
+1. **Request.** Admin (or the system, for cancellation/excess/late capture) calls `POST /v1/admin/orders/:id/refunds` (Idempotency-Key, op `refund.create`, target `order:<id>`, step-up for staff) with an item allocation (`[{orderItemId, quantity, amount}]`), shipping/COD-fee components, reason/kind and optional `returnRequestId`.
+2. **Reserve (one TX):** `aq_request_refund` locks order → payment, inserts the refund and items, and reserves capacity at **item, shipping, COD-fee, order and payment** level (`aq_refund_capacity`; counted statuses `REQUESTED`/`PENDING`/`UNKNOWN`/`PROCESSED`). Any limit hit raises `REFUND_EXCEEDS_CAPACITY:<item|order|payment>` and nothing is written. For online refunds it creates **attempt 1** with an immutable request body, `provider_idempotency_key = artq-refund-<id>-a1` and `receipt = AQR_<id>_A1`, plus a `refund.send` outbox delivery.
+3. **Send (no TX):** consumer `refund.send` posts `POST /v1/payments/{payment_id}/refund` with header **`X-Refund-Idempotency: <attempt key>`** and **exactly the stored request body**. The receipt (inside the body) is kept for reconciliation and support lookups.
+4. **Record (one TX):** `aq_refund_attempt_result(attempt, outcome, …)`:
+
+| Provider result | Outcome | Effect |
+|-----------------|---------|--------|
+| 2xx, refund `pending` / `processed` | `ACCEPTED_PENDING` / `ACCEPTED_PROCESSED` | `PENDING` (+ provider refund id) / `PROCESSED` with counters |
+| Timeout, connection reset, 5xx | `UNKNOWN` | refund `UNKNOWN`, capacity kept; reconciler searches refunds by receipt/notes, else **resends the same attempt** (same key, same body) |
+| 409 "request with the same idempotency key is still in progress" | `IN_PROGRESS` | as `UNKNOWN`; retry later with the same key |
+| 409/400 "different request with the same idempotency key" | `MISMATCH` | should be impossible (immutable body): capacity kept, refund `UNKNOWN`, exception `REFUND_IDEMPOTENCY_MISMATCH`, **no automatic retry**; staff reconcile against Razorpay |
+| 4xx definitive (amount exceeds captured, already fully refunded, invalid payment) | `FAILED` | before recording, the consumer lists the payment's refunds to make sure no earlier attempt succeeded; then refund `FAILED`, capacity **released**, exception `REFUND_FAILED` |
+| Result for an older attempt arriving after a newer one exists | n/a | `STALE`: ignored |
+
+5. **Processed:** webhook `refund.processed` or the reconciler → `aq_mark_refund_processed` (gated, once): processed counters on items, order and payment, `payment_status` → `PARTIALLY_REFUNDED`/`REFUNDED`; outbox → customer email + credit note (if invoiced). For `EXCESS_CAPTURE`/`LATE_CAPTURE` refunds the related exception is resolved and the order totals are untouched.
+6. **Retry of a FAILED refund** (`POST /v1/admin/refunds/:id/retry`): `aq_retry_refund` reacquires all capacity atomically and creates attempt n+1 with a **new** key and receipt (a reused key would return Razorpay's cached failure, and a reused receipt is rejected). If a newer refund consumed the capacity, the retry returns 409 and the refund stays `FAILED`.
+7. **COD refunds:** method `MANUAL_BANK`, no provider attempt; allowed only after collection; the same order/item/component capacity applies (cap = order total). Staff record the bank/UPI reference → `aq_mark_refund_processed`.
 
 ### 10.3 Returns
 Request (customer, within `returnWindowHours` of delivery, damaged/wrong/defective/missing only, photos required) → staff decides (approve quantities / reject with reason) → `IN_TRANSIT` (pickup or customer ships) → `RECEIVED` (received qty) → `INSPECTED` (sellable/damaged split; sellable restocked) → refund created referencing the return → `REFUNDED` → `CLOSED`. "Missing item" returns skip receipt and go from approval to refund.
@@ -590,7 +615,7 @@ Staff record each courier remittance (reference, date, amount, list of order num
 |-----|-----|-------|-----|-----------------|----------|-------|
 | local | `localhost:3000` | `localhost:5173` | `localhost:4000` | docker Postgres/Redis, MinIO, Mailpit | Razorpay test | `aq_*_dev` cookies |
 | staging | `staging.artq.in` | `admin-staging.artq.in` | `api-staging.artq.in` | **separate** DB, Redis, buckets | Razorpay **test** keys + test webhook | `noindex`, basic-auth on web, synthetic data only (no production PII) |
-| production | `artq.in` (`www` → 301) | `admin.artq.in` | `api.artq.in` | managed PG with PITR, Redis with AOF, R2 | live keys | MFA mandatory |
+| production | `artq.in` (`www` → 301) | `admin.artq.in` | `api.artq.in` | managed **PostgreSQL 16** with PITR, Redis with AOF, R2 | live keys | MFA mandatory |
 
 Separate credentials, JWT keys, MFA encryption keys, webhook secrets and cookie names per environment. No environment can reach another's database.
 
@@ -624,7 +649,9 @@ Separate credentials, JWT keys, MFA encryption keys, webhook secrets and cookie 
 | API 5xx rate > 2 % for 5 min; `/health/ready` failing | P1 |
 | Webhook endpoint returning non-2xx; inbox `FAILED`/`DEAD` > 0 for 15 min | P1 |
 | Open payment exceptions older than 1 h (`EXCESS_CAPTURE`, `LATE_CAPTURE_*`, `AMOUNT_MISMATCH`, `REFUND_FAILED`) | P1 |
-| Outbox `PENDING` older than 5 min, or `DEAD` > 0 | P2 |
+| Outbox deliveries `PENDING`/`LEASED` older than 5 min, `PUBLISHED` but not completed for > 30 min (broker loss or stuck consumer), or `DEAD` > 0 | P2 |
+| Refunds `UNKNOWN` > 30 min; any `REFUND_IDEMPOTENCY_MISMATCH` | P1 |
+| `search_reindex_queue` older than 5 min; `published_not_ready` non-empty | P3 |
 | Orders `PROCESSING` > 30 min; attempts `PROVIDER_UNKNOWN` > 10 min | P2 |
 | Drift views non-empty; `OVERSOLD` exception | P2 |
 | Daily reconciliation mismatch | P2 |

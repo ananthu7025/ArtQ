@@ -1,10 +1,14 @@
 # ArtQ: Database Design
 
-> PostgreSQL 16+ (validated on 18) · Prisma ORM 6.19.x · Extensions: `pg_trgm`, `citext`, `unaccent`
+> **PostgreSQL 16 (pinned major for deployment; validated on 16.14, forward-compatibility run on 18.3)** · Prisma ORM 6.19.3 · Extensions: `pg_trgm`, `citext`, `unaccent`
 > Companion docs: [architecture.md](architecture.md) (flows, jobs) · [api.md](api.md) (contracts) · [catalog.md](catalog.md) (data) · [review.md](review.md) (change log)
 >
-> **Authority:** §5 (Prisma schema) is the source of truth for columns and types; §6 (raw SQL migration) adds constraints Prisma cannot express.
-> §3 explains semantics and invariants. If prose and schema disagree, the schema wins and the prose is a bug.
+> **Authority:** §5 (Prisma schema) is the source of truth for columns and types; §6 (`0002`) adds constraints and triggers Prisma
+> cannot express; §6b (`0003`) contains the **money/stock functions the API calls**. §3–§4 explain semantics; §8 shows how services call
+> the functions. If prose and code blocks disagree, the code blocks win and the prose is a bug.
+>
+> **Executable checks:** `tools/doc-validation` extracts §5, §6 and §6b from this file and runs them on PostgreSQL 16.14 with real
+> concurrency (review.md §6). It validates the database layer only; the application does not exist yet.
 
 ---
 
@@ -22,7 +26,8 @@
 | Enums | Postgres enums via Prisma (multi-line `enum` blocks; single-line enums are invalid Prisma syntax) |
 | Case-insensitive text | `CITEXT` for emails and coupon codes |
 | JSON | Only for flexible/opaque data (settings values, provider payloads, pricing snapshot, import messages). Never for fields we filter or join on |
-| Concurrency | Short transactions, row locks in a **fixed lock order** (§4.1); optimistic `version` column on products/variants/orders for admin edits |
+| Concurrency | Short transactions; row locks in the **global lock order** (§4.1); explicit locks are `FOR NO KEY UPDATE` (never plain `FOR UPDATE`, which conflicts with the key-share locks taken by foreign-key checks and caused 149 deadlocks in C09; primary keys are never updated). The only exception is work-queue claiming (`outbox_deliveries`, `search_reindex_queue`), which uses `FOR UPDATE SKIP LOCKED` on rows nothing references concurrently; triggers never lock rows of other tables; optimistic `version` column on products/variants/orders for admin edits |
+| Critical transactions | Payment application, reservations, releases, refunds, inventory adjustments, idempotency, inbox/outbox leases and session validity are **database functions** (`aq_*`, §6b) called by the services, so the tested code is the shipped code. Every side effect inside them is gated by an affected-row check |
 | External calls | **Never inside a DB transaction.** Persist intent → commit → call provider → persist result (architecture.md §7) |
 
 ---
@@ -80,8 +85,8 @@ erDiagram
 
 | Table | Purpose & rules |
 |-------|-----------------|
-| `users` | Registered accounts only (**no guest user rows**). `email` required, unique among non-deleted users. `phone` optional and **not a login identifier at launch**; unique only once verified (`users_phone_verified_uq`). `auth_version` increments on block, role change, password reset, MFA reset → every session created with an older version is invalid. `status`: `PENDING_VERIFICATION` (signed up, email unverified) → `ACTIVE` ↔ `BLOCKED`; `DELETED` (anonymised after 30 days) |
-| `sessions` | One login on one device. `audience` = `STOREFRONT` or `ADMIN` (admin tokens are never accepted by storefront routes and vice versa). Idle expiry (storefront 30 d, admin 12 h) and absolute expiry (storefront 90 d, admin 7 d). `mfa_verified_at` used for admin step-up. `revoked_at` + `revoke_reason` (`LOGOUT`, `REUSE_DETECTED`, `BLOCKED`, `ROLE_CHANGED`, `PASSWORD_RESET`, `ADMIN_REVOKED`, `MFA_RESET`) |
+| `users` | Registered accounts only (**no guest user rows**). `email` required, unique among non-deleted users. `phone` optional and **not a login identifier at launch**; unique only once verified (`users_phone_verified_uq`). **Two authorization versions**: `storefront_auth_version` and `admin_auth_version`. Role changes and MFA resets increment only `admin_auth_version` (`aq_change_role`); block, password change/reset, email change and "log out everywhere" increment both (`aq_revoke_all_sessions`). A session is valid only while its `auth_version` equals the user's version **for its audience** (`aq_session_valid`). `status`: `PENDING_VERIFICATION` (signed up, email unverified) → `ACTIVE` ↔ `BLOCKED`; `DELETED` (anonymised after 30 days) |
+| `sessions` | One login on one device. `audience` = `STOREFRONT` or `ADMIN`; `auth_version` copied from the matching user column at creation. A `CUSTOMER`-role user can never hold a valid admin session (admin tokens are never accepted by storefront routes and vice versa). Idle expiry (storefront 30 d, admin 12 h) and absolute expiry (storefront 90 d, admin 7 d). `mfa_verified_at` used for admin step-up. `revoked_at` + `revoke_reason` (`LOGOUT`, `REUSE_DETECTED`, `BLOCKED`, `ROLE_CHANGED`, `PASSWORD_RESET`, `ADMIN_REVOKED`, `MFA_RESET`) |
 | `refresh_tokens` | Token **history** per session: only the SHA-256 hash is stored. `ACTIVE` → `ROTATED` (with `rotated_at`) → never reactivated. Presenting a `ROTATED` token outside the 30-second grace window = reuse → whole session revoked (architecture.md §5.2). Rows retained for session life + 30 days |
 | `auth_challenges` | Pending MFA step: `MFA_LOGIN`, `MFA_ENROLL` (holds the encrypted pending TOTP secret), `STEP_UP`. 5-minute expiry, max 5 attempts, single use |
 | `mfa_factors` | One confirmed TOTP factor per staff user. Secret encrypted (AES-256-GCM, envelope key version `secret_key_version`); `last_used_step` blocks TOTP replay |
@@ -105,13 +110,26 @@ erDiagram
 | `product_types` | Homepage tiles / admin "Product Types" (Resins, Wooden Frames…). `tile_link_url` lets a tile point elsewhere (e.g. "UV Resin" tile → `/category/uv-resin`) |
 | `categories` | Sub-groups within one type. `UNIQUE(id, type_id)` enables the composite FK that guarantees a product's category belongs to its type |
 | `techniques` | Cross-cutting tags (reference site calls them "occasions"); admin "Techniques" |
-| `products` | `status`: **`DRAFT`** (default; never visible), **`ACTIVE`** (visible; allowed only when `is_publishable` and DB gate `products_active_gate_ck` passes), **`ARCHIVED`** (hidden, kept for history). `type_id`/`category_id` nullable **only for drafts** (an import with an unknown type yields a genuine *Unassigned* state, never a fake "Unknown"). `readiness` JSON stores the last publication-gate evaluation (product.md §8.7); `data_flags` holds import warnings (`STOCK_AMBIGUOUS`, `DESCRIPTION_SUSPECT_COPY`, `SIZE_CONFLICT`, `WEIGHT_ESTIMATED`, `PRICE_MISSING`…). Aggregates `min_price`, `max_price`, `max_mrp`, `available_qty`, `active_variant_count` are maintained in the same transaction as variant changes (§7). `import_key` = stable product handle across imports |
-| `product_variants` | The buyable unit. `price` nullable **only while draft** (publication gate requires it). `net_quantity` + `net_unit` (`G`, `KG`, `ML`, `PCS`, `IN`) normalise sizes ("500GM", "500 gm" → 500 G). **Inventory:** `on_hand` = physical sellable units in the store; `reserved` = Σ active reservations; **available = on_hand − reserved**. `inventory_counted_at` set by a physical count (publication requires it). Shipping: `weight_g` + `weight_source` (`ESTIMATED` blocks publication), optional dims, `shipping_class` (`STANDARD`, `BULKY`, `SURFACE_ONLY`). **No backorders in v1** (no `allow_backorder` column) |
+| `products` | `status`: **`DRAFT`** (default; never visible), **`ACTIVE`** (visible; see "Publication gate: who enforces what" below), **`ARCHIVED`** (hidden, kept for history). `type_id`/`category_id` nullable **only for drafts** (an import with an unknown type yields a genuine *Unassigned* state, never a fake "Unknown"). `readiness` JSON stores the last publication-gate evaluation (product.md §8.7); `data_flags` holds import warnings (`STOCK_AMBIGUOUS`, `DESCRIPTION_SUSPECT_COPY`, `SIZE_CONFLICT`, `WEIGHT_ESTIMATED`, `PRICE_MISSING`…). Aggregates `min_price`, `max_price`, `max_mrp`, `available_qty`, `active_variant_count` are maintained in the same transaction as variant changes (§7). `import_key` = stable product handle across imports. `search_vector` is computed by a BEFORE trigger on the product's own columns; variant/category/type changes append to `search_reindex_queue` and the search worker rebuilds within seconds (§7) |
+| `product_variants` | The buyable unit. `price` nullable **only while draft** (publication gate requires it). `net_quantity` + `net_unit` (`G`, `KG`, `ML`, `PCS`, `IN`) normalise sizes ("500GM", "500 gm" → 500 G). **Inventory:** `on_hand` = physical sellable units in the store; `reserved` = Σ active reservations; **available = on_hand − reserved**. `inventory_counted_at` set by a physical count (publication requires it). Shipping: `weight_g` + `weight_source` (`ESTIMATED` blocks publication), optional dims, `shipping_class` (`STANDARD`, `BULKY`, `SURFACE_ONLY`). **No backorders in v1** (no `allow_backorder` column). Dimensions: all three absent, or all three present and positive (`variants_dims_ck`) |
 | `product_images` | Ordered images; exactly one cover. Only `media.status = READY` images are exposed to the storefront |
 | `product_relations` | Frequently bought together / similar |
 | `slug_redirects` | Old slug → new slug for 301s |
 | `size_charts` | Optional size chart per category/product |
 
+
+**Publication gate: who enforces what**
+
+| Rule (product.md §8.7) | Service (`catalog.publish`) | Database |
+|------|:---:|------|
+| Type + category set; category belongs to type | ✓ | ✓ `products_category_matches_type_fk`, `products_active_gate_ck`, trigger |
+| Description present, no unresolved data flags (product and variants) | ✓ | ✓ `products_publish_gate_trg` (on every transition to `ACTIVE`) |
+| HSN + GST approved | ✓ | ✓ check + trigger |
+| READY public cover image | ✓ | ✓ trigger (checks `media.status = 'READY'`) |
+| Every active variant: price, normalised size/unit, counted stock, **measured** weight, dims if bulky | ✓ | ✓ trigger |
+| `is_publishable` / `readiness` / `published_at` stored | ✓ sets them | `is_publishable` alone proves nothing; the trigger recomputes `product_readiness_failures()` from the related rows |
+| A related row changes **after** publication (image fails, weight set back to estimated, variant flagged) | ✓ edit-guard rejects the change while ACTIVE | ✗ the trigger cannot see it; the `published_not_ready` view is checked nightly and raises `PUBLISHED_NOT_READY` |
+| MRP ≥ price, price > 0 | ✓ | ✓ variant checks |
 ### 3.4 Media
 
 | Column group | Rules |
@@ -142,8 +160,8 @@ erDiagram
 | Inventory import (count sheet) | set/delta | – | – | `RECOUNT` / `ADJUSTMENT` (`import_id`) |
 
 Rules:
-- Checkout reserves only if `on_hand − reserved ≥ q` (atomic conditional `UPDATE`, §8.1). **Nothing ever writes `reserved` except reservation transitions.**
-- Recounts and imports change only `on_hand`. A count lower than `reserved` is accepted (physical truth), creates an `OVERSOLD` exception and makes `available` negative until resolved (cancel/refund or restock). Checkout can never create this state.
+- Checkout reserves only if `on_hand − reserved ≥ q` (`aq_reserve_order`: conditional `UPDATE` per line, variants ascending, then products ascending). **Nothing ever writes `reserved` except reservation transitions** (`aq_reserve_order`, `aq_release_unpaid_order`, dispatch consumption).
+- Recounts, adjustments, write-offs and inventory imports go through `aq_adjust_on_hand` and change only `on_hand`. A count lower than `reserved` is accepted (physical truth), creates an `OVERSOLD` exception and makes `available` negative until resolved (cancel/refund or restock). Checkout can never create this state.
 - The catalogue import **never** changes `on_hand` of existing variants (it reports `STOCK_IGNORED`); stock changes go through the separate inventory import or the Inventory page.
 - `variant_reservation_drift` (§6) must always be empty; the nightly job alerts on rows.
 
@@ -165,6 +183,7 @@ Rules:
 | `REVERSED` | A *redeemed* order was cancelled before shipment and policy restores the use | `redeemed −1` |
 
 `over_limit = true` marks a redemption honoured without capacity (late capture after the last use was taken). It is **excluded from counters**, raises `COUPON_OVER_LIMIT`, and the customer is never charged more than they paid.
+Functions: `aq_reserve_coupon` (checkout), redemption inside `aq_apply_provider_payment`, release inside `aq_release_unpaid_order`. Every counter change is gated by the redemption-row transition that justifies it (`UPDATE … WHERE status = 'RESERVED'` with an affected-row check), so a repeated call cannot move a counter twice.
 Per-customer limit counts `RESERVED` + `REDEEMED` (not over-limit) rows matching `user_id`, or for guests `customer_email` (normalised). Guest email/phone are unverified, so this limit is best-effort for guests (documented limitation).
 
 ### 3.8 Shipping
@@ -196,22 +215,25 @@ Other order rules:
 
 | Table | Rules |
 |-------|-------|
-| `idempotency_keys` | `UNIQUE(scope, operation, key)`. `scope` = `user:<id>` or `cart:<id>` (storefront) / `staff:<id>` (admin). `operation` ∈ `checkout.initiate`, `payment.retry`, `refund.create`, `order.cancel`. `request_hash` = sha256 of canonical JSON body. `PROCESSING` with `locked_until` (60 s) → `COMPLETED` with `response_code` + `response_body` replayed verbatim. Retention 24 h (`expires_at`), purged nightly. Behaviour table in api.md §1.2 |
-| `payment_attempts` | One per **Razorpay order**. Created **before** calling Razorpay with `status = CREATING` and our own `receipt` (`AQA_<id>`). `provider_order_id` stored when known. At most one open attempt per order (`CREATING`, `CREATED`, `PROVIDER_UNKNOWN`). `PAID` when a captured payment is applied; `CLOSED` when superseded/expired; `CREATION_FAILED` when Razorpay definitively rejected creation |
-| `payments` | One per **Razorpay payment id** (unique). `status` with monotonic `status_rank`: `CREATED 0 < FAILED 1 < AUTHORIZED 2 < CAPTURED 3 < REFUNDED 4` (failed → authorized is allowed: Razorpay "late authorization"). Updates only apply when the new rank is higher. `allocation`: `APPLIED` (counts toward the order), `EXCESS` (a second capture for an already-paid order → must be refunded), `UNLINKED` (no matching attempt; reconciliation) |
-| `refunds` | Every refund, provider or manual. `status`: `REQUESTED` (capacity reserved, not yet sent) → `PENDING` (provider accepted) → `PROCESSED` / `FAILED`; `UNKNOWN` when the provider call outcome is unknown (reconciler resolves). Capacity rule: Σ(`REQUESTED`,`PENDING`,`PROCESSED`,`UNKNOWN`) ≤ payment `amount` (enforced under the payment row lock, §8.6). `receipt` = `AQR_<id>` sent to Razorpay for matching. `method = MANUAL_BANK` for COD (no `payment_id`). Breakdown `items_amount + shipping_amount + cod_fee_amount = amount` |
-| `refund_items` | Item-level allocation (quantity, amount, included tax) used for credit notes and to bound per-item refunds |
-| `payment_exceptions` | Durable queue of money/stock problems needing attention: `AMOUNT_MISMATCH`, `CURRENCY_MISMATCH`, `EXCESS_CAPTURE`, `LATE_CAPTURE_EXPIRED`, `LATE_CAPTURE_CANCELLED`, `UNLINKED_PAYMENT`, `CAPTURE_STUCK_AUTHORIZED`, `PROVIDER_ORDER_UNKNOWN`, `REFUND_FAILED`, `REFUND_UNKNOWN`, `WEBHOOK_DEAD`, `OUTBOX_DEAD`, `RECON_MISMATCH`, `COUPON_OVER_LIMIT`, `OVERSOLD`, `COD_REMITTANCE_MISMATCH`. `dedupe_key` unique (e.g. `EXCESS_CAPTURE:pay_123`) so repeated detection never duplicates. `AUTO_RESOLVING` while an automatic refund is in flight |
+| `idempotency_keys` | `UNIQUE(scope, operation, key)`. `scope` = `user:<id>` / `cart:<id>` / `order:<number>` (guest order cookie) / `staff:<id>`. `operation` ∈ `checkout.initiate`, `payment.retry`, `order.cancel`, `refund.create`, `return.create`. **`target_resource`** = the resource the request mutates (`cart:<id>`, `order:<number>`, `order:<id>` for admin). **`request_hash`** = sha256 of canonical JSON `{operation, target, scope, body}` (api.md §1.2). `aq_idempotency_begin` returns `NEW`, `REPLAY`, `IN_PROGRESS`, `TAKEOVER` or `CONFLICT`; a different target **or** hash under the same key is always `CONFLICT`. Retention 24 h |
+| `payment_attempts` | One per **Razorpay order**, created **before** calling Razorpay (`CREATING`, our `receipt` `AQA_<id>`); `provider_order_id` stored when known; at most one open attempt per order. `PAID` when a captured payment is applied; `CLOSED` when superseded/expired; `CREATION_FAILED` when Razorpay definitively rejected creation |
+| `payments` | One per **Razorpay payment id** (unique). Monotonic `status_rank`: `CREATED 0 < FAILED 1 < AUTHORIZED 2 < CAPTURED 3 < REFUNDED 4` (failed → authorized allowed: Razorpay late authorization). **`allocation`** is NULL until the first time the payment is seen captured, then set **exactly once** under the order lock: `APPLIED` (funds the order), `EXCESS` (another APPLIED payment already funds the order, whatever its later refund state), `LATE` (order expired without restorable stock, or cancelled), `HELD` (amount/currency mismatch or unexpected order state), `UNLINKED` (no attempt matches). The `allocation IS NULL → value` update is **the gate** for every payment side effect (§8.2). `refund_reserved` (counted refunds) and `amount_refunded` (processed) with `amount_refunded ≤ refund_reserved ≤ amount` |
+| `refunds` | Every refund, provider or manual. `status`: `REQUESTED` (capacity reserved) → `PENDING` (provider accepted) → `PROCESSED`; `UNKNOWN` (outcome unknown; resend the **same** attempt or reconcile); `FAILED` (definitive; capacity released); `CANCELLED` (manual COD refund withdrawn before processing via `aq_cancel_manual_refund`; capacity released; online refunds are never cancelled because a provider call may be in flight). **Counted toward capacity: `REQUESTED`, `PENDING`, `UNKNOWN`, `PROCESSED`.** Components `items_amount + shipping_amount + cod_fee_amount + unallocated_amount = amount`; `unallocated_amount` only for `EXCESS_CAPTURE`/`LATE_CAPTURE` refunds of a non-funding payment. `attempt_no` = current provider attempt. `idempotency_key` = the API key (unique per order). `method = MANUAL_BANK` for COD (no payment, no provider attempt) |
+| `refund_attempts` | One per provider call series: **`provider_idempotency_key`** (`artq-refund-<id>-a<n>`, sent as `X-Refund-Idempotency`), `receipt` (`AQR_<id>_A<n>`, correlation only), immutable `request` JSON (payment id, amount, speed, receipt, notes). Retries of the same attempt reuse key + request byte-for-byte; a retry after `FAILED` creates attempt n+1 with a new key and receipt |
+| `refund_items` | Item allocation (quantity, amount, included tax) for credit notes and item capacity |
+| Capacity counters | `order_items.refund_reserved_qty/amount` (≤ quantity / net_amount), `orders.refund_reserved_total` (≤ captured_amount, or total for COD), `refund_reserved_shipping` (≤ shipping_fee), `refund_reserved_cod_fee` (≤ cod_fee), `payments.refund_reserved` (≤ amount). Changed only by `aq_refund_capacity(refund, ±1)` with conditional updates; `refunded_*` counters (processed) are always ≤ the reserved ones (DB checks) |
+| `payment_exceptions` | Durable queue of money/stock problems: `AMOUNT_MISMATCH`, `CURRENCY_MISMATCH`, `EXCESS_CAPTURE`, `LATE_CAPTURE_EXPIRED`, `LATE_CAPTURE_CANCELLED`, `UNLINKED_PAYMENT`, `CAPTURE_STUCK_AUTHORIZED`, `PROVIDER_ORDER_UNKNOWN`, `REFUND_FAILED`, `REFUND_UNKNOWN`, `REFUND_IDEMPOTENCY_MISMATCH`, `WEBHOOK_DEAD`, `OUTBOX_DEAD`, `RECON_MISMATCH`, `COUPON_OVER_LIMIT`, `OVERSOLD`, `COD_REMITTANCE_MISMATCH`, `PUBLISHED_NOT_READY`. `dedupe_key` unique so repeated detection never duplicates |
 
 ### 3.11 Reliability tables
 
 | Table | Rules |
 |-------|-------|
-| `webhook_events` | **Durable inbox.** `UNIQUE(provider, event_id)`. Status `RECEIVED` → `PROCESSING` (claimed, `locked_until`) → `PROCESSED` / `FAILED` (retry at `next_attempt_at`, exponential) / `DEAD` (after 10 attempts → `WEBHOOK_DEAD` exception) / `IGNORED` (irrelevant type). The HTTP endpoint acknowledges only after the row is committed |
-| `outbox_events` | **Transactional outbox.** Written in the *same transaction* as the domain change (order placed, status changed, refund processed, back in stock…). Dispatcher moves `PENDING` rows to BullMQ (`jobId = outbox:<id>:<consumer>`) and marks `DISPATCHED`; after 10 failed dispatches → `DEAD` + `OUTBOX_DEAD` exception |
-| `processed_messages` | Consumer-side dedupe: `(consumer, message_id)` inserted in the consumer's own transaction before applying a DB side effect |
-| `email_logs` | `dedupe_key` unique (e.g. `order.placed:AQ10001:customer`): the email consumer inserts `SENDING` first, skips if `SENT` exists. Delivery is **at-least-once** (a crash after the provider accepted but before `SENT` is recorded can resend). We pass the dedupe key as the provider idempotency key where the provider supports it |
-| `audit_logs` | Every admin mutation and security event (login, MFA, role change, refunds, price changes), with before/after, session, IP |
+| `webhook_events` | **Durable inbox.** `UNIQUE(provider, event_id)`. `RECEIVED` → `PROCESSING` (claimed with a fresh **`lease_token`** + `locked_until`) → `PROCESSED`/`IGNORED`, or `FAILED` (retry at `next_attempt_at`, exponential) → `DEAD` after 10 attempts (`WEBHOOK_DEAD`). Completion, failure and renewal are **fenced** by the lease token (§8.6); `webhook_lease_ck` keeps token and status consistent. The endpoint acknowledges only after the insert committed |
+| `outbox_events` | **Transactional outbox**: one row per domain event, written in the *same transaction* as the domain change (`aq_emit`) |
+| `outbox_deliveries` | One row **per (event, consumer)**: `PENDING` → `LEASED` (claim: `lease_token`, `lease_expires_at`, `generation + 1`) → `PUBLISHED` (broker accepted; fenced ack) → `COMPLETED` (consumer finished; **durable dedupe record**). `PUBLISHED` rows not completed within the redelivery timeout are re-leased and republished (Redis may have lost them); after 10 generations → `DEAD` + `OUTBOX_DEAD`. PostgreSQL alone can reconstruct all outstanding work |
+| `search_reindex_queue` | Append-only product ids (no unique key, so concurrent inserts never wait on each other) drained by the search worker |
+| `email_logs` | `dedupe_key` unique (`<event>:<aggregate>:<recipient>`) + `outbox_delivery_id`. Insert `SENDING` → provider call with the same idempotency key → `SENT`. **At-least-once**: a crash after the provider accepted but before `SENT` can resend unless the provider deduplicates the key |
+| `audit_logs` | Every admin mutation and security event, with before/after, session, IP |
 
 ### 3.12 Fulfilment, COD, returns, invoices
 
@@ -219,7 +241,7 @@ Other order rules:
 |-------|-------|
 | `shipments` | **v1 = exactly one shipment per order** (`UNIQUE(order_id)`); split fulfilment is out of scope (post-launch would add `shipment_items`). `UNIQUE(courier_name, awb_number)` |
 | `cod_remittances` + `cod_remittance_items` | Courier remittance batches; each COD order appears in at most one remittance (`UNIQUE(order_id)`). Amount mismatch vs order total ⇒ `COD_REMITTANCE_MISMATCH` |
-| `return_requests` + items + media | `REQUESTED` → `APPROVED`/`REJECTED` → `IN_TRANSIT` → `RECEIVED` → `INSPECTED` → `REFUNDED` → `CLOSED` (or `CANCELLED`). Per item: `requested_qty` ≥ `approved_qty` ≥ `received_qty` = `sellable_qty + damaged_qty`. `order_items.return_requested_qty` bounds the total across all non-rejected requests (≤ quantity). Photos are `PRIVATE` media |
+| `return_requests` + items + media | `REQUESTED` → `APPROVED`/`REJECTED` → `IN_TRANSIT` → `RECEIVED` → `INSPECTED` → `REFUNDED` → `CLOSED` (or `CANCELLED`). Per item: `requested_qty ≥ approved_qty ≥ received_qty`; `sellable_qty` and `damaged_qty` are recorded together, each between 0 and `received_qty`, summing to `received_qty` (`return_items_qty_ck`); the request cannot become `INSPECTED` while any approved item lacks a complete inspection (`return_inspection_complete_trg`). `order_items.return_requested_qty` bounds the total across all non-rejected requests (≤ quantity). Photos are `PRIVATE` media |
 | `invoices` | Immutable tax documents: `TAX_INVOICE` (one per order, issued at dispatch) and `CREDIT_NOTE` (references `original_invoice_id` and `refund_id`). `number` ≤ 16 chars (GST rule), unique per kind+FY via `invoice_counters`. Seller/buyer snapshots, place of supply, per-line HSN/taxable/CGST/SGST/IGST, rounding adjustment. Only the PDF reference may be set once after issue (trigger) |
 
 ### 3.13 Content & system
@@ -244,8 +266,33 @@ Payment provider **secrets are never stored in `settings`**; they live in the se
 
 ## 4. State machines and concurrency rules
 
-### 4.1 Lock order (all writers)
-`orders` → `payments` (by id) → `product_variants` (ascending id) → `products` (ascending id) → `coupons` → `refunds`. Every transaction that touches more than one of these acquires row locks in this order (`SELECT … FOR UPDATE` or conditional `UPDATE`). Inventory adjustments from admin/imports lock only variants (ascending) then products.
+### 4.1 Global lock order (all writers, including triggers)
+Every transaction acquires row locks in this order and only in this order. Explicit locks use `FOR NO KEY UPDATE`; conditional `UPDATE`s lock implicitly.
+
+| Step | Rows | Notes |
+|------|------|-------|
+| 1 | The claimed lease row: `webhook_events` (`aq_webhook_begin`) or `outbox_deliveries` (`aq_outbox_begin_consume`) | Only workers |
+| 2 | `orders` (ascending id if several) | Payment application, releases, refunds, fulfilment, returns |
+| 3 | **Order-owned rows**: `order_items`, `inventory_reservations`, `coupon_redemptions`, `refunds`, `refund_items`, `refund_attempts`, `return_requests` (+items), `shipments`, `invoices` of that order | Only modified while holding that order's lock, so their relative position is free; within the group, ascending id |
+| 4 | `payments` (ascending id) | |
+| 5 | `product_variants` (ascending id) | Catalogue edits first lock **all** variants they touch, ascending, before touching the product (`aq_edit_variants`) |
+| 6 | `products` (ascending id) | Aggregates (`aq_refresh_products`), sold counts, search rebuild (worker locks the product, then computes) |
+| 7 | `coupons` | |
+| 8 | `invoice_counters` | Dispatch / credit notes |
+
+**Triggers never lock rows of another table.** The product search vector is computed in a BEFORE trigger on the product row itself; variant, category and type changes only append to `search_reindex_queue`. (The previous design updated the parent product from the variant trigger, i.e. a product lock *inside* the variant loop. The validator's negative control shows it deadlocks: 43–74 deadlocks per 600 mixed operations, versus 0 in 1,200 with this order; review.md §6.)
+
+| Flow | Lock sequence |
+|------|---------------|
+| Checkout reserve (`aq_reserve_order`) | order → variants ↑ → products ↑ (→ coupon via `aq_reserve_coupon`) |
+| Release unpaid (`aq_release_unpaid_order`) | order → reservations → variants ↑ → products ↑ → coupon |
+| Payment application (`aq_apply_provider_payment`) | order → payment → (late capture: variants ↑ → products ↑) → products ↑ (sold) → coupon |
+| Refund request / retry / result (`aq_request_refund`, `aq_retry_refund`, `aq_refund_attempt_result`) | order → payment → order items ↑ (order-owned) |
+| Inventory adjustment / import (`aq_adjust_on_hand`) | variants ↑ → products ↑ |
+| Catalogue variant edit (`aq_edit_variants`) | all variants of the product ↑ → product |
+| Taxonomy rename | category/type row only (+ queue inserts) |
+| Search worker (`aq_process_search_queue`) | queue rows (SKIP LOCKED) → each product ↑ individually |
+| Dispatch | order → reservations → variants ↑ → products ↑ → invoice counter |
 
 ### 4.2 Order lifecycle (`status`)
 
@@ -258,7 +305,7 @@ Payment provider **secrets are never stored in `settings`**; they live in the se
 | `PENDING_PAYMENT` | `CANCELLED` | customer abandons ("cancel and edit cart") / admin | same releases; any later capture → refund (§4.6) |
 | `EXPIRED` | `PLACED` | late capture **and** stock reacquired for every line | new reservations; coupon re-reserved/redeemed or `over_limit` |
 | `PLACED` | `CONFIRMED` | admin confirms | |
-| `PLACED`, `CONFIRMED` | `CANCELLED` | customer (only while `fulfilment_status = UNFULFILLED`) or admin (while `UNFULFILLED`/`PACKED`) | releases reservations; prepaid ⇒ full refund (`CANCELLATION`); coupon `REVERSED` |
+| `PLACED`, `CONFIRMED` | `CANCELLED` | customer (only while `fulfilment_status = UNFULFILLED`) or admin (while `UNFULFILLED`/`PACKED`) | one transaction, lock order §4.1: `UPDATE orders … WHERE status IN ('PLACED','CONFIRMED') AND fulfilment_status IN (…)` must affect 1 row, then release ACTIVE reservations, then prepaid ⇒ `aq_request_refund(kind CANCELLATION, all items + shipping)`, then coupon `UPDATE coupon_redemptions SET status='REVERSED' WHERE order_id=… AND status='REDEEMED'` and only if that affected 1 row (and not over-limit) `redeemed_count − 1` (D-14) |
 | `CONFIRMED` | `COMPLETED` | system, `completeAfterDays` after `DELIVERED` with no open return | |
 | `CONFIRMED` | `CANCELLED` | RTO received (fulfilment `RTO_RECEIVED`) | prepaid ⇒ refund per policy; COD ⇒ `NOT_COLLECTED` |
 | `CANCELLED`, `EXPIRED`*, `COMPLETED` | — | terminal (*except the late-capture path above) | |
@@ -282,7 +329,9 @@ Payment provider **secrets are never stored in `settings`**; they live in the se
 Rounding: per order line, included tax = `net − round_half_up(net × 100 / (100 + rate))`; CGST = floor(tax/2), SGST = tax − CGST; IGST = tax. Totals are sums of line values; any difference to the paise total is shown as `rounding_adjustment` (normally 0).
 
 ### 4.5 Refunds and returns
-- Refund capacity is reserved under the **payment row lock** (§8.6), so concurrent refunds can never exceed the captured amount; the per-item bound is checked under the order row lock against `order_items.refunded_amount`.
+- **Capacity is reserved at every level in one transaction** (`aq_refund_capacity`, §8.5): each item's `refund_reserved_qty/amount`, the order's shipping, COD-fee and total counters, and the payment's `refund_reserved`. Allocations in `REQUESTED`, `PENDING`, `UNKNOWN` and `PROCESSED` all count; `FAILED`/`CANCELLED` release (policy: a definitive provider failure frees the capacity; an `UNKNOWN` or idempotency-mismatch outcome keeps it reserved until resolved). Concurrent requests serialise on the order lock and conditional updates, so one item cannot be over-refunded even while the payment still has room.
+- **Retry of a FAILED refund** (`aq_retry_refund`) reacquires the same item/component/order/payment capacity atomically **before** creating attempt n+1. If a newer refund has consumed it, the retry fails with `REFUND_EXCEEDS_CAPACITY` and the refund stays `FAILED`.
+- **Manual COD refunds** use the same counters (order total instead of captured amount); there is no payment row or provider attempt.
 - Item amount refundable per unit = `net_amount / quantity` (last unit absorbs rounding). Shipping is refunded only for full pre-dispatch cancellation, or at admin discretion for merchant-fault returns. COD fee is refunded only for full pre-dispatch cancellation.
 - Return approval ≠ receipt ≠ inspection. Restock (`RETURN_RESTOCK`) only for `sellable_qty` after inspection. A return refund links `refunds.return_request_id`.
 - A refund after the tax invoice was issued creates a `CREDIT_NOTE` once `PROCESSED`.
@@ -291,21 +340,22 @@ Rounding: per order line, included tax = `net − round_half_up(net × 100 / (10
 
 | Situation | Action | Customer communication |
 |-----------|--------|------------------------|
-| Duplicate notification of the **same** payment id | No-op (unique `provider_payment_id` + monotonic rank) | none |
-| Second **distinct** captured payment for an order already `PAID` | Insert payment with `allocation = EXCESS`; exception `EXCESS_CAPTURE`; auto-refund (`EXCESS_CAPTURE` kind) if `PAYMENT.autoRefundExcessCapture` | "We received a duplicate payment; refunded in 5–7 working days" |
-| Capture for an `EXPIRED` order, stock reacquirable | Reacquire reservations (new rows), re-reserve coupon (or `over_limit`), `EXPIRED → PLACED`, `PAID` | normal order confirmation |
-| Capture for an `EXPIRED` order, stock not reacquirable | Payment `APPLIED` → full refund (`LATE_CAPTURE`), exception `LATE_CAPTURE_EXPIRED`, order stays `EXPIRED` | "Payment received after your order expired and the item sold out; full refund issued" |
-| Capture for a `CANCELLED` order | Never revive. Full refund (`LATE_CAPTURE`), exception `LATE_CAPTURE_CANCELLED` | "Your cancelled order's payment has been refunded" |
-| Amount or currency mismatch | Do **not** mark paid; exception `AMOUNT_MISMATCH`/`CURRENCY_MISMATCH`; manual review | "We're verifying your payment" |
+| Duplicate notification of the **same** payment id (verify, webhook, reconciler, retries) | `allocation` already set ⇒ `DUPLICATE`, **no side effects** (monotonic status update only) | none |
+| Second **distinct** captured payment while another payment is `APPLIED` to the order, including after `PARTIALLY_REFUNDED`/`REFUNDED` | `allocation = EXCESS`; exception `EXCESS_CAPTURE`; automatic refund of that payment (`EXCESS_CAPTURE`, `unallocated_amount`) | "We received a duplicate payment; refunded in 5–7 working days" |
+| Capture for an `EXPIRED` order, stock reacquirable | `aq_reacquire_order` (all-or-nothing subtransaction) → `APPLIED`, new reservations, coupon re-redeemed or `over_limit`, `EXPIRED → PLACED`, `PAID` | normal order confirmation |
+| Capture for an `EXPIRED` order, stock not reacquirable | `allocation = LATE`, full automatic refund (`LATE_CAPTURE`), exception `LATE_CAPTURE_EXPIRED`, order stays `EXPIRED` | "Payment received after your order expired and the item sold out; full refund issued" |
+| Capture for a `CANCELLED` order | Never revive. `allocation = LATE`, full automatic refund, exception `LATE_CAPTURE_CANCELLED` | "Your cancelled order's payment has been refunded" |
+| Amount or currency mismatch, or an unexpected order state (e.g. COD order) | `allocation = HELD`; **not** applied; exception `AMOUNT_MISMATCH`/`CURRENCY_MISMATCH`; manual review | "We're verifying your payment" |
 | Payment `authorized` > 15 min | Capture via API if the order is still `PENDING_PAYMENT`/`PLACED` and amounts match; otherwise exception `CAPTURE_STUCK_AUTHORIZED` and let Razorpay void/auto-refund per account settings | "Payment processing" |
 
 ---
 
 ## 5. Prisma schema (`apps/api/prisma/schema.prisma`)
 
-Validated with `prisma validate` (Prisma 6.19.3) and applied to PostgreSQL 18 (see [review.md](review.md) §4).
+Validated with `prisma validate` (Prisma 6.19.3) and applied to PostgreSQL 16.14 and 18.3 by `tools/doc-validation` (review.md §6). UUID keys use `dbgenerated("gen_random_uuid()")` so rows created by SQL functions get ids too.
 Post-launch tables (`collections`, `collection_products`, `product_reviews`, `shipment_items`) are **not** in the initial migration.
 
+<!-- validate:schema.prisma -->
 ```prisma
 generator client {
   provider        = "prisma-client-js"
@@ -520,6 +570,8 @@ enum ProviderPaymentStatus {
 enum PaymentAllocation {
   APPLIED
   EXCESS
+  LATE
+  HELD
   UNLINKED
 }
 enum RefundKind {
@@ -540,6 +592,7 @@ enum RefundStatus {
   PROCESSED
   FAILED
   UNKNOWN
+  CANCELLED
 }
 enum ExceptionType {
   AMOUNT_MISMATCH
@@ -558,6 +611,8 @@ enum ExceptionType {
   COUPON_OVER_LIMIT
   OVERSOLD
   COD_REMITTANCE_MISMATCH
+  REFUND_IDEMPOTENCY_MISMATCH
+  PUBLISHED_NOT_READY
 }
 enum ExceptionStatus {
   OPEN
@@ -575,7 +630,9 @@ enum WebhookStatus {
 }
 enum OutboxStatus {
   PENDING
-  DISPATCHED
+  LEASED
+  PUBLISHED
+  COMPLETED
   DEAD
 }
 enum ShipmentStatus {
@@ -653,6 +710,14 @@ enum ImportRowStatus {
   NEEDS_REVIEW
   FAILED
 }
+enum RefundAttemptStatus {
+  SENDING
+  ACCEPTED
+  UNKNOWN
+  FAILED
+  MISMATCH
+}
+
 enum EmailStatus {
   SENDING
   SENT
@@ -675,7 +740,8 @@ model User {
   passwordHash     String?    @map("password_hash")
   role             UserRole   @default(CUSTOMER)
   status           UserStatus @default(PENDING_VERIFICATION)
-  authVersion      Int        @default(1) @map("auth_version")
+  storefrontAuthVersion Int   @default(1) @map("storefront_auth_version")
+  adminAuthVersion Int        @default(1) @map("admin_auth_version")
   marketingOptIn   Boolean    @default(false) @map("marketing_opt_in")
   failedLoginCount Int        @default(0) @map("failed_login_count")
   lockedUntil      DateTime?  @map("locked_until") @db.Timestamptz
@@ -704,9 +770,10 @@ model User {
 }
 
 model Session {
-  id            String          @id @default(uuid()) @db.Uuid
+  id            String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   userId        Int             @map("user_id")
   audience      SessionAudience
+  /// copy of users.storefront_auth_version or users.admin_auth_version (by audience) at creation
   authVersion   Int             @map("auth_version")
   mfaVerifiedAt DateTime?       @map("mfa_verified_at") @db.Timestamptz
   ip            String?         @db.Inet
@@ -725,7 +792,7 @@ model Session {
 }
 
 model RefreshToken {
-  id         String             @id @default(uuid()) @db.Uuid
+  id         String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   sessionId  String             @map("session_id") @db.Uuid
   tokenHash  String             @unique @map("token_hash") @db.Char(64)
   status     RefreshTokenStatus @default(ACTIVE)
@@ -740,7 +807,7 @@ model RefreshToken {
 }
 
 model AuthChallenge {
-  id                     String        @id @default(uuid()) @db.Uuid
+  id                     String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   userId                 Int           @map("user_id")
   type                   ChallengeType
   sessionId              String?       @map("session_id") @db.Uuid
@@ -1426,6 +1493,9 @@ model Order {
   total                 Int
   capturedAmount        Int                @default(0) @map("captured_amount")
   refundedAmount        Int                @default(0) @map("refunded_amount")
+  refundReservedTotal   Int                @default(0) @map("refund_reserved_total")
+  refundReservedShipping Int               @default(0) @map("refund_reserved_shipping")
+  refundReservedCodFee  Int                @default(0) @map("refund_reserved_cod_fee")
   taxTotal              Int                @default(0) @map("tax_total")
   couponId              Int?               @map("coupon_id")
   couponCode            String?            @map("coupon_code") @db.Citext
@@ -1523,6 +1593,8 @@ model OrderItem {
   returnedQty        Int             @default(0) @map("returned_qty")
   refundedQty        Int             @default(0) @map("refunded_qty")
   refundedAmount     Int             @default(0) @map("refunded_amount")
+  refundReservedQty  Int             @default(0) @map("refund_reserved_qty")
+  refundReservedAmount Int           @default(0) @map("refund_reserved_amount")
   order              Order           @relation(fields: [orderId], references: [id], onDelete: Restrict)
   product            Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
   variant            ProductVariant  @relation(fields: [variantId], references: [id], onDelete: Restrict)
@@ -1557,6 +1629,7 @@ model IdempotencyKey {
   scope        String            @db.VarChar(60)
   operation    String            @db.VarChar(60)
   key          String            @db.VarChar(100)
+  targetResource String          @map("target_resource") @db.VarChar(80)
   requestHash  String            @map("request_hash") @db.Char(64)
   status       IdempotencyStatus @default(PROCESSING)
   lockedUntil  DateTime          @map("locked_until") @db.Timestamptz
@@ -1604,7 +1677,9 @@ model Payment {
   currency          String                @db.Char(3)
   status            ProviderPaymentStatus
   statusRank        Int                   @map("status_rank")
-  allocation        PaymentAllocation     @default(APPLIED)
+  allocation        PaymentAllocation?
+  allocatedAt       DateTime?             @map("allocated_at") @db.Timestamptz
+  refundReserved    Int                   @default(0) @map("refund_reserved")
   amountRefunded    Int                   @default(0) @map("amount_refunded")
   capturedAt        DateTime?             @map("captured_at") @db.Timestamptz
   errorCode         String?               @map("error_code") @db.VarChar(80)
@@ -1634,8 +1709,10 @@ model Refund {
   itemsAmount       Int           @default(0) @map("items_amount")
   shippingAmount    Int           @default(0) @map("shipping_amount")
   codFeeAmount      Int           @default(0) @map("cod_fee_amount")
+  /// Only for EXCESS_CAPTURE / LATE_CAPTURE refunds: returns a whole non-order-funding payment.
+  unallocatedAmount Int           @default(0) @map("unallocated_amount")
   reason            String?
-  receipt           String        @unique @db.VarChar(40)
+  attemptNo         Int           @default(1) @map("attempt_no")
   idempotencyKey    String?       @map("idempotency_key") @db.VarChar(100)
   providerRefundId  String?       @unique @map("provider_refund_id") @db.VarChar(64)
   manualReference   String?       @map("manual_reference") @db.VarChar(120)
@@ -1650,12 +1727,35 @@ model Refund {
   payment           Payment?      @relation(fields: [paymentId], references: [id], onDelete: Restrict)
   returnRequest     ReturnRequest? @relation(fields: [returnRequestId], references: [id], onDelete: Restrict)
   items             RefundItem[]
+  attempts          RefundAttempt[]
   creditNotes       Invoice[]
   exceptions        PaymentException[]
 
   @@index([orderId])
   @@index([status, createdAt])
   @@map("refunds")
+}
+
+/// One provider call series. Retrying the SAME attempt reuses its key and immutable request;
+/// a new attempt (after FAILED) gets a new key and receipt.
+model RefundAttempt {
+  id                     Int                 @id @default(autoincrement())
+  refundId               Int                 @map("refund_id")
+  attemptNo              Int                 @map("attempt_no")
+  providerIdempotencyKey String              @unique @map("provider_idempotency_key") @db.VarChar(64)
+  receipt                String              @unique @db.VarChar(40)
+  request                Json
+  status                 RefundAttemptStatus @default(SENDING)
+  sendCount              Int                 @default(0) @map("send_count")
+  lastHttpStatus         Int?                @map("last_http_status")
+  response               Json?
+  providerRefundId       String?             @unique @map("provider_refund_id") @db.VarChar(64)
+  createdAt              DateTime            @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt              DateTime            @updatedAt @map("updated_at") @db.Timestamptz
+  refund                 Refund              @relation(fields: [refundId], references: [id], onDelete: Restrict)
+
+  @@unique([refundId, attemptNo])
+  @@map("refund_attempts")
 }
 
 model RefundItem {
@@ -1707,6 +1807,7 @@ model WebhookEvent {
   lastError         String?       @map("last_error")
   nextAttemptAt     DateTime      @default(now()) @map("next_attempt_at") @db.Timestamptz
   lockedUntil       DateTime?     @map("locked_until") @db.Timestamptz
+  leaseToken        String?       @map("lease_token") @db.Uuid
   providerCreatedAt DateTime?     @map("provider_created_at") @db.Timestamptz
   receivedAt        DateTime      @default(now()) @map("received_at") @db.Timestamptz
   processedAt       DateTime?     @map("processed_at") @db.Timestamptz
@@ -1718,29 +1819,47 @@ model WebhookEvent {
 }
 
 model OutboxEvent {
-  id            BigInt       @id @default(autoincrement())
-  aggregateType String       @map("aggregate_type") @db.VarChar(40)
-  aggregateId   String       @map("aggregate_id") @db.VarChar(40)
-  eventType     String       @map("event_type") @db.VarChar(60)
+  id            BigInt           @id @default(autoincrement())
+  aggregateType String           @map("aggregate_type") @db.VarChar(40)
+  aggregateId   String           @map("aggregate_id") @db.VarChar(40)
+  eventType     String           @map("event_type") @db.VarChar(60)
   payload       Json
-  status        OutboxStatus @default(PENDING)
-  attempts      Int          @default(0)
-  availableAt   DateTime     @default(now()) @map("available_at") @db.Timestamptz
-  lastError     String?      @map("last_error")
-  createdAt     DateTime     @default(now()) @map("created_at") @db.Timestamptz
-  dispatchedAt  DateTime?    @map("dispatched_at") @db.Timestamptz
+  createdAt     DateTime         @default(now()) @map("created_at") @db.Timestamptz
+  deliveries    OutboxDelivery[]
 
-  @@index([status, availableAt])
+  @@index([createdAt])
   @@map("outbox_events")
 }
 
-model ProcessedMessage {
-  consumer    String   @db.VarChar(60)
-  messageId   String   @map("message_id") @db.VarChar(80)
-  processedAt DateTime @default(now()) @map("processed_at") @db.Timestamptz
+/// One row per (event, consumer). PostgreSQL is the source of truth for outstanding work;
+/// BullMQ only transports. COMPLETED is the durable consumer-dedupe record.
+model OutboxDelivery {
+  id             BigInt       @id @default(autoincrement())
+  eventId        BigInt       @map("event_id")
+  consumer       String       @db.VarChar(60)
+  status         OutboxStatus @default(PENDING)
+  generation     Int          @default(0)
+  leaseToken     String?      @map("lease_token") @db.Uuid
+  leaseExpiresAt DateTime?    @map("lease_expires_at") @db.Timestamptz
+  nextAttemptAt  DateTime     @default(now()) @map("next_attempt_at") @db.Timestamptz
+  publishedAt    DateTime?    @map("published_at") @db.Timestamptz
+  completedAt    DateTime?    @map("completed_at") @db.Timestamptz
+  lastError      String?      @map("last_error")
+  event          OutboxEvent  @relation(fields: [eventId], references: [id], onDelete: Restrict)
 
-  @@id([consumer, messageId])
-  @@map("processed_messages")
+  @@unique([eventId, consumer])
+  @@index([status, nextAttemptAt])
+  @@map("outbox_deliveries")
+}
+
+/// Append-only (no unique key, so inserts never wait on each other); drained by the search worker.
+model SearchReindexQueue {
+  id         BigInt   @id @default(autoincrement())
+  productId  Int      @map("product_id")
+  enqueuedAt DateTime @default(now()) @map("enqueued_at") @db.Timestamptz
+
+  @@index([productId])
+  @@map("search_reindex_queue")
 }
 
 // ───────────────────────── FULFILMENT, COD, RETURNS ─────────────────────────
@@ -2068,6 +2187,7 @@ model Notification {
 model EmailLog {
   id                Int         @id @default(autoincrement())
   dedupeKey         String      @unique @map("dedupe_key") @db.VarChar(120)
+  outboxDeliveryId  BigInt?     @map("outbox_delivery_id")
   toEmail           String      @map("to_email") @db.Citext
   template          String      @db.VarChar(60)
   subject           String      @db.VarChar(200)
@@ -2152,8 +2272,9 @@ model ProductImportRow {
 
 ## 6. Raw SQL migration (`0002_constraints_search_integrity`)
 
-Applied immediately after `0001_init` in the same release. Validated on PostgreSQL 18.
+Applied immediately after `0001_init` in the same release. Validated on PostgreSQL 16.14 (deployment major) and 18.3.
 
+<!-- validate:0002.sql -->
 ```sql
 -- 0002_constraints_search_integrity.sql
 -- Things Prisma cannot express: partial unique indexes, cross-column/table checks,
@@ -2194,8 +2315,12 @@ ALTER TABLE product_variants ADD CONSTRAINT variants_on_hand_ck CHECK (on_hand >
 ALTER TABLE product_variants ADD CONSTRAINT variants_reserved_ck CHECK (reserved >= 0);
 -- NOTE: reserved may exceed on_hand only after a physical recount/write-off (oversold); checkout never allows it.
 ALTER TABLE product_variants ADD CONSTRAINT variants_weight_ck  CHECK (weight_g IS NULL OR weight_g > 0);
+-- All three dimensions absent, or all three present and positive. (The previous form
+-- "(all NULL) OR (l>0 AND w>0 AND h>0)" evaluated to NULL, i.e. passed, when only some were set.)
 ALTER TABLE product_variants ADD CONSTRAINT variants_dims_ck    CHECK (
-  (length_cm IS NULL AND width_cm IS NULL AND height_cm IS NULL) OR (length_cm > 0 AND width_cm > 0 AND height_cm > 0));
+  (length_cm IS NULL AND width_cm IS NULL AND height_cm IS NULL)
+  OR (length_cm IS NOT NULL AND width_cm IS NOT NULL AND height_cm IS NOT NULL
+      AND length_cm > 0 AND width_cm > 0 AND height_cm > 0));
 ALTER TABLE product_variants ADD CONSTRAINT variants_low_stock_ck CHECK (low_stock_threshold >= 0);
 ALTER TABLE product_variants ADD CONSTRAINT variants_hex_ck     CHECK (color_hex IS NULL OR color_hex ~ '^#[0-9A-Fa-f]{6}$');
 ALTER TABLE addresses        ADD CONSTRAINT addresses_pincode_ck CHECK (pincode ~ '^[1-9][0-9]{5}$');
@@ -2218,8 +2343,13 @@ ALTER TABLE orders ADD CONSTRAINT orders_money_ck CHECK (
   subtotal >= 0 AND mrp_total >= subtotal AND coupon_discount BETWEEN 0 AND subtotal
   AND shipping_fee >= 0 AND cod_fee >= 0 AND captured_amount >= 0 AND refunded_amount >= 0 AND tax_total >= 0);
 ALTER TABLE orders ADD CONSTRAINT orders_total_ck CHECK (total = subtotal - coupon_discount + shipping_fee + cod_fee);
+-- Refund capacity at order level (reserved = REQUESTED + PENDING + UNKNOWN + PROCESSED allocations of
+-- order-funded refunds; excess/late-capture refunds are capped on their own payment row instead).
 ALTER TABLE orders ADD CONSTRAINT orders_refund_cap_ck CHECK (
-  refunded_amount <= CASE WHEN payment_method = 'COD' THEN total ELSE captured_amount END);
+  refund_reserved_total <= CASE WHEN payment_method = 'COD' THEN total ELSE captured_amount END
+  AND refund_reserved_shipping BETWEEN 0 AND shipping_fee
+  AND refund_reserved_cod_fee  BETWEEN 0 AND cod_fee
+  AND refunded_amount BETWEEN 0 AND refund_reserved_total);
 ALTER TABLE orders ADD CONSTRAINT orders_cod_fee_ck CHECK (payment_method = 'COD' OR cod_fee = 0);
 ALTER TABLE orders ADD CONSTRAINT orders_weights_ck CHECK (actual_weight_g > 0 AND chargeable_weight_g >= actual_weight_g);
 ALTER TABLE order_items ADD CONSTRAINT order_items_ck CHECK (
@@ -2227,7 +2357,8 @@ ALTER TABLE order_items ADD CONSTRAINT order_items_ck CHECK (
   AND discount BETWEEN 0 AND line_total AND net_amount = line_total - discount
   AND tax_amount BETWEEN 0 AND net_amount AND weight_g > 0
   AND return_requested_qty BETWEEN 0 AND quantity AND returned_qty BETWEEN 0 AND return_requested_qty
-  AND refunded_qty BETWEEN 0 AND quantity AND refunded_amount BETWEEN 0 AND net_amount);
+  AND refund_reserved_qty BETWEEN 0 AND quantity AND refund_reserved_amount BETWEEN 0 AND net_amount
+  AND refunded_qty BETWEEN 0 AND refund_reserved_qty AND refunded_amount BETWEEN 0 AND refund_reserved_amount);
 
 -- ── Inventory ───────────────────────────────────────────────────────────
 ALTER TABLE inventory_reservations ADD CONSTRAINT reservations_ck CHECK (
@@ -2238,22 +2369,54 @@ ALTER TABLE inventory_movements ADD CONSTRAINT movements_after_ck CHECK (on_hand
 
 -- ── Payments & refunds ──────────────────────────────────────────────────
 ALTER TABLE payment_attempts ADD CONSTRAINT attempts_amount_ck CHECK (amount > 0);
-ALTER TABLE payments ADD CONSTRAINT payments_amount_ck CHECK (amount > 0 AND amount_refunded BETWEEN 0 AND amount);
+ALTER TABLE payments ADD CONSTRAINT payments_amount_ck CHECK (
+  amount > 0 AND refund_reserved BETWEEN 0 AND amount AND amount_refunded BETWEEN 0 AND refund_reserved);
+ALTER TABLE payments ADD CONSTRAINT payments_allocation_ck CHECK (
+  (allocation IS NULL) = (allocated_at IS NULL)
+  AND (allocation IS NULL OR allocation = 'UNLINKED' OR status_rank >= 3));
 ALTER TABLE refunds ADD CONSTRAINT refunds_amount_ck CHECK (
-  amount > 0 AND items_amount >= 0 AND shipping_amount >= 0 AND cod_fee_amount >= 0
-  AND amount = items_amount + shipping_amount + cod_fee_amount);
+  amount > 0 AND items_amount >= 0 AND shipping_amount >= 0 AND cod_fee_amount >= 0 AND unallocated_amount >= 0
+  AND amount = items_amount + shipping_amount + cod_fee_amount + unallocated_amount
+  AND (unallocated_amount = 0 OR (kind IN ('EXCESS_CAPTURE','LATE_CAPTURE')
+                                  AND items_amount = 0 AND shipping_amount = 0 AND cod_fee_amount = 0)));
 ALTER TABLE refunds ADD CONSTRAINT refunds_method_ck CHECK (
   (method = 'ORIGINAL_PAYMENT' AND payment_id IS NOT NULL) OR (method = 'MANUAL_BANK' AND payment_id IS NULL));
+ALTER TABLE refund_attempts ADD CONSTRAINT refund_attempts_key_ck CHECK (
+  provider_idempotency_key ~ '^[A-Za-z0-9_-]{10,64}$' AND attempt_no >= 1);
 ALTER TABLE refund_items ADD CONSTRAINT refund_items_ck CHECK (quantity >= 0 AND amount >= 0 AND tax_amount BETWEEN 0 AND amount);
+ALTER TABLE webhook_events ADD CONSTRAINT webhook_lease_ck CHECK (
+  (status = 'PROCESSING') = (lease_token IS NOT NULL AND locked_until IS NOT NULL));
+ALTER TABLE outbox_deliveries ADD CONSTRAINT outbox_lease_ck CHECK (
+  (status = 'LEASED') = (lease_token IS NOT NULL AND lease_expires_at IS NOT NULL)
+  AND (status <> 'COMPLETED' OR completed_at IS NOT NULL) AND generation >= 0);
 ALTER TABLE cod_remittances ADD CONSTRAINT cod_remit_amount_ck CHECK (amount > 0);
 ALTER TABLE cod_remittance_items ADD CONSTRAINT cod_remit_item_amount_ck CHECK (amount > 0);
 
 -- ── Returns ─────────────────────────────────────────────────────────────
+-- Each quantity individually bounded; sellable/damaged recorded together and only after receipt;
+-- when recorded they must account for every received unit. (The previous form accepted e.g. -1 + 3 = 2.)
 ALTER TABLE return_request_items ADD CONSTRAINT return_items_qty_ck CHECK (
   requested_qty > 0
   AND (approved_qty IS NULL OR approved_qty BETWEEN 0 AND requested_qty)
   AND (received_qty IS NULL OR (approved_qty IS NOT NULL AND received_qty BETWEEN 0 AND approved_qty))
-  AND (sellable_qty IS NULL OR damaged_qty IS NULL OR sellable_qty + damaged_qty = received_qty));
+  AND ((sellable_qty IS NULL AND damaged_qty IS NULL)
+       OR (received_qty IS NOT NULL AND sellable_qty IS NOT NULL AND damaged_qty IS NOT NULL
+           AND sellable_qty BETWEEN 0 AND received_qty AND damaged_qty BETWEEN 0 AND received_qty
+           AND sellable_qty + damaged_qty = received_qty)));
+
+-- A return can only become INSPECTED when every approved item has a complete inspection record.
+CREATE OR REPLACE FUNCTION return_inspection_complete_guard() RETURNS trigger AS $$
+BEGIN
+  IF NEW.status = 'INSPECTED' AND OLD.status IS DISTINCT FROM 'INSPECTED' AND EXISTS (
+       SELECT 1 FROM return_request_items i
+        WHERE i.return_request_id = NEW.id AND COALESCE(i.approved_qty, 0) > 0
+          AND (i.received_qty IS NULL OR i.sellable_qty IS NULL OR i.damaged_qty IS NULL)) THEN
+    RAISE EXCEPTION 'return % cannot be INSPECTED: incomplete item inspection', NEW.id USING ERRCODE = 'check_violation';
+  END IF;
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+CREATE TRIGGER return_inspection_complete_trg BEFORE UPDATE OF status ON return_requests
+  FOR EACH ROW EXECUTE FUNCTION return_inspection_complete_guard();
 
 -- ── Sequences ───────────────────────────────────────────────────────────
 CREATE SEQUENCE order_number_seq START 10001;   -- 'AQ' || nextval('order_number_seq')
@@ -2291,61 +2454,105 @@ END $$ LANGUAGE plpgsql;
 CREATE TRIGGER order_items_snapshot_trg BEFORE UPDATE ON order_items
   FOR EACH ROW EXECUTE FUNCTION order_items_snapshot_guard();
 
--- ── Search document (rebuilt when product, variants, category or type change) ──
+-- ── Search document ─────────────────────────────────────────────────────
+-- Lock strategy (database.md §4.1): triggers never lock rows of OTHER tables. The product's own
+-- vector is computed in a BEFORE trigger on products (no extra row lock). Changes to variants,
+-- categories or types only APPEND to search_reindex_queue (no unique key ⇒ inserts never wait on
+-- each other); the search worker drains the queue in its own short transactions.
 CREATE INDEX products_name_trgm   ON products USING GIN (name gin_trgm_ops);
 CREATE INDEX products_tags_gin    ON products USING GIN (tags);
 CREATE INDEX products_search_gin  ON products USING GIN (search_vector);
 CREATE INDEX variants_filter_idx  ON product_variants (product_id, is_active, price) WHERE deleted_at IS NULL;
 
-CREATE OR REPLACE FUNCTION product_search_document(p_id INT) RETURNS tsvector AS $$
+CREATE OR REPLACE FUNCTION product_search_vector(p products) RETURNS tsvector AS $$
   SELECT
       setweight(to_tsvector('simple', unaccent(coalesce(p.name,''))), 'A')
-   || setweight(to_tsvector('simple', unaccent(coalesce(t.name,'') || ' ' || coalesce(c.name,''))), 'B')
-   || setweight(to_tsvector('simple', unaccent(array_to_string(p.tags,' ') || ' ' || coalesce(v.terms,''))), 'C')
+   || setweight(to_tsvector('simple', unaccent(coalesce((SELECT name FROM product_types WHERE id = p.type_id),'') || ' ' ||
+                                               coalesce((SELECT name FROM categories WHERE id = p.category_id),''))), 'B')
+   || setweight(to_tsvector('simple', unaccent(array_to_string(p.tags,' ') || ' ' || coalesce((
+        SELECT string_agg(concat_ws(' ', sku, size, color, thickness), ' ' ORDER BY id)   -- deterministic order
+          FROM product_variants WHERE product_id = p.id AND deleted_at IS NULL AND is_active), ''))), 'C')
    || setweight(to_tsvector('english', regexp_replace(coalesce(p.description,''), '<[^>]+>', ' ', 'g')), 'D')
-  FROM products p
-  LEFT JOIN product_types t ON t.id = p.type_id
-  LEFT JOIN categories    c ON c.id = p.category_id
-  LEFT JOIN LATERAL (
-    SELECT string_agg(concat_ws(' ', sku, size, color, thickness), ' ') AS terms
-    FROM product_variants WHERE product_id = p.id AND deleted_at IS NULL AND is_active
-  ) v ON TRUE
-  WHERE p.id = p_id
 $$ LANGUAGE sql STABLE;
 
--- products: AFTER trigger re-computes from committed row state (cheap at this catalogue size)
 CREATE OR REPLACE FUNCTION products_search_trg_fn() RETURNS trigger AS $$
 BEGIN
-  UPDATE products SET search_vector = product_search_document(NEW.id) WHERE id = NEW.id;
-  RETURN NULL;
+  NEW.search_vector := product_search_vector(NEW);
+  RETURN NEW;
 END $$ LANGUAGE plpgsql;
-CREATE TRIGGER products_search_trg AFTER INSERT OR UPDATE OF name, tags, description, type_id, category_id ON products
+CREATE TRIGGER products_search_trg BEFORE INSERT OR UPDATE OF name, tags, description, type_id, category_id ON products
   FOR EACH ROW EXECUTE FUNCTION products_search_trg_fn();
 
-CREATE OR REPLACE FUNCTION variants_search_trg_fn() RETURNS trigger AS $$
+CREATE OR REPLACE FUNCTION variants_search_enqueue_fn() RETURNS trigger AS $$
 BEGIN
-  UPDATE products SET search_vector = product_search_document(id)
-   WHERE id IN (SELECT DISTINCT x FROM unnest(ARRAY[
-     CASE WHEN TG_OP <> 'DELETE' THEN NEW.product_id END,
-     CASE WHEN TG_OP <> 'INSERT' THEN OLD.product_id END]) AS x WHERE x IS NOT NULL);
+  IF TG_OP <> 'DELETE' THEN INSERT INTO search_reindex_queue (product_id) VALUES (NEW.product_id); END IF;
+  IF TG_OP <> 'INSERT' AND (TG_OP = 'DELETE' OR OLD.product_id <> NEW.product_id) THEN
+    INSERT INTO search_reindex_queue (product_id) VALUES (OLD.product_id);
+  END IF;
   RETURN NULL;
 END $$ LANGUAGE plpgsql;
 CREATE TRIGGER variants_search_trg AFTER INSERT OR DELETE OR UPDATE OF sku, size, color, thickness, is_active, deleted_at, product_id
-  ON product_variants FOR EACH ROW EXECUTE FUNCTION variants_search_trg_fn();
+  ON product_variants FOR EACH ROW EXECUTE FUNCTION variants_search_enqueue_fn();
 
-CREATE OR REPLACE FUNCTION taxonomy_search_trg_fn() RETURNS trigger AS $$
+CREATE OR REPLACE FUNCTION taxonomy_search_enqueue_fn() RETURNS trigger AS $$
 BEGIN
   IF TG_TABLE_NAME = 'categories' THEN
-    UPDATE products SET search_vector = product_search_document(id) WHERE category_id = NEW.id;
+    INSERT INTO search_reindex_queue (product_id) SELECT id FROM products WHERE category_id = NEW.id;
   ELSE
-    UPDATE products SET search_vector = product_search_document(id) WHERE type_id = NEW.id;
+    INSERT INTO search_reindex_queue (product_id) SELECT id FROM products WHERE type_id = NEW.id;
   END IF;
   RETURN NULL;
 END $$ LANGUAGE plpgsql;
 CREATE TRIGGER categories_search_trg AFTER UPDATE OF name ON categories
-  FOR EACH ROW EXECUTE FUNCTION taxonomy_search_trg_fn();
+  FOR EACH ROW EXECUTE FUNCTION taxonomy_search_enqueue_fn();
 CREATE TRIGGER types_search_trg AFTER UPDATE OF name ON product_types
-  FOR EACH ROW EXECUTE FUNCTION taxonomy_search_trg_fn();
+  FOR EACH ROW EXECUTE FUNCTION taxonomy_search_enqueue_fn();
+
+-- ── Publication gate: evaluated by the DB on every transition to ACTIVE ──────
+-- The service evaluates the same function, stores the result in products.readiness and sets
+-- is_publishable/published_at; this trigger is the backstop. It cannot re-run automatically when a
+-- related row changes after publication; the service edit-guard blocks such changes and the
+-- published_not_ready view (nightly check → PUBLISHED_NOT_READY exception) detects any that slip through.
+CREATE OR REPLACE FUNCTION product_readiness_failures(p products) RETURNS text[] AS $$
+  SELECT array_remove(ARRAY[
+    CASE WHEN p.type_id IS NULL OR p.category_id IS NULL THEN 'taxonomy' END,
+    CASE WHEN p.description IS NULL OR btrim(p.description) = '' THEN 'no_description' END,
+    CASE WHEN p.hsn_code IS NULL OR p.gst_rate IS NULL OR p.tax_approved_at IS NULL THEN 'no_tax' END,
+    CASE WHEN cardinality(p.data_flags) > 0 THEN 'has_flags' END,
+    CASE WHEN NOT EXISTS (SELECT 1 FROM product_images pi JOIN media m ON m.id = pi.media_id
+                           WHERE pi.product_id = p.id AND pi.is_cover AND m.status = 'READY'
+                             AND m.visibility = 'PUBLIC' AND m.deleted_at IS NULL) THEN 'no_image' END,
+    CASE WHEN NOT EXISTS (SELECT 1 FROM product_variants v WHERE v.product_id = p.id AND v.is_active AND v.deleted_at IS NULL)
+         THEN 'no_active_variant' END,
+    CASE WHEN EXISTS (SELECT 1 FROM product_variants v WHERE v.product_id = p.id AND v.is_active AND v.deleted_at IS NULL
+                        AND (v.price IS NULL OR v.net_quantity IS NULL OR v.net_unit IS NULL)) THEN 'no_price_or_size' END,
+    CASE WHEN EXISTS (SELECT 1 FROM product_variants v WHERE v.product_id = p.id AND v.is_active AND v.deleted_at IS NULL
+                        AND v.inventory_counted_at IS NULL) THEN 'stock_uncounted' END,
+    CASE WHEN EXISTS (SELECT 1 FROM product_variants v WHERE v.product_id = p.id AND v.is_active AND v.deleted_at IS NULL
+                        AND (v.weight_g IS NULL OR v.weight_source IS DISTINCT FROM 'MEASURED'
+                             OR (v.shipping_class = 'BULKY' AND v.length_cm IS NULL))) THEN 'shipping_data' END,
+    CASE WHEN EXISTS (SELECT 1 FROM product_variants v WHERE v.product_id = p.id AND v.is_active AND v.deleted_at IS NULL
+                        AND cardinality(v.data_flags) > 0) THEN 'variant_flags' END
+  ]::text[], NULL)
+$$ LANGUAGE sql STABLE;
+
+CREATE OR REPLACE FUNCTION products_publish_gate_fn() RETURNS trigger AS $$
+DECLARE f text[];
+BEGIN
+  IF NEW.status = 'ACTIVE' AND (TG_OP = 'INSERT' OR OLD.status IS DISTINCT FROM 'ACTIVE') THEN
+    f := product_readiness_failures(NEW);
+    IF cardinality(f) > 0 THEN
+      RAISE EXCEPTION 'NOT_PUBLISHABLE: %', array_to_string(f, ',') USING ERRCODE = 'check_violation';
+    END IF;
+  END IF;
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+CREATE TRIGGER products_publish_gate_trg BEFORE INSERT OR UPDATE OF status ON products
+  FOR EACH ROW EXECUTE FUNCTION products_publish_gate_fn();
+
+CREATE OR REPLACE VIEW published_not_ready AS
+  SELECT p.id, f AS failures FROM products p CROSS JOIN LATERAL product_readiness_failures(p) f
+  WHERE p.status = 'ACTIVE' AND cardinality(f) > 0;
 
 -- ── Aggregate rebuild + drift detection ────────────────────────────────
 -- The application updates aggregates in the same transaction as every variant change;
@@ -2378,165 +2585,865 @@ CREATE OR REPLACE VIEW variant_reservation_drift AS
 
 ---
 
+## 6b. Money & stock functions (`0003_money_stock_functions`)
+
+Applied after `0002`. These functions **are the implementation** of the money/stock paths: services call them with
+`prisma.$queryRaw` inside their own short transactions and never re-implement their logic. Inputs that come from Razorpay are
+fetched by the service **before** the transaction. Explicit branching and affected-row checks are in the code below; nothing
+critical is left to comments. Behaviour is exercised by checks C03–C13 (review.md §6).
+
+| Function | Used by | Purpose |
+|----------|---------|---------|
+| `aq_idempotency_begin` / `aq_idempotency_complete` | idempotency middleware | key + target + hash; NEW/REPLAY/IN_PROGRESS/TAKEOVER/CONFLICT |
+| `aq_reserve_order`, `aq_reserve_coupon` | checkout TX1 | stock + coupon capacity |
+| `aq_release_unpaid_order` | expiry job, pre-payment cancellation | release stock/coupon, close attempts |
+| `aq_apply_provider_payment` | **verify, webhook worker, reconciler** | the only way a payment changes an order |
+| `aq_reacquire_order` | (internal) late capture | all-or-nothing re-reservation |
+| `aq_request_refund`, `aq_retry_refund`, `aq_refund_attempt_result`, `aq_mark_refund_processed`, `aq_cancel_manual_refund`, `aq_refund_capacity` | refund API, `refund.send` consumer, webhook, reconciler | capacity + provider attempts |
+| `aq_adjust_on_hand`, `aq_edit_variants`, `aq_refresh_products` | Inventory page/import, catalogue editor | lock-ordered stock and catalogue writes |
+| `aq_process_search_queue` | search worker | deferred search rebuild |
+| `aq_webhook_claim/begin/renew/complete/fail` | webhook worker + sweeper | fenced inbox leases |
+| `aq_emit`, `aq_outbox_claim`, `aq_outbox_mark_published`, `aq_outbox_publish_failed`, `aq_outbox_begin_consume`, `aq_outbox_complete` | domain functions, dispatcher, consumers | outbox deliveries |
+| `aq_session_valid`, `aq_change_role`, `aq_revoke_all_sessions` | auth middleware (cache miss), admin | audience-specific auth versions |
+
+<!-- validate:0003.sql -->
+```sql
+-- 0003_money_stock_functions.sql
+-- The money/stock-critical transactions, implemented ONCE as database functions and called by the
+-- API services and workers (Prisma $queryRaw). Each function runs inside the caller's transaction and
+-- performs NO network I/O. Lock order: database.md §4.1. Every business side effect is gated by an
+-- affected-row check on the state transition that authorises it.
+
+-- ── Small helpers ───────────────────────────────────────────────────────
+CREATE OR REPLACE FUNCTION aq_history(p_order INT, p_dim TEXT, p_from TEXT, p_to TEXT, p_actor TEXT, p_note TEXT DEFAULT NULL)
+RETURNS void AS $$
+  INSERT INTO order_status_history (order_id, dimension, from_value, to_value, actor_type, note)
+  VALUES (p_order, p_dim::"StatusDimension", p_from, p_to, p_actor::"ActorType", p_note);
+$$ LANGUAGE sql;
+
+-- Outbox: one event row + one delivery row per consumer, in the caller's transaction.
+CREATE OR REPLACE FUNCTION aq_emit(p_agg_type TEXT, p_agg_id TEXT, p_type TEXT, p_payload JSONB, p_consumers TEXT[])
+RETURNS BIGINT AS $$
+DECLARE e BIGINT;
+BEGIN
+  INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload)
+  VALUES (p_agg_type, p_agg_id, p_type, p_payload) RETURNING id INTO e;
+  INSERT INTO outbox_deliveries (event_id, consumer) SELECT e, c FROM unnest(p_consumers) AS c;
+  RETURN e;
+END $$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION aq_raise_exception(p_type TEXT, p_dedupe TEXT, p_order INT, p_payment INT, p_refund INT, p_amount INT, p_details JSONB)
+RETURNS BOOLEAN AS $$
+DECLARE n INT;
+BEGIN
+  INSERT INTO payment_exceptions (type, dedupe_key, order_id, payment_id, refund_id, amount, details)
+  VALUES (p_type::"ExceptionType", p_dedupe, p_order, p_payment, p_refund, p_amount, COALESCE(p_details, '{}'))
+  ON CONFLICT (dedupe_key) DO NOTHING;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n = 1 THEN
+    IF p_order IS NOT NULL THEN UPDATE orders SET has_open_exception = TRUE WHERE id = p_order; END IF;
+    PERFORM aq_emit('payment_exception', p_dedupe, 'payment.exception_raised', jsonb_build_object('type', p_type, 'order_id', p_order), ARRAY['notify.admin']);
+  END IF;
+  RETURN n = 1;
+END $$ LANGUAGE plpgsql;
+
+-- Product aggregates; locks products in ascending id order (lock-order step "products").
+CREATE OR REPLACE FUNCTION aq_refresh_products(p_ids INT[]) RETURNS void AS $$
+DECLARE pid INT;
+BEGIN
+  FOR pid IN SELECT DISTINCT x FROM unnest(p_ids) AS x WHERE x IS NOT NULL ORDER BY 1 LOOP
+    UPDATE products p SET min_price = a.min_price, max_price = a.max_price, max_mrp = a.max_mrp,
+                          available_qty = a.available_qty, active_variant_count = a.active_variant_count
+      FROM product_aggregates(pid) a WHERE p.id = pid;
+  END LOOP;
+END $$ LANGUAGE plpgsql;
+
+-- ── Idempotency (api.md §1.2) ──────────────────────────────────────────
+-- p_hash = sha256(canonical JSON {operation, target, scope, body}) computed by the API.
+CREATE OR REPLACE FUNCTION aq_idempotency_begin(p_scope TEXT, p_op TEXT, p_key TEXT, p_target TEXT, p_hash TEXT, p_lock_s INT DEFAULT 60)
+RETURNS TABLE (outcome TEXT, response_code INT, response_body JSONB, resource_type TEXT, resource_id TEXT) AS $$
+#variable_conflict use_column
+DECLARE k idempotency_keys%ROWTYPE; ins INT;
+BEGIN
+  INSERT INTO idempotency_keys (scope, operation, key, target_resource, request_hash, status, locked_until, expires_at)
+  VALUES (p_scope, p_op, p_key, p_target, p_hash, 'PROCESSING', now() + make_interval(secs => p_lock_s), now() + interval '24 hours')
+  ON CONFLICT (scope, operation, key) DO NOTHING;
+  GET DIAGNOSTICS ins = ROW_COUNT;
+  IF ins = 1 THEN RETURN QUERY SELECT 'NEW'::TEXT, NULL::INT, NULL::JSONB, NULL::TEXT, NULL::TEXT; RETURN; END IF;
+  SELECT * INTO k FROM idempotency_keys i WHERE i.scope = p_scope AND i.operation = p_op AND i.key = p_key FOR NO KEY UPDATE;
+  IF k.target_resource <> p_target OR k.request_hash <> p_hash THEN
+    RETURN QUERY SELECT 'CONFLICT'::TEXT, 422, NULL::JSONB, NULL::TEXT, NULL::TEXT; RETURN;          -- IDEMPOTENCY_KEY_REUSED
+  ELSIF k.status = 'COMPLETED' THEN
+    RETURN QUERY SELECT 'REPLAY'::TEXT, k.response_code, k.response_body, k.resource_type::TEXT, k.resource_id::TEXT; RETURN;
+  ELSIF k.locked_until > now() THEN
+    RETURN QUERY SELECT 'IN_PROGRESS'::TEXT, 409, NULL::JSONB, NULL::TEXT, NULL::TEXT; RETURN;       -- REQUEST_IN_PROGRESS
+  END IF;
+  UPDATE idempotency_keys SET locked_until = now() + make_interval(secs => p_lock_s) WHERE id = k.id;
+  RETURN QUERY SELECT 'TAKEOVER'::TEXT, NULL::INT, NULL::JSONB, k.resource_type::TEXT, k.resource_id::TEXT;     -- resume from resource state
+END $$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION aq_idempotency_complete(p_scope TEXT, p_op TEXT, p_key TEXT, p_code INT, p_body JSONB, p_rtype TEXT, p_rid TEXT)
+RETURNS void AS $$
+BEGIN
+  UPDATE idempotency_keys SET status = 'COMPLETED', response_code = p_code, response_body = p_body,
+         resource_type = p_rtype, resource_id = p_rid, completed_at = now()
+   WHERE scope = p_scope AND operation = p_op AND key = p_key AND status = 'PROCESSING';
+  IF NOT FOUND THEN RAISE EXCEPTION 'idempotency record % not PROCESSING', p_key; END IF;
+END $$ LANGUAGE plpgsql;
+
+-- ── Inventory ───────────────────────────────────────────────────────────
+-- Reserve every line of an order (TX1 of checkout). Variants ascending, then products ascending.
+CREATE OR REPLACE FUNCTION aq_reserve_order(p_order INT) RETURNS void AS $$
+DECLARE r RECORD; v RECORD; rid INT;
+BEGIN
+  PERFORM 1 FROM orders WHERE id = p_order FOR NO KEY UPDATE;
+  FOR r IN SELECT oi.id, oi.variant_id, oi.quantity FROM order_items oi WHERE oi.order_id = p_order ORDER BY oi.variant_id, oi.id LOOP
+    UPDATE product_variants SET reserved = reserved + r.quantity, version = version + 1, updated_at = now()
+     WHERE id = r.variant_id AND is_active AND deleted_at IS NULL AND price IS NOT NULL AND on_hand - reserved >= r.quantity
+    RETURNING on_hand, reserved INTO v;
+    IF NOT FOUND THEN RAISE EXCEPTION 'OUT_OF_STOCK:%', r.variant_id USING ERRCODE = 'P0001'; END IF;
+    INSERT INTO inventory_reservations (order_id, order_item_id, variant_id, quantity) VALUES (p_order, r.id, r.variant_id, r.quantity)
+    RETURNING id INTO rid;
+    INSERT INTO inventory_movements (variant_id, reason, on_hand_delta, reserved_delta, on_hand_after, reserved_after, order_id, reservation_id)
+    VALUES (r.variant_id, 'RESERVE', 0, r.quantity, v.on_hand, v.reserved, p_order, rid);
+  END LOOP;
+  PERFORM aq_refresh_products(ARRAY(SELECT product_id FROM order_items WHERE order_id = p_order));
+END $$ LANGUAGE plpgsql;
+
+-- Re-reserve after a late capture; all-or-nothing via a subtransaction.
+CREATE OR REPLACE FUNCTION aq_reacquire_order(p_order INT) RETURNS BOOLEAN AS $$
+BEGIN
+  BEGIN
+    PERFORM aq_reserve_order(p_order);
+    RETURN TRUE;
+  EXCEPTION WHEN SQLSTATE 'P0001' THEN
+    RETURN FALSE;                                   -- savepoint rolled back; nothing reserved
+  END;
+END $$ LANGUAGE plpgsql;
+
+-- Release reservations of an unpaid order (expiry / cancellation before payment).
+CREATE OR REPLACE FUNCTION aq_release_unpaid_order(p_order INT, p_new_status TEXT, p_reason TEXT, p_actor TEXT)
+RETURNS TEXT AS $$
+DECLARE o RECORD; r RECORD; v RECORD; red RECORD;
+BEGIN
+  IF p_new_status NOT IN ('EXPIRED', 'CANCELLED') THEN RAISE EXCEPTION 'bad status %', p_new_status; END IF;
+  SELECT id, order_number, status, payment_status INTO o FROM orders WHERE id = p_order FOR NO KEY UPDATE;
+  IF o.status <> 'PENDING_PAYMENT' OR o.payment_status <> 'UNPAID' THEN RETURN 'SKIPPED'; END IF;
+  FOR r IN SELECT id, variant_id, quantity FROM inventory_reservations
+            WHERE order_id = p_order AND status = 'ACTIVE' ORDER BY variant_id, id LOOP
+    UPDATE product_variants SET reserved = reserved - r.quantity, version = version + 1 WHERE id = r.variant_id
+    RETURNING on_hand, reserved INTO v;
+    UPDATE inventory_reservations SET status = 'RELEASED', released_at = now(), release_reason = p_reason WHERE id = r.id;
+    INSERT INTO inventory_movements (variant_id, reason, on_hand_delta, reserved_delta, on_hand_after, reserved_after, order_id, reservation_id)
+    VALUES (r.variant_id, 'RELEASE', 0, -r.quantity, v.on_hand, v.reserved, p_order, r.id);
+    IF v.on_hand - v.reserved > 0 AND v.on_hand - v.reserved - r.quantity <= 0 THEN
+      PERFORM aq_emit('variant', r.variant_id::TEXT, 'variant.back_in_stock', jsonb_build_object('variant_id', r.variant_id), ARRAY['restock.notify']);
+    END IF;
+  END LOOP;
+  PERFORM aq_refresh_products(ARRAY(SELECT product_id FROM order_items WHERE order_id = p_order));
+  UPDATE coupon_redemptions SET status = 'RELEASED', released_at = now()
+   WHERE order_id = p_order AND status = 'RESERVED' RETURNING coupon_id, over_limit INTO red;
+  IF FOUND AND NOT red.over_limit THEN
+    UPDATE coupons SET reserved_count = reserved_count - 1 WHERE id = red.coupon_id;   -- never touches redeemed_count
+  END IF;
+  UPDATE payment_attempts SET status = 'CLOSED'
+   WHERE order_id = p_order AND status IN ('CREATING','CREATED','PROVIDER_UNKNOWN','CREATION_FAILED');
+  UPDATE orders SET status = p_new_status::"OrderStatus",
+         expired_at = CASE WHEN p_new_status = 'EXPIRED' THEN now() END,
+         cancelled_at = CASE WHEN p_new_status = 'CANCELLED' THEN now() END,
+         cancel_reason = CASE WHEN p_new_status = 'CANCELLED' THEN p_reason END,
+         cancelled_by = CASE WHEN p_new_status = 'CANCELLED' THEN p_actor::"ActorType" END,
+         expires_at = NULL, version = version + 1
+   WHERE id = p_order AND status = 'PENDING_PAYMENT';
+  PERFORM aq_history(p_order, 'ORDER', 'PENDING_PAYMENT', p_new_status, p_actor, p_reason);
+  PERFORM aq_emit('order', o.order_number, 'order.' || lower(p_new_status), jsonb_build_object('order_id', p_order), ARRAY['email.customer']);
+  RETURN p_new_status;
+END $$ LANGUAGE plpgsql;
+
+-- Physical stock changes (recount / adjustment / write-off), batch, variants ascending then products.
+-- Never writes `reserved`. p_rows = [{"variant_id":1,"kind":"RECOUNT"|"ADJUSTMENT"|"DAMAGE_WRITE_OFF","quantity":n,"note":"…"}]
+CREATE OR REPLACE FUNCTION aq_adjust_on_hand(p_rows JSONB, p_actor INT, p_import INT DEFAULT NULL) RETURNS void AS $$
+DECLARE r RECORD; v RECORD; new_on_hand INT; was_available INT;
+BEGIN
+  FOR r IN SELECT * FROM jsonb_to_recordset(p_rows) AS x(variant_id INT, kind TEXT, quantity INT, note TEXT) ORDER BY variant_id LOOP
+    SELECT id, product_id, on_hand, reserved INTO v FROM product_variants WHERE id = r.variant_id FOR NO KEY UPDATE;
+    IF NOT FOUND THEN RAISE EXCEPTION 'NOT_FOUND:variant:%', r.variant_id; END IF;
+    was_available := v.on_hand - v.reserved;
+    new_on_hand := CASE r.kind WHEN 'RECOUNT' THEN r.quantity
+                               WHEN 'ADJUSTMENT' THEN v.on_hand + r.quantity
+                               WHEN 'DAMAGE_WRITE_OFF' THEN v.on_hand - abs(r.quantity) END;
+    IF new_on_hand IS NULL OR new_on_hand < 0 THEN RAISE EXCEPTION 'INVALID_ADJUSTMENT:%', r.variant_id; END IF;
+    UPDATE product_variants SET on_hand = new_on_hand, version = version + 1,
+           inventory_counted_at = CASE WHEN r.kind = 'RECOUNT' THEN now() ELSE inventory_counted_at END
+     WHERE id = v.id;
+    INSERT INTO inventory_movements (variant_id, reason, on_hand_delta, reserved_delta, on_hand_after, reserved_after, import_id, note, actor_id)
+    VALUES (v.id, r.kind::"InventoryReason", new_on_hand - v.on_hand, 0, new_on_hand, v.reserved, p_import, r.note, p_actor);
+    IF new_on_hand < v.reserved THEN
+      PERFORM aq_raise_exception('OVERSOLD', 'OVERSOLD:' || v.id || ':' || current_date, NULL, NULL, NULL, NULL,
+                                 jsonb_build_object('variant_id', v.id, 'on_hand', new_on_hand, 'reserved', v.reserved));
+    END IF;
+    IF was_available <= 0 AND new_on_hand - v.reserved > 0 THEN
+      PERFORM aq_emit('variant', v.id::TEXT, 'variant.back_in_stock', jsonb_build_object('variant_id', v.id), ARRAY['restock.notify']);
+    END IF;
+  END LOOP;
+  PERFORM aq_refresh_products(ARRAY(SELECT product_id FROM product_variants
+                                     WHERE id IN (SELECT (x->>'variant_id')::INT FROM jsonb_array_elements(p_rows) x)));
+END $$ LANGUAGE plpgsql;
+
+-- Catalogue edit of several variants of one product: variants ascending, then the product.
+-- p_rows = [{"variant_id":1,"color":"…","is_active":true}] (non-commercial fields only in this reference)
+CREATE OR REPLACE FUNCTION aq_edit_variants(p_product INT, p_rows JSONB) RETURNS void AS $$
+DECLARE r RECORD;
+BEGIN
+  PERFORM 1 FROM product_variants WHERE product_id = p_product ORDER BY id FOR NO KEY UPDATE;
+  FOR r IN SELECT * FROM jsonb_to_recordset(p_rows) AS x(variant_id INT, color TEXT, is_active BOOLEAN) ORDER BY variant_id LOOP
+    UPDATE product_variants SET color = COALESCE(r.color, color), is_active = COALESCE(r.is_active, is_active), version = version + 1
+     WHERE id = r.variant_id AND product_id = p_product;
+  END LOOP;
+  PERFORM aq_refresh_products(ARRAY[p_product]);
+END $$ LANGUAGE plpgsql;
+
+-- Search worker: drains the append-only queue; locks products in ascending id order.
+CREATE OR REPLACE FUNCTION aq_process_search_queue(p_limit INT DEFAULT 500) RETURNS INT AS $$
+DECLARE pid INT; n INT := 0;
+BEGIN
+  CREATE TEMP TABLE IF NOT EXISTS _sq (product_id INT) ON COMMIT DROP;
+  WITH q AS (DELETE FROM search_reindex_queue WHERE id IN (
+               SELECT id FROM search_reindex_queue ORDER BY id LIMIT p_limit FOR UPDATE SKIP LOCKED)
+             RETURNING product_id)
+  INSERT INTO _sq SELECT product_id FROM q;
+  FOR pid IN SELECT DISTINCT product_id FROM _sq ORDER BY 1 LOOP
+    -- Lock first, compute in a LATER statement: under READ COMMITTED the computing statement then sees every
+    -- change committed before the lock was granted. (Computing inside the waiting UPDATE would reuse an older
+    -- snapshot after the wait and could overwrite a newer vector.)
+    PERFORM 1 FROM products WHERE id = pid FOR NO KEY UPDATE;
+    UPDATE products p SET search_vector = product_search_vector(p) WHERE id = pid;
+    n := n + 1;
+  END LOOP;
+  DELETE FROM _sq;
+  RETURN n;
+END $$ LANGUAGE plpgsql;
+
+-- ── Coupons ─────────────────────────────────────────────────────────────
+CREATE OR REPLACE FUNCTION aq_reserve_coupon(p_order INT, p_coupon INT, p_user INT, p_email TEXT, p_phone TEXT, p_discount INT)
+RETURNS void AS $$
+DECLARE c RECORD; used INT;
+BEGIN
+  SELECT * INTO c FROM coupons WHERE id = p_coupon FOR NO KEY UPDATE;
+  IF NOT FOUND OR NOT c.is_active OR c.deleted_at IS NOT NULL
+     OR (c.starts_at IS NOT NULL AND c.starts_at > now()) OR (c.ends_at IS NOT NULL AND c.ends_at <= now()) THEN
+    RAISE EXCEPTION 'COUPON_INVALID' USING ERRCODE = 'P0001';
+  END IF;
+  SELECT count(*) INTO used FROM coupon_redemptions
+   WHERE coupon_id = p_coupon AND status IN ('RESERVED','REDEEMED') AND NOT over_limit
+     AND ((p_user IS NOT NULL AND user_id = p_user) OR customer_email = p_email);
+  IF c.usage_limit_per_customer IS NOT NULL AND used >= c.usage_limit_per_customer THEN
+    RAISE EXCEPTION 'COUPON_USAGE_EXCEEDED:customer' USING ERRCODE = 'P0001';
+  END IF;
+  UPDATE coupons SET reserved_count = reserved_count + 1
+   WHERE id = p_coupon AND (usage_limit_total IS NULL OR reserved_count + redeemed_count < usage_limit_total);
+  IF NOT FOUND THEN RAISE EXCEPTION 'COUPON_USAGE_EXCEEDED:total' USING ERRCODE = 'P0001'; END IF;
+  INSERT INTO coupon_redemptions (coupon_id, order_id, user_id, customer_email, customer_phone, discount, status)
+  VALUES (p_coupon, p_order, p_user, p_email, p_phone, p_discount, 'RESERVED');
+END $$ LANGUAGE plpgsql;
+
+-- ── Payment application (verify, webhook and reconciliation all call this) ─────
+-- Inputs come from a provider FETCH made before the transaction (never from the browser).
+-- Returns: UNLINKED | NOT_CAPTURED | AUTHORIZED | DUPLICATE | APPLIED | EXCESS | LATE | HELD
+CREATE OR REPLACE FUNCTION aq_apply_provider_payment(
+  p_provider_order_id TEXT, p_payment_id TEXT, p_amount INT, p_currency TEXT, p_status TEXT,
+  p_captured_at TIMESTAMPTZ, p_method TEXT, p_raw JSONB, p_actor TEXT)
+RETURNS TEXT AS $$
+DECLARE
+  att RECORD; o RECORD; pay RECORD; red RECORD; c RECORD; it RECORD;
+  v_rank INT; v_alloc TEXT; v_refund INT; n INT;
+BEGIN
+  v_rank := CASE p_status WHEN 'CREATED' THEN 0 WHEN 'FAILED' THEN 1 WHEN 'AUTHORIZED' THEN 2
+                          WHEN 'CAPTURED' THEN 3 WHEN 'REFUNDED' THEN 4 END;
+  IF v_rank IS NULL THEN RAISE EXCEPTION 'unknown provider status %', p_status; END IF;
+
+  -- 1. Bind payment → provider order → ArtQ order via the STORED attempt.
+  SELECT id, order_id, amount, currency INTO att FROM payment_attempts WHERE provider_order_id = p_provider_order_id;
+  IF NOT FOUND THEN
+    INSERT INTO payments (provider_payment_id, provider_order_id, method, amount, currency, status, status_rank,
+                          allocation, allocated_at, captured_at, raw, updated_at)
+    VALUES (p_payment_id, p_provider_order_id, p_method, p_amount, p_currency, p_status::"ProviderPaymentStatus", v_rank,
+            'UNLINKED', now(), p_captured_at, p_raw, now())
+    ON CONFLICT (provider_payment_id) DO NOTHING;
+    PERFORM aq_raise_exception('UNLINKED_PAYMENT', 'UNLINKED_PAYMENT:' || p_payment_id, NULL, NULL, NULL, p_amount, NULL);
+    RETURN 'UNLINKED';
+  END IF;
+
+  -- 2. Order lock first (lock order §4.1); every decision below is made under it.
+  SELECT * INTO o FROM orders WHERE id = att.order_id FOR NO KEY UPDATE;
+
+  -- 3. Monotonic upsert: equal or lower rank never overwrites.
+  INSERT INTO payments (order_id, attempt_id, provider_payment_id, provider_order_id, method, amount, currency,
+                        status, status_rank, captured_at, raw, updated_at)
+  VALUES (o.id, att.id, p_payment_id, p_provider_order_id, p_method, p_amount, p_currency,
+          p_status::"ProviderPaymentStatus", v_rank, p_captured_at, p_raw, now())
+  ON CONFLICT (provider_payment_id) DO UPDATE
+     SET status = EXCLUDED.status, status_rank = EXCLUDED.status_rank,
+         captured_at = COALESCE(payments.captured_at, EXCLUDED.captured_at), raw = EXCLUDED.raw, updated_at = now()
+   WHERE payments.status_rank < EXCLUDED.status_rank;
+  SELECT * INTO pay FROM payments WHERE provider_payment_id = p_payment_id FOR NO KEY UPDATE;
+
+  -- 4. Not captured yet: at most a first-time UNPAID → PROCESSING indicator.
+  IF pay.status_rank < 3 THEN
+    IF pay.status = 'AUTHORIZED' THEN
+      UPDATE orders SET payment_status = 'PROCESSING' WHERE id = o.id AND status = 'PENDING_PAYMENT' AND payment_status = 'UNPAID';
+      GET DIAGNOSTICS n = ROW_COUNT;
+      IF n = 1 THEN PERFORM aq_history(o.id, 'PAYMENT', 'UNPAID', 'PROCESSING', p_actor); END IF;
+      RETURN 'AUTHORIZED';
+    END IF;
+    RETURN 'NOT_CAPTURED';
+  END IF;
+
+  -- 5. THE GATE: a captured payment is allocated exactly once. Duplicates stop here.
+  IF pay.allocation IS NOT NULL THEN RETURN 'DUPLICATE'; END IF;
+
+  -- 6. Allocation decision (under the order lock).
+  IF pay.amount <> att.amount OR pay.currency <> att.currency THEN
+    v_alloc := 'HELD';
+  ELSIF EXISTS (SELECT 1 FROM payments x WHERE x.order_id = o.id AND x.allocation = 'APPLIED' AND x.id <> pay.id) THEN
+    v_alloc := 'EXCESS';               -- order already funded, whatever its later refund state
+  ELSIF o.payment_method = 'RAZORPAY' AND o.status = 'PENDING_PAYMENT' THEN
+    v_alloc := 'APPLIED';
+  ELSIF o.payment_method = 'RAZORPAY' AND o.status = 'EXPIRED' THEN
+    v_alloc := CASE WHEN aq_reacquire_order(o.id) THEN 'APPLIED' ELSE 'LATE' END;
+  ELSIF o.status = 'CANCELLED' THEN
+    v_alloc := 'LATE';
+  ELSE
+    v_alloc := 'HELD';                 -- unexpected (e.g. COD order); manual review
+  END IF;
+
+  UPDATE payments SET allocation = v_alloc::"PaymentAllocation", allocated_at = now()
+   WHERE id = pay.id AND allocation IS NULL;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n = 0 THEN RETURN 'DUPLICATE'; END IF;
+
+  -- 7. Side effects, each gated by its own transition.
+  IF v_alloc = 'APPLIED' THEN
+    UPDATE orders SET status = 'PLACED', payment_status = 'PAID', captured_amount = captured_amount + pay.amount,
+           placed_at = now(), expires_at = NULL, expired_at = NULL, version = version + 1
+     WHERE id = o.id AND status IN ('PENDING_PAYMENT','EXPIRED') AND captured_amount = 0;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    IF n <> 1 THEN RAISE EXCEPTION 'INVARIANT: order % could not transition to PLACED', o.id; END IF;
+    UPDATE payment_attempts SET status = 'PAID' WHERE id = att.id;
+
+    -- sold counts: products ascending (before coupons in the lock order)
+    FOR it IN SELECT product_id, sum(quantity)::INT AS q FROM order_items WHERE order_id = o.id GROUP BY product_id ORDER BY product_id LOOP
+      UPDATE products SET sold_count = sold_count + it.q WHERE id = it.product_id;
+    END LOOP;
+
+    -- coupon: RESERVED → REDEEMED (normal) or RELEASED → REDEEMED (late capture; capacity re-checked)
+    SELECT * INTO red FROM coupon_redemptions WHERE order_id = o.id AND status IN ('RESERVED','RELEASED');
+    IF FOUND THEN
+      SELECT * INTO c FROM coupons WHERE id = red.coupon_id FOR NO KEY UPDATE;
+      IF red.status = 'RESERVED' THEN
+        UPDATE coupon_redemptions SET status = 'REDEEMED', redeemed_at = now() WHERE id = red.id AND status = 'RESERVED';
+        GET DIAGNOSTICS n = ROW_COUNT;
+        IF n = 1 AND NOT red.over_limit THEN
+          UPDATE coupons SET reserved_count = reserved_count - 1, redeemed_count = redeemed_count + 1 WHERE id = c.id;
+        END IF;
+      ELSE
+        UPDATE coupons SET redeemed_count = redeemed_count + 1
+         WHERE id = c.id AND (usage_limit_total IS NULL OR reserved_count + redeemed_count < usage_limit_total);
+        GET DIAGNOSTICS n = ROW_COUNT;
+        UPDATE coupon_redemptions SET status = 'REDEEMED', redeemed_at = now(), over_limit = (n = 0)
+         WHERE id = red.id AND status = 'RELEASED';
+        IF n = 0 THEN
+          PERFORM aq_raise_exception('COUPON_OVER_LIMIT', 'COUPON_OVER_LIMIT:' || o.id, o.id, pay.id, NULL, red.discount, NULL);
+        END IF;
+      END IF;
+    END IF;
+
+    UPDATE carts SET status = 'CONVERTED' WHERE id = o.cart_id AND status = 'ACTIVE';
+    PERFORM aq_history(o.id, 'ORDER', o.status::TEXT, 'PLACED', p_actor);
+    PERFORM aq_history(o.id, 'PAYMENT', o.payment_status::TEXT, 'PAID', p_actor);
+    PERFORM aq_emit('order', o.order_number, 'order.placed', jsonb_build_object('order_id', o.id, 'late', o.status = 'EXPIRED'),
+                    ARRAY['email.customer','email.admin','notify.admin']);
+    RETURN 'APPLIED';
+  END IF;
+
+  IF v_alloc IN ('EXCESS','LATE') THEN
+    PERFORM aq_raise_exception(CASE WHEN v_alloc = 'EXCESS' THEN 'EXCESS_CAPTURE'
+                                    WHEN o.status = 'CANCELLED' THEN 'LATE_CAPTURE_CANCELLED' ELSE 'LATE_CAPTURE_EXPIRED' END,
+                               v_alloc || '_CAPTURE:' || p_payment_id, o.id, pay.id, NULL, pay.amount, NULL);
+    v_refund := aq_request_refund(o.id, pay.id, CASE WHEN v_alloc = 'EXCESS' THEN 'EXCESS_CAPTURE' ELSE 'LATE_CAPTURE' END,
+                                  '[]'::JSONB, 0, 0, pay.amount, 'Automatic: ' || lower(v_alloc) || ' capture',
+                                  'auto-' || lower(v_alloc) || '-' || p_payment_id, NULL);
+    PERFORM aq_emit('order', o.order_number, 'payment.refund_notice', jsonb_build_object('order_id', o.id, 'reason', v_alloc),
+                    ARRAY['email.customer']);
+    RETURN v_alloc;
+  END IF;
+
+  -- HELD
+  PERFORM aq_raise_exception(CASE WHEN pay.currency <> att.currency THEN 'CURRENCY_MISMATCH' ELSE 'AMOUNT_MISMATCH' END,
+                             'HELD:' || p_payment_id, o.id, pay.id, NULL, pay.amount,
+                             jsonb_build_object('expected', att.amount, 'received', pay.amount, 'order_status', o.status));
+  RETURN 'HELD';
+END $$ LANGUAGE plpgsql;
+
+-- ── Refund capacity ─────────────────────────────────────────────────────
+-- Counted allocations: REQUESTED, PENDING, UNKNOWN, PROCESSED. FAILED and CANCELLED release.
+-- Item, shipping, COD-fee and order capacity apply to order-funded refunds; EXCESS/LATE refunds
+-- (unallocated_amount) are capped by their own payment row only. Payment cap applies to every online refund.
+CREATE OR REPLACE FUNCTION aq_refund_capacity(p_refund INT, p_sign INT) RETURNS void AS $$
+DECLARE rf RECORD; it RECORD; n INT; order_part INT;
+BEGIN
+  SELECT * INTO rf FROM refunds WHERE id = p_refund;
+  order_part := rf.items_amount + rf.shipping_amount + rf.cod_fee_amount;
+  FOR it IN SELECT order_item_id, quantity, amount FROM refund_items WHERE refund_id = p_refund ORDER BY order_item_id LOOP
+    UPDATE order_items
+       SET refund_reserved_qty = refund_reserved_qty + p_sign * it.quantity,
+           refund_reserved_amount = refund_reserved_amount + p_sign * it.amount
+     WHERE id = it.order_item_id AND order_id = rf.order_id
+       AND refund_reserved_qty + p_sign * it.quantity BETWEEN refunded_qty AND quantity
+       AND refund_reserved_amount + p_sign * it.amount BETWEEN refunded_amount AND net_amount;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    IF n = 0 THEN RAISE EXCEPTION 'REFUND_EXCEEDS_CAPACITY:item:%', it.order_item_id USING ERRCODE = 'P0001'; END IF;
+  END LOOP;
+  IF order_part > 0 THEN
+    UPDATE orders
+       SET refund_reserved_total = refund_reserved_total + p_sign * order_part,
+           refund_reserved_shipping = refund_reserved_shipping + p_sign * rf.shipping_amount,
+           refund_reserved_cod_fee = refund_reserved_cod_fee + p_sign * rf.cod_fee_amount
+     WHERE id = rf.order_id
+       AND refund_reserved_total + p_sign * order_part
+           BETWEEN refunded_amount AND CASE WHEN payment_method = 'COD' THEN total ELSE captured_amount END
+       AND refund_reserved_shipping + p_sign * rf.shipping_amount BETWEEN 0 AND shipping_fee
+       AND refund_reserved_cod_fee + p_sign * rf.cod_fee_amount BETWEEN 0 AND cod_fee;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    IF n = 0 THEN RAISE EXCEPTION 'REFUND_EXCEEDS_CAPACITY:order' USING ERRCODE = 'P0001'; END IF;
+  END IF;
+  IF rf.payment_id IS NOT NULL THEN
+    UPDATE payments SET refund_reserved = refund_reserved + p_sign * rf.amount
+     WHERE id = rf.payment_id AND refund_reserved + p_sign * rf.amount BETWEEN amount_refunded AND amount;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    IF n = 0 THEN RAISE EXCEPTION 'REFUND_EXCEEDS_CAPACITY:payment' USING ERRCODE = 'P0001'; END IF;
+  END IF;
+END $$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION aq_new_refund_attempt(p_refund INT) RETURNS INT AS $$
+DECLARE rf RECORD; pr RECORD; a INT;
+BEGIN
+  SELECT * INTO rf FROM refunds WHERE id = p_refund;
+  IF rf.method <> 'ORIGINAL_PAYMENT' THEN RETURN NULL; END IF;
+  SELECT provider_payment_id INTO pr FROM payments WHERE id = rf.payment_id;
+  INSERT INTO refund_attempts (refund_id, attempt_no, provider_idempotency_key, receipt, request, updated_at)
+  VALUES (rf.id, rf.attempt_no,
+          'artq-refund-' || rf.id || '-a' || rf.attempt_no,                 -- X-Refund-Idempotency (≥10 chars, [A-Za-z0-9_-])
+          'AQR_' || rf.id || '_A' || rf.attempt_no,                          -- receipt: correlation for reconciliation
+          jsonb_build_object('payment_id', pr.provider_payment_id, 'amount', rf.amount, 'speed', 'normal',
+                             'receipt', 'AQR_' || rf.id || '_A' || rf.attempt_no,
+                             'notes', jsonb_build_object('aq_refund_id', rf.id, 'aq_attempt', rf.attempt_no)),
+          now())
+  RETURNING id INTO a;
+  PERFORM aq_emit('refund', rf.id::TEXT, 'refund.requested', jsonb_build_object('refund_attempt_id', a), ARRAY['refund.send']);
+  RETURN a;
+END $$ LANGUAGE plpgsql;
+
+-- Create a refund and reserve capacity atomically. Lock order: order → payment → (order-owned rows).
+-- p_items = [{"order_item_id":1,"quantity":1,"amount":45000,"tax_amount":6864}]
+CREATE OR REPLACE FUNCTION aq_request_refund(p_order INT, p_payment INT, p_kind TEXT, p_items JSONB,
+  p_shipping INT, p_cod_fee INT, p_unallocated INT, p_reason TEXT, p_idem_key TEXT, p_requested_by INT)
+RETURNS INT AS $$
+DECLARE o RECORD; pay RECORD; v_items INT; v_total INT; v_method TEXT; rid INT;
+BEGIN
+  SELECT * INTO o FROM orders WHERE id = p_order FOR NO KEY UPDATE;
+  IF p_payment IS NOT NULL THEN
+    SELECT * INTO pay FROM payments WHERE id = p_payment AND order_id = p_order FOR NO KEY UPDATE;
+    IF NOT FOUND OR pay.status_rank < 3 THEN RAISE EXCEPTION 'REFUND_PAYMENT_INVALID' USING ERRCODE = 'P0001'; END IF;
+    IF (p_kind IN ('EXCESS_CAPTURE','LATE_CAPTURE')) <> (pay.allocation IN ('EXCESS','LATE')) THEN
+      RAISE EXCEPTION 'REFUND_PAYMENT_INVALID:allocation' USING ERRCODE = 'P0001';
+    END IF;
+    v_method := 'ORIGINAL_PAYMENT';
+  ELSE
+    IF o.payment_method <> 'COD' OR o.payment_status NOT IN ('COD_COLLECTED','COD_REMITTED','PARTIALLY_REFUNDED') THEN
+      RAISE EXCEPTION 'REFUND_PAYMENT_INVALID:cod' USING ERRCODE = 'P0001';
+    END IF;
+    v_method := 'MANUAL_BANK';
+  END IF;
+  SELECT COALESCE(sum((x->>'amount')::INT), 0) INTO v_items FROM jsonb_array_elements(p_items) x;
+  v_total := v_items + p_shipping + p_cod_fee + p_unallocated;
+  IF v_total <= 0 THEN RAISE EXCEPTION 'REFUND_AMOUNT_INVALID' USING ERRCODE = 'P0001'; END IF;
+  INSERT INTO refunds (order_id, payment_id, kind, method, status, amount, items_amount, shipping_amount, cod_fee_amount,
+                       unallocated_amount, reason, idempotency_key, requested_by, updated_at)
+  VALUES (p_order, p_payment, p_kind::"RefundKind", v_method::"RefundMethod", 'REQUESTED', v_total, v_items, p_shipping, p_cod_fee,
+          p_unallocated, p_reason, p_idem_key, p_requested_by, now())
+  RETURNING id INTO rid;
+  INSERT INTO refund_items (refund_id, order_item_id, quantity, amount, tax_amount)
+  SELECT rid, (x->>'order_item_id')::INT, (x->>'quantity')::INT, (x->>'amount')::INT, COALESCE((x->>'tax_amount')::INT, 0)
+    FROM jsonb_array_elements(p_items) x;
+  PERFORM aq_refund_capacity(rid, 1);            -- raises ⇒ whole transaction rolls back
+  PERFORM aq_new_refund_attempt(rid);            -- online refunds only
+  RETURN rid;
+END $$ LANGUAGE plpgsql;
+
+-- Retry a FAILED refund: reacquire ALL capacity first, then a NEW provider attempt (new key + receipt).
+CREATE OR REPLACE FUNCTION aq_retry_refund(p_refund INT) RETURNS INT AS $$
+DECLARE rf RECORD;
+BEGIN
+  SELECT order_id, payment_id INTO rf FROM refunds WHERE id = p_refund;
+  PERFORM 1 FROM orders WHERE id = rf.order_id FOR NO KEY UPDATE;
+  IF rf.payment_id IS NOT NULL THEN PERFORM 1 FROM payments WHERE id = rf.payment_id FOR NO KEY UPDATE; END IF;
+  UPDATE refunds SET status = 'REQUESTED', attempt_no = attempt_no + 1, failure_reason = NULL, updated_at = now()
+   WHERE id = p_refund AND status = 'FAILED';
+  IF NOT FOUND THEN RAISE EXCEPTION 'REFUND_NOT_RETRYABLE' USING ERRCODE = 'P0001'; END IF;
+  PERFORM aq_refund_capacity(p_refund, 1);       -- fails if a newer refund consumed the capacity
+  PERFORM aq_new_refund_attempt(p_refund);
+  RETURN (SELECT attempt_no FROM refunds WHERE id = p_refund);
+END $$ LANGUAGE plpgsql;
+
+-- Record a provider-call outcome for one attempt (refund.send consumer / reconciler).
+-- p_outcome: ACCEPTED_PENDING | ACCEPTED_PROCESSED | UNKNOWN | IN_PROGRESS | FAILED | MISMATCH
+CREATE OR REPLACE FUNCTION aq_refund_attempt_result(p_attempt INT, p_outcome TEXT, p_http INT, p_response JSONB, p_provider_refund_id TEXT)
+RETURNS TEXT AS $$
+DECLARE a RECORD; rf RECORD; n INT;
+BEGIN
+  SELECT * INTO a FROM refund_attempts WHERE id = p_attempt;
+  SELECT * INTO rf FROM refunds WHERE id = a.refund_id;
+  PERFORM 1 FROM orders WHERE id = rf.order_id FOR NO KEY UPDATE;
+  IF rf.payment_id IS NOT NULL THEN PERFORM 1 FROM payments WHERE id = rf.payment_id FOR NO KEY UPDATE; END IF;
+  SELECT * INTO rf FROM refunds WHERE id = a.refund_id FOR NO KEY UPDATE;
+  IF rf.attempt_no <> a.attempt_no OR rf.status IN ('PROCESSED','FAILED','CANCELLED') THEN RETURN 'STALE'; END IF;
+  UPDATE refund_attempts SET send_count = send_count + 1, last_http_status = p_http, response = p_response,
+         provider_refund_id = COALESCE(p_provider_refund_id, provider_refund_id),
+         status = (CASE p_outcome WHEN 'ACCEPTED_PENDING' THEN 'ACCEPTED' WHEN 'ACCEPTED_PROCESSED' THEN 'ACCEPTED'
+                                  WHEN 'FAILED' THEN 'FAILED' WHEN 'MISMATCH' THEN 'MISMATCH' ELSE 'UNKNOWN' END)::"RefundAttemptStatus",
+         updated_at = now()
+   WHERE id = a.id;
+  IF p_outcome IN ('ACCEPTED_PENDING','ACCEPTED_PROCESSED') THEN
+    UPDATE refunds SET status = 'PENDING', provider_refund_id = p_provider_refund_id, sent_at = COALESCE(sent_at, now())
+     WHERE id = rf.id AND status IN ('REQUESTED','UNKNOWN');
+    IF p_outcome = 'ACCEPTED_PROCESSED' THEN RETURN aq_mark_refund_processed(rf.id, p_provider_refund_id); END IF;
+    RETURN 'PENDING';
+  ELSIF p_outcome IN ('UNKNOWN','IN_PROGRESS') THEN
+    UPDATE refunds SET status = 'UNKNOWN' WHERE id = rf.id AND status IN ('REQUESTED','UNKNOWN');
+    RETURN 'UNKNOWN';                              -- resend SAME key + SAME request later, or reconcile by receipt
+  ELSIF p_outcome = 'MISMATCH' THEN
+    UPDATE refunds SET status = 'UNKNOWN' WHERE id = rf.id;   -- capacity stays reserved until a human resolves it
+    PERFORM aq_raise_exception('REFUND_IDEMPOTENCY_MISMATCH', 'REFUND_IDEMPOTENCY_MISMATCH:' || a.id, rf.order_id, rf.payment_id, rf.id, rf.amount, p_response);
+    RETURN 'MISMATCH';
+  ELSE
+    UPDATE refunds SET status = 'FAILED', failure_reason = p_response->>'description' WHERE id = rf.id AND status IN ('REQUESTED','UNKNOWN','PENDING');
+    GET DIAGNOSTICS n = ROW_COUNT;
+    IF n = 1 THEN
+      PERFORM aq_refund_capacity(rf.id, -1);       -- policy: definitive failure releases capacity
+      PERFORM aq_raise_exception('REFUND_FAILED', 'REFUND_FAILED:' || rf.id || ':' || a.attempt_no, rf.order_id, rf.payment_id, rf.id, rf.amount, p_response);
+    END IF;
+    RETURN 'FAILED';
+  END IF;
+END $$ LANGUAGE plpgsql;
+
+-- PROCESSED (webhook refund.processed, reconciler, or manual COD transfer reference). Gated, once.
+CREATE OR REPLACE FUNCTION aq_mark_refund_processed(p_refund INT, p_provider_refund_id TEXT) RETURNS TEXT AS $$
+DECLARE rf RECORD; o RECORD; it RECORD; n INT; v_order_part INT;
+BEGIN
+  SELECT order_id, payment_id INTO rf FROM refunds WHERE id = p_refund;
+  SELECT * INTO o FROM orders WHERE id = rf.order_id FOR NO KEY UPDATE;
+  IF rf.payment_id IS NOT NULL THEN PERFORM 1 FROM payments WHERE id = rf.payment_id FOR NO KEY UPDATE; END IF;
+  UPDATE refunds SET status = 'PROCESSED', processed_at = now(), provider_refund_id = COALESCE(p_provider_refund_id, provider_refund_id)
+   WHERE id = p_refund AND status IN ('REQUESTED','PENDING','UNKNOWN')
+  RETURNING * INTO rf;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n = 0 THEN RETURN 'DUPLICATE'; END IF;
+  FOR it IN SELECT order_item_id, quantity, amount FROM refund_items WHERE refund_id = p_refund ORDER BY order_item_id LOOP
+    UPDATE order_items SET refunded_qty = refunded_qty + it.quantity, refunded_amount = refunded_amount + it.amount WHERE id = it.order_item_id;
+  END LOOP;
+  v_order_part := rf.items_amount + rf.shipping_amount + rf.cod_fee_amount;
+  IF rf.payment_id IS NOT NULL THEN
+    UPDATE payments SET amount_refunded = amount_refunded + rf.amount WHERE id = rf.payment_id;
+  END IF;
+  IF v_order_part > 0 THEN
+    UPDATE orders SET refunded_amount = refunded_amount + v_order_part,
+           payment_status = (CASE WHEN refunded_amount + v_order_part >= CASE WHEN payment_method = 'COD' THEN total ELSE captured_amount END
+                                  THEN 'REFUNDED' ELSE 'PARTIALLY_REFUNDED' END)::"OrderPaymentStatus"
+     WHERE id = o.id;
+    PERFORM aq_history(o.id, 'PAYMENT', o.payment_status::TEXT, (SELECT payment_status::TEXT FROM orders WHERE id = o.id), 'SYSTEM');
+  ELSE
+    UPDATE payment_exceptions SET status = 'RESOLVED', resolved_at = now(), resolution = 'Automatic refund processed'
+     WHERE payment_id = rf.payment_id AND type IN ('EXCESS_CAPTURE','LATE_CAPTURE_EXPIRED','LATE_CAPTURE_CANCELLED') AND status <> 'RESOLVED';
+  END IF;
+  PERFORM aq_emit('refund', p_refund::TEXT, 'refund.processed', jsonb_build_object('refund_id', p_refund, 'order_id', o.id),
+                  ARRAY['email.customer','invoice.credit_note']);
+  RETURN 'PROCESSED';
+END $$ LANGUAGE plpgsql;
+
+-- Cancel a MANUAL_BANK (COD) refund that has not been processed. Online refunds cannot be cancelled once
+-- requested: a provider call may already be in flight, so their capacity is only released by a FAILED result.
+CREATE OR REPLACE FUNCTION aq_cancel_manual_refund(p_refund INT) RETURNS void AS $$
+DECLARE rf RECORD; n INT;
+BEGIN
+  SELECT order_id INTO rf FROM refunds WHERE id = p_refund;
+  PERFORM 1 FROM orders WHERE id = rf.order_id FOR NO KEY UPDATE;
+  UPDATE refunds SET status = 'CANCELLED', updated_at = now()
+   WHERE id = p_refund AND method = 'MANUAL_BANK' AND status = 'REQUESTED';
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n = 0 THEN RAISE EXCEPTION 'REFUND_NOT_CANCELLABLE' USING ERRCODE = 'P0001'; END IF;
+  PERFORM aq_refund_capacity(p_refund, -1);
+END $$ LANGUAGE plpgsql;
+
+-- ── Webhook inbox leases (fenced) ───────────────────────────────────────
+CREATE OR REPLACE FUNCTION aq_webhook_claim(p_id INT, p_lease_s INT DEFAULT 300) RETURNS UUID AS $$
+  UPDATE webhook_events SET status = 'PROCESSING', attempts = attempts + 1,
+         lease_token = gen_random_uuid(), locked_until = now() + make_interval(secs => p_lease_s)
+   WHERE id = p_id AND (status IN ('RECEIVED','FAILED') AND next_attempt_at <= now()
+                        OR (status = 'PROCESSING' AND locked_until < now()))
+  RETURNING lease_token;
+$$ LANGUAGE sql;
+
+-- First statement of the domain transaction: locks the event and proves the lease is still ours.
+CREATE OR REPLACE FUNCTION aq_webhook_begin(p_id INT, p_token UUID) RETURNS BOOLEAN AS $$
+  SELECT EXISTS (SELECT 1 FROM webhook_events WHERE id = p_id AND status = 'PROCESSING' AND lease_token = p_token FOR NO KEY UPDATE);
+$$ LANGUAGE sql;
+
+CREATE OR REPLACE FUNCTION aq_webhook_renew(p_id INT, p_token UUID, p_lease_s INT DEFAULT 300) RETURNS BOOLEAN AS $$
+DECLARE n INT;
+BEGIN
+  UPDATE webhook_events SET locked_until = now() + make_interval(secs => p_lease_s)
+   WHERE id = p_id AND status = 'PROCESSING' AND lease_token = p_token;
+  GET DIAGNOSTICS n = ROW_COUNT; RETURN n = 1;
+END $$ LANGUAGE plpgsql;
+
+-- Same transaction as the domain change; raises if the lease was lost so the domain change rolls back.
+CREATE OR REPLACE FUNCTION aq_webhook_complete(p_id INT, p_token UUID, p_final TEXT DEFAULT 'PROCESSED') RETURNS void AS $$
+BEGIN
+  UPDATE webhook_events SET status = p_final::"WebhookStatus", processed_at = now(), lease_token = NULL, locked_until = NULL, last_error = NULL
+   WHERE id = p_id AND status = 'PROCESSING' AND lease_token = p_token;
+  IF NOT FOUND THEN RAISE EXCEPTION 'LEASE_LOST:webhook:%', p_id USING ERRCODE = 'P0002'; END IF;
+END $$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION aq_webhook_fail(p_id INT, p_token UUID, p_error TEXT) RETURNS TEXT AS $$
+DECLARE e RECORD;
+BEGIN
+  UPDATE webhook_events SET
+         status = (CASE WHEN attempts >= 10 THEN 'DEAD' ELSE 'FAILED' END)::"WebhookStatus",
+         last_error = p_error, lease_token = NULL, locked_until = NULL,
+         next_attempt_at = now() + make_interval(secs => least(3600, 30 * power(2, attempts)::INT))
+   WHERE id = p_id AND status = 'PROCESSING' AND lease_token = p_token
+  RETURNING id, status INTO e;
+  IF NOT FOUND THEN RETURN 'LEASE_LOST'; END IF;           -- a newer worker owns it; do nothing
+  IF e.status = 'DEAD' THEN
+    PERFORM aq_raise_exception('WEBHOOK_DEAD', 'WEBHOOK_DEAD:' || p_id, NULL, NULL, NULL, NULL, jsonb_build_object('webhook_event_id', p_id));
+    UPDATE payment_exceptions SET webhook_event_id = p_id WHERE dedupe_key = 'WEBHOOK_DEAD:' || p_id;
+  END IF;
+  RETURN e.status::TEXT;
+END $$ LANGUAGE plpgsql;
+
+-- ── Outbox deliveries (lease + fencing; no network inside a transaction) ──
+-- Claim: short transaction. Eligible: PENDING due, LEASED with expired lease, PUBLISHED but not
+-- completed within p_redeliver_s (broker may have lost the job). Rows past p_max_gen become DEAD.
+CREATE OR REPLACE FUNCTION aq_outbox_claim(p_limit INT, p_lease_s INT, p_redeliver_s INT, p_max_gen INT)
+RETURNS TABLE (delivery_id BIGINT, consumer TEXT, generation INT, lease_token UUID, event_id BIGINT, event_type TEXT, payload JSONB) AS $$
+#variable_conflict use_column
+DECLARE d RECORD;
+BEGIN
+  FOR d IN SELECT x.id FROM outbox_deliveries x
+            WHERE x.generation >= p_max_gen
+              AND ((x.status = 'PENDING' AND x.next_attempt_at <= now())
+                   OR (x.status = 'LEASED' AND x.lease_expires_at < now())
+                   OR (x.status = 'PUBLISHED' AND x.published_at < now() - make_interval(secs => p_redeliver_s)))
+            ORDER BY x.id FOR UPDATE SKIP LOCKED LOOP
+    UPDATE outbox_deliveries SET status = 'DEAD', lease_token = NULL, lease_expires_at = NULL WHERE id = d.id;
+    PERFORM aq_raise_exception('OUTBOX_DEAD', 'OUTBOX_DEAD:' || d.id, NULL, NULL, NULL, NULL, jsonb_build_object('delivery_id', d.id));
+  END LOOP;
+  RETURN QUERY
+  WITH c AS (
+    SELECT x.id FROM outbox_deliveries x
+     WHERE (x.status = 'PENDING' AND x.next_attempt_at <= now())
+        OR (x.status = 'LEASED' AND x.lease_expires_at < now())
+        OR (x.status = 'PUBLISHED' AND x.published_at < now() - make_interval(secs => p_redeliver_s))
+     ORDER BY x.id LIMIT p_limit FOR UPDATE SKIP LOCKED)
+  UPDATE outbox_deliveries o SET status = 'LEASED', generation = o.generation + 1, lease_token = gen_random_uuid(),
+         lease_expires_at = now() + make_interval(secs => p_lease_s)
+    FROM c, outbox_events e
+   WHERE o.id = c.id AND e.id = o.event_id
+  RETURNING o.id, o.consumer::TEXT, o.generation, o.lease_token, e.id, e.event_type::TEXT, e.payload;
+END $$ LANGUAGE plpgsql;
+
+-- Broker accepted the job (after queue.add returned). Fenced by lease token.
+CREATE OR REPLACE FUNCTION aq_outbox_mark_published(p_id BIGINT, p_token UUID) RETURNS BOOLEAN AS $$
+DECLARE n INT;
+BEGIN
+  UPDATE outbox_deliveries SET status = 'PUBLISHED', published_at = now(), lease_token = NULL, lease_expires_at = NULL
+   WHERE id = p_id AND status = 'LEASED' AND lease_token = p_token;
+  GET DIAGNOSTICS n = ROW_COUNT; RETURN n = 1;
+END $$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION aq_outbox_publish_failed(p_id BIGINT, p_token UUID, p_error TEXT) RETURNS BOOLEAN AS $$
+DECLARE n INT;
+BEGIN
+  UPDATE outbox_deliveries SET status = 'PENDING', lease_token = NULL, lease_expires_at = NULL, last_error = p_error,
+         next_attempt_at = now() + make_interval(secs => least(600, 5 * power(2, generation)::INT))
+   WHERE id = p_id AND status = 'LEASED' AND lease_token = p_token;
+  GET DIAGNOSTICS n = ROW_COUNT; RETURN n = 1;
+END $$ LANGUAGE plpgsql;
+
+-- Consumer side, inside the consumer's own transaction:
+--   aq_outbox_begin_consume → (apply effect) → aq_outbox_complete. Returns FALSE when already done.
+CREATE OR REPLACE FUNCTION aq_outbox_begin_consume(p_id BIGINT) RETURNS BOOLEAN AS $$
+  SELECT EXISTS (SELECT 1 FROM outbox_deliveries WHERE id = p_id AND status NOT IN ('COMPLETED','DEAD') FOR NO KEY UPDATE);
+$$ LANGUAGE sql;
+
+CREATE OR REPLACE FUNCTION aq_outbox_complete(p_id BIGINT) RETURNS BOOLEAN AS $$
+DECLARE n INT;
+BEGIN
+  UPDATE outbox_deliveries SET status = 'COMPLETED', completed_at = now(), lease_token = NULL, lease_expires_at = NULL
+   WHERE id = p_id AND status NOT IN ('COMPLETED','DEAD');
+  GET DIAGNOSTICS n = ROW_COUNT; RETURN n = 1;
+END $$ LANGUAGE plpgsql;
+
+-- ── Sessions: audience-specific authorization versions (architecture.md §5.4) ──
+-- Storefront sessions compare with users.storefront_auth_version, admin sessions with users.admin_auth_version.
+-- Used by the auth middleware on a Redis cache miss (cache key session:<sid>, deleted on every change below).
+CREATE OR REPLACE FUNCTION aq_session_valid(p_sid UUID) RETURNS BOOLEAN AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM sessions s JOIN users u ON u.id = s.user_id
+     WHERE s.id = p_sid AND s.revoked_at IS NULL AND s.idle_expires_at > now() AND s.absolute_expires_at > now()
+       AND u.status = 'ACTIVE' AND u.deleted_at IS NULL
+       AND s.auth_version = CASE s.audience WHEN 'ADMIN' THEN u.admin_auth_version ELSE u.storefront_auth_version END
+       AND (s.audience = 'STOREFRONT' OR u.role <> 'CUSTOMER'));
+$$ LANGUAGE sql STABLE;
+
+-- Role change: admin authorization only. Storefront sessions of the same person stay valid.
+CREATE OR REPLACE FUNCTION aq_change_role(p_user INT, p_role TEXT) RETURNS void AS $$
+BEGIN
+  UPDATE users SET role = p_role::"UserRole", admin_auth_version = admin_auth_version + 1 WHERE id = p_user;
+  UPDATE sessions SET revoked_at = now(), revoke_reason = 'ROLE_CHANGED'
+   WHERE user_id = p_user AND audience = 'ADMIN' AND revoked_at IS NULL;
+END $$ LANGUAGE plpgsql;
+
+-- Global logout: block, password change/reset, email change, logout-everywhere.
+CREATE OR REPLACE FUNCTION aq_revoke_all_sessions(p_user INT, p_reason TEXT, p_block BOOLEAN DEFAULT FALSE) RETURNS void AS $$
+BEGIN
+  UPDATE users SET storefront_auth_version = storefront_auth_version + 1, admin_auth_version = admin_auth_version + 1,
+         status = CASE WHEN p_block THEN 'BLOCKED'::"UserStatus" ELSE status END
+   WHERE id = p_user;
+  UPDATE sessions SET revoked_at = now(), revoke_reason = p_reason WHERE user_id = p_user AND revoked_at IS NULL;
+END $$ LANGUAGE plpgsql;
+```
+
+---
+
 ## 7. Denormalised aggregates
 
 | Field | Maintained by | When | Drift check |
 |-------|--------------|------|-------------|
-| `products.min_price/max_price/max_mrp/available_qty/active_variant_count` | `catalog.refreshAggregates(productId)` using `product_aggregates()` | **Same transaction** as any variant price/MRP/active/stock/reservation change (products locked after variants, §4.1) | `product_aggregate_drift` view: nightly job rebuilds and alerts if any rows |
-| `product_variants.reserved` | Reservation transitions only | Same transaction | `variant_reservation_drift` view (must be empty; alert, never auto-fix silently) |
-| `products.sold_count` | Payment applied (+qty), cancellation (−qty) | Same transaction | nightly recompute from `order_items` of `PLACED+` orders |
-| `coupons.reserved_count/redeemed_count` | Redemption transitions | Same transaction | nightly recompute from `coupon_redemptions` (non-over-limit) |
-| `orders.captured_amount/refunded_amount`, `payments.amount_refunded`, `order_items.refunded_*` | Payment/refund services | Same transaction | nightly reconciliation (architecture.md §7.4) |
-| `products.search_vector` | DB triggers on products, variants, categories, types | Same transaction | `search.rebuild` admin action re-runs `product_search_document()` for all |
+| `products.min_price/max_price/max_mrp/available_qty/active_variant_count` | `aq_refresh_products` (`product_aggregates()`) | Same transaction as any variant price/active/stock/reservation change; products locked after variants (§4.1) | `product_aggregate_drift` view: nightly rebuild + alert |
+| `product_variants.reserved` | Reservation transitions only | Same transaction | `variant_reservation_drift` (must be empty; alert, never silently auto-fixed) |
+| `products.sold_count` | `aq_apply_provider_payment` (+qty, once, gated by allocation); paid cancellation (−qty) | Same transaction | nightly recompute |
+| `coupons.reserved_count/redeemed_count` | Redemption transitions (gated) | Same transaction | nightly recompute from `coupon_redemptions` (non-over-limit) |
+| Refund capacity and refunded counters (items, order, payment) | `aq_refund_capacity`, `aq_mark_refund_processed` | Same transaction | nightly: counters = Σ of counted/processed refunds |
+| `products.search_vector` | BEFORE trigger (own columns) + `search_reindex_queue` → `aq_process_search_queue` | Own columns: same transaction. Variant/category/type changes: **eventually**, normally within seconds (worker runs every 2 s and on NOTIFY) | queue depth alert; `search.rebuild` admin action |
 
 ---
 
-## 8. Critical transactions (reference SQL)
+## 8. How services call the critical transactions
 
-Parameters are shown as `$n`. Each block is one short transaction; **no network calls inside**.
+Each numbered block is **one short transaction** (`BEGIN … COMMIT`); provider calls happen between transactions, never inside.
 
-### 8.1 Initiate checkout: reserve stock, coupon, create order + payment attempt (TX1)
+### 8.1 Checkout initiate
+```
+TX0  aq_idempotency_begin(scope, 'checkout.initiate', key, 'cart:<id>', hash)
+       REPLAY → return stored response · IN_PROGRESS → 409 · CONFLICT → 422 · TAKEOVER → resume from resource (8.2 recovery)
+TX1  re-price (priceCart) → INSERT orders, order_items → aq_reserve_order(order) → [aq_reserve_coupon(…)]
+     → INSERT payment_attempts (CREATING, receipt AQA_<id>) → UPDATE idempotency_keys SET resource_type/resource_id
+     (OUT_OF_STOCK / COUPON_* raise ⇒ ROLLBACK ⇒ aq_idempotency_complete(…, 409|422, body))
+NET  Razorpay POST /v1/orders {amount, currency:'INR', receipt:'AQA_<id>', notes}   (timeout 10 s)
+TX2  UPDATE payment_attempts SET provider_order_id=…, status='CREATED' WHERE id=… AND status IN ('CREATING','PROVIDER_UNKNOWN')
+     → aq_idempotency_complete(…, 201, body, 'order', orderNumber)
+```
+Order-creation recovery (no idempotency header exists for Razorpay orders): on timeout the attempt becomes `PROVIDER_UNKNOWN`; the
+reconciler or a retried request looks the order up by `receipt` before creating a new one (architecture.md §7.3).
+
+### 8.2 Apply a provider payment: verify, webhook and reconciliation share one call
+```
+NET  GET /v1/payments/{payment_id}                         (provider truth: order_id, amount, currency, status)
+TX   [worker only] aq_webhook_begin(event, token)           (fenced; false ⇒ stop)
+     outcome := aq_apply_provider_payment(provider_order_id, payment_id, amount, currency, status, captured_at, method, raw, actor)
+     [worker only] aq_webhook_complete(event, token)         (raises LEASE_LOST ⇒ whole TX rolls back)
+```
+`aq_apply_provider_payment` (§6b) in order: bind via the **stored** attempt (else `UNLINKED`) → lock order → monotonic upsert →
+`rank < 3`: only a first-time `UNPAID → PROCESSING` (affected-row gated) → **gate:** `allocation IS NOT NULL ⇒ DUPLICATE, no side
+effects` → decide allocation under the order lock (`HELD` mismatch · `EXCESS` if another APPLIED payment exists · `APPLIED` ·
+`APPLIED`/`LATE` for expired via `aq_reacquire_order` · `LATE` for cancelled · `HELD` otherwise) → `UPDATE payments SET allocation
+… WHERE allocation IS NULL` (affected-row gate) → side effects for that branch only: order transition (must affect exactly 1 row
+or the TX raises), attempt `PAID`, sold counts, coupon (gated by the redemption transition), cart, history, outbox; or exception +
+automatic refund (`aq_request_refund` with `unallocated_amount`) for `EXCESS`/`LATE`.
+
+| Outcome | Business side effects |
+|---------|-----------------------|
+| `DUPLICATE`, `NOT_CAPTURED` | none |
+| `AUTHORIZED` | `UNPAID → PROCESSING` once + history |
+| `APPLIED` | order PLACED/PAID, captured_amount, attempt PAID, sold counts, coupon redeemed, cart converted, 2 history rows, `order.placed` event (3 deliveries) |
+| `EXCESS`, `LATE` | exception (deduped), refund REQUESTED + attempt + `refund.requested` delivery, customer notice |
+| `HELD` | exception only |
+| `UNLINKED` | payment row + exception |
+
+### 8.3 Expire / cancel an unpaid order
+```
+NET  pre-expiry check: GET /v1/orders/{provider_order_id}/payments for each open attempt; captured/authorized ⇒ run 8.2 instead
+TX   aq_release_unpaid_order(order, 'EXPIRED'|'CANCELLED', reason, actor)     -- 'SKIPPED' unless PENDING_PAYMENT + UNPAID
+```
+`redeemed_count` is never touched here: an unpaid order never redeemed.
+
+### 8.4 Dispatch: consume reservations + issue invoice (service SQL, lock order §4.1)
 ```sql
 BEGIN;
--- (a) idempotency row claimed beforehand (api.md §1.2)
--- (b) for each cart line, ascending variant_id:
-UPDATE product_variants
-   SET reserved = reserved + $qty, version = version + 1, updated_at = now()
- WHERE id = $variant_id AND is_active AND deleted_at IS NULL AND price IS NOT NULL
-   AND on_hand - reserved >= $qty
-RETURNING on_hand, reserved;                      -- 0 rows ⇒ ROLLBACK, 409 OUT_OF_STOCK
--- (c) products touched: UPDATE products SET available_qty = …, … (product_aggregates) — ascending id
--- (d) coupon (if any)
-SELECT * FROM coupons WHERE id = $coupon_id FOR UPDATE;   -- re-validate window, active, min order, scope
-SELECT count(*) FROM coupon_redemptions
- WHERE coupon_id = $coupon_id AND status IN ('RESERVED','REDEEMED') AND NOT over_limit
-   AND (user_id = $user_id OR customer_email = $email);   -- ≥ per-customer limit ⇒ ROLLBACK, 422
-UPDATE coupons SET reserved_count = reserved_count + 1
- WHERE id = $coupon_id AND (usage_limit_total IS NULL OR reserved_count + redeemed_count < usage_limit_total)
-RETURNING id;                                      -- 0 rows ⇒ ROLLBACK, 422 COUPON_USAGE_EXCEEDED
--- (e) order, items, reservations, redemption, history
-INSERT INTO orders (…, status, payment_status, expires_at) VALUES (…, 'PENDING_PAYMENT', 'UNPAID', now() + interval '30 minutes');
-INSERT INTO order_items (…); INSERT INTO inventory_reservations (…, 'ACTIVE'); INSERT INTO inventory_movements (…, 'RESERVE');
-INSERT INTO coupon_redemptions (…, status) VALUES (…, 'RESERVED');
-INSERT INTO payment_attempts (order_id, receipt, amount, currency, status) VALUES ($order_id, 'AQA_' || $attempt_id, $total, 'INR', 'CREATING');
-UPDATE idempotency_keys SET resource_type = 'order', resource_id = $order_number WHERE id = $idem_id;
-COMMIT;
--- then (outside TX) Razorpay orders.create(receipt = AQA_…) and TX2 below
-```
-Concurrency verified: 20 parallel single-unit reservations against `on_hand = 5` → exactly 5 succeed; 10 parallel final-use coupon reservations with limit 1 → exactly 1 succeeds (review.md §4).
-
-### 8.2 Store provider order (TX2)
-```sql
-UPDATE payment_attempts SET provider_order_id = $rzp_order_id, status = 'CREATED', updated_at = now()
- WHERE id = $attempt_id AND status IN ('CREATING','PROVIDER_UNKNOWN');
-UPDATE idempotency_keys SET status = 'COMPLETED', response_code = 201, response_body = $json, completed_at = now() WHERE id = $idem_id;
-```
-
-### 8.3 Apply a verified payment (idempotent; used by verify, webhook and reconciler)
-Preconditions checked **before** the transaction, from a provider fetch: `payment.order_id = attempt.provider_order_id`, `amount = attempt.amount`, `currency = 'INR'`, `status = 'captured'`.
-```sql
-BEGIN;
-SELECT id, status, payment_status, total FROM orders WHERE id = $order_id FOR UPDATE;
-INSERT INTO payments (order_id, attempt_id, provider_payment_id, provider_order_id, amount, currency, status, status_rank, allocation, captured_at, raw)
-VALUES ($order_id, $attempt_id, $pay_id, $rzp_order_id, $amount, 'INR', 'CAPTURED', 3, $allocation, $captured_at, $raw)
-ON CONFLICT (provider_payment_id) DO UPDATE
-   SET status = EXCLUDED.status, status_rank = EXCLUDED.status_rank, captured_at = EXCLUDED.captured_at, raw = EXCLUDED.raw
- WHERE payments.status_rank < EXCLUDED.status_rank;     -- monotonic: older/equal events are no-ops
--- $allocation decided above: 'APPLIED' if order not yet PAID, else 'EXCESS' (→ exception + refund, §4.6)
--- If APPLIED and order PENDING_PAYMENT:
-UPDATE orders SET status = 'PLACED', payment_status = 'PAID', captured_amount = captured_amount + $amount,
-       placed_at = now(), expires_at = NULL, version = version + 1
- WHERE id = $order_id AND status = 'PENDING_PAYMENT';
-UPDATE payment_attempts SET status = 'PAID' WHERE id = $attempt_id;
-UPDATE coupon_redemptions SET status = 'REDEEMED', redeemed_at = now() WHERE order_id = $order_id AND status = 'RESERVED';
-UPDATE coupons SET reserved_count = reserved_count - 1, redeemed_count = redeemed_count + 1 WHERE id = $coupon_id;
-UPDATE products SET sold_count = sold_count + $qty WHERE id = ANY($product_ids);
-UPDATE carts SET status = 'CONVERTED' WHERE id = $cart_id;
-INSERT INTO order_status_history (order_id, dimension, from_value, to_value, actor_type) VALUES
-  ($order_id, 'ORDER', 'PENDING_PAYMENT', 'PLACED', $actor), ($order_id, 'PAYMENT', 'UNPAID', 'PAID', $actor);
-INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload) VALUES ('order', $order_number, 'order.placed', $payload);
-COMMIT;
-```
-If the order is `EXPIRED` or `CANCELLED`, the late-capture rules in §4.6 apply instead (still one transaction per decision; refunds are requested via §8.6).
-
-### 8.4 Expire or cancel an unpaid order → release
-```sql
-BEGIN;
-SELECT id FROM orders WHERE id = $order_id AND status = 'PENDING_PAYMENT' AND payment_status IN ('UNPAID') FOR UPDATE;  -- 0 rows ⇒ skip
-UPDATE inventory_reservations SET status = 'RELEASED', released_at = now(), release_reason = $reason
- WHERE order_id = $order_id AND status = 'ACTIVE' RETURNING variant_id, quantity;
-UPDATE product_variants SET reserved = reserved - $qty WHERE id = $variant_id;   -- per row, ascending id
-INSERT INTO inventory_movements (…, reason) VALUES (…, 'RELEASE');
-UPDATE coupon_redemptions SET status = 'RELEASED', released_at = now() WHERE order_id = $order_id AND status = 'RESERVED';
-UPDATE coupons SET reserved_count = reserved_count - 1 WHERE id = $coupon_id;   -- only if a row was released
-UPDATE payment_attempts SET status = 'CLOSED' WHERE order_id = $order_id AND status IN ('CREATING','CREATED','PROVIDER_UNKNOWN','CREATION_FAILED');
-UPDATE orders SET status = $new_status, expired_at|cancelled_at = now() WHERE id = $order_id;
-INSERT INTO outbox_events (…, 'order.expired' | 'order.cancelled', …);
-COMMIT;
--- if any variant's available went 0 → >0: outbox 'variant.back_in_stock' in the same TX
-```
-`redeemed_count` is **never** decremented here: an unpaid order never redeemed.
-
-### 8.5 Dispatch: consume reservations + issue invoice
-```sql
-BEGIN;
-SELECT … FROM orders WHERE id = $order_id AND fulfilment_status = 'PACKED' FOR UPDATE;
-UPDATE inventory_reservations SET status = 'CONSUMED', consumed_at = now() WHERE order_id = $order_id AND status = 'ACTIVE' RETURNING variant_id, quantity;
-UPDATE product_variants SET on_hand = on_hand - $qty, reserved = reserved - $qty WHERE id = $variant_id;  -- ascending id
-INSERT INTO inventory_movements (…, 'CONSUME');
-INSERT INTO shipments (…) / UPDATE shipments SET status = 'SHIPPED', shipped_at = now();
+SELECT id FROM orders WHERE id = $order AND status = 'CONFIRMED' AND fulfilment_status = 'PACKED' FOR NO KEY UPDATE;   -- 0 rows ⇒ 422
+UPDATE inventory_reservations SET status = 'CONSUMED', consumed_at = now()
+ WHERE order_id = $order AND status = 'ACTIVE' RETURNING variant_id, quantity;                                         -- then, ascending variant_id:
+UPDATE product_variants SET on_hand = on_hand - $qty, reserved = reserved - $qty WHERE id = $variant_id;
+INSERT INTO inventory_movements (…, reason) VALUES (…, 'CONSUME');
+SELECT aq_refresh_products($product_ids);
 UPDATE invoice_counters SET last_no = last_no + 1 WHERE kind = 'TAX_INVOICE' AND fy = $fy RETURNING last_no;
-INSERT INTO invoices (…) VALUES (…);                 -- immutable snapshot
-UPDATE orders SET fulfilment_status = 'SHIPPED' WHERE id = $order_id;
-INSERT INTO outbox_events (…, 'order.shipped', …), (…, 'invoice.render', …);
+INSERT INTO invoices (…);                                                                                              -- immutable snapshot
+INSERT INTO shipments (…);
+UPDATE orders SET fulfilment_status = 'SHIPPED' WHERE id = $order AND fulfilment_status = 'PACKED';                     -- must affect 1 row
+SELECT aq_emit('order', $number, 'order.shipped', …, ARRAY['email.customer']), aq_emit('invoice', …, 'invoice.render', …, ARRAY['invoice.render']);
 COMMIT;
 ```
+Not yet an `aq_*` function and not covered by the executable checks (task 5.2 converts it and adds a check).
 
-### 8.6 Reserve refund capacity (then call provider outside the TX)
-```sql
-BEGIN;
-SELECT id, amount FROM payments WHERE id = $payment_id FOR UPDATE;
-INSERT INTO refunds (order_id, payment_id, kind, method, status, amount, items_amount, shipping_amount, cod_fee_amount, receipt, idempotency_key, requested_by)
-SELECT $order_id, $payment_id, $kind, 'ORIGINAL_PAYMENT', 'REQUESTED', $amount, $items, $ship, $cod, $receipt, $idem_key, $staff_id
-WHERE (SELECT COALESCE(SUM(amount), 0) FROM refunds
-        WHERE payment_id = $payment_id AND status IN ('REQUESTED','PENDING','PROCESSED','UNKNOWN')) + $amount
-      <= (SELECT amount FROM payments WHERE id = $payment_id)
-RETURNING id;                                         -- 0 rows ⇒ 409 REFUND_EXCEEDS_CAPTURED
-INSERT INTO refund_items (…);  -- after checking order_items.refunded_amount + amount ≤ net_amount under the order lock
-INSERT INTO outbox_events (…, 'refund.requested', …);
-COMMIT;
+### 8.5 Refunds
 ```
-Concurrency verified: three concurrent ₹700 refunds against a ₹1,000 capture → exactly one accepted (review.md §4).
+TX   aq_idempotency_begin(staff:<id>, 'refund.create', key, 'order:<id>', hash)
+     refund_id := aq_request_refund(order, payment, kind, items, shipping, cod_fee, 0, reason, key, staff)
+                  -- inserts refund + items, aq_refund_capacity(+1) (raises REFUND_EXCEEDS_CAPACITY:<item|order|payment>),
+                  -- creates attempt 1 (key artq-refund-<id>-a1, receipt AQR_<id>_A1, immutable request) + outbox refund.requested
+NET  [refund.send consumer] POST /v1/payments/{id}/refund  headers: X-Refund-Idempotency: <attempt key>  body: <attempt.request>
+TX   aq_refund_attempt_result(attempt, outcome, http, response, provider_refund_id)
+       ACCEPTED_PENDING → PENDING · ACCEPTED_PROCESSED → PROCESSED (counters) · UNKNOWN / IN_PROGRESS → UNKNOWN (resend same attempt later)
+       MISMATCH → UNKNOWN + REFUND_IDEMPOTENCY_MISMATCH (capacity kept) · FAILED → FAILED + capacity released + REFUND_FAILED
+       stale attempt (refund already on a newer attempt or final) → STALE, no change
+TX   [webhook refund.processed / reconciler] aq_mark_refund_processed(refund, provider_refund_id)  -- gated: once
+TX   [admin retry of FAILED] aq_retry_refund(refund)   -- reacquire capacity, attempt n+1 with new key/receipt
+```
 
-### 8.7 Webhook inbox: receive, claim, finish
-```sql
--- receive (HTTP handler): commit before 200
-INSERT INTO webhook_events (provider, event_id, event_type, payload, provider_created_at)
-VALUES ('RAZORPAY', $event_id, $type, $payload, $created_at)
-ON CONFLICT (provider, event_id) DO NOTHING RETURNING id;
--- claim (worker / sweeper); also reclaims crashed PROCESSING rows after lock expiry
-UPDATE webhook_events SET status = 'PROCESSING', attempts = attempts + 1, locked_until = now() + interval '5 minutes'
- WHERE id = $id AND (status IN ('RECEIVED','FAILED') OR (status = 'PROCESSING' AND locked_until < now()))
-RETURNING id;
--- success: same transaction as the domain change it caused
-UPDATE webhook_events SET status = 'PROCESSED', processed_at = now(), locked_until = NULL WHERE id = $id;
--- failure:
-UPDATE webhook_events SET status = CASE WHEN attempts >= 10 THEN 'DEAD' ELSE 'FAILED' END, last_error = $err,
-       next_attempt_at = now() + make_interval(secs => least(3600, 30 * power(2, attempts))), locked_until = NULL
- WHERE id = $id;
+### 8.6 Webhook inbox
 ```
-Verified: duplicate inserts are no-ops; 4 concurrent claims → 1 winner; an expired lock is reclaimable.
+HTTP INSERT INTO webhook_events … ON CONFLICT (provider, event_id) DO NOTHING; COMMIT; → 200 (503 if the insert fails)
+     queue.add('webhook.process', {id}, {jobId: 'wh-<id>'})                 -- best effort; the sweeper is the guarantee
+TX   token := aq_webhook_claim(id, 300)                                      -- NULL ⇒ someone else owns it
+NET  fetch authoritative object from Razorpay (renew with aq_webhook_renew every 60 s if slow)
+TX   aq_webhook_begin(id, token) → domain function(s) → aq_webhook_complete(id, token)
+on error: TX aq_webhook_fail(id, token, err)                                  -- fenced; returns LEASE_LOST if superseded
+SWEEPER (every 60 s): rows RECEIVED/FAILED due, or PROCESSING with locked_until < now() ⇒ enqueue 'wh-<id>'
+```
 
-### 8.8 Outbox dispatch
-```sql
-BEGIN;
-SELECT id, event_type, payload FROM outbox_events
- WHERE status = 'PENDING' AND available_at <= now()
- ORDER BY id LIMIT 100 FOR UPDATE SKIP LOCKED;
--- enqueue each to BullMQ with jobId 'outbox:<id>:<consumer>' (duplicate jobIds are ignored by BullMQ)
-UPDATE outbox_events SET status = 'DISPATCHED', dispatched_at = now() WHERE id = ANY($ids);
-COMMIT;   -- crash before COMMIT ⇒ rows stay PENDING and are re-enqueued with the same jobId
+### 8.7 Outbox delivery
 ```
+TX   rows := aq_outbox_claim(limit 100, lease 30 s, redeliver 1800 s, max generations 10)    -- short; SKIP LOCKED
+NET  for each row: queue.add(consumer, {deliveryId}, {jobId: 'outbox-<deliveryId>-<generation>'})
+TX   aq_outbox_mark_published(id, lease_token)            -- false ⇒ lease lost; the newer owner handles it
+     on add() error: aq_outbox_publish_failed(id, lease_token, err)   -- back to PENDING with backoff
+CONSUMER TX: aq_outbox_begin_consume(id) [false ⇒ already COMPLETED: ack job, do nothing] → effect → aq_outbox_complete(id)
+```
+External-effect consumers (email, refund send) commit their own idempotency record (`email_logs`, refund attempt) before the call,
+then complete the delivery in a final transaction. **Broker acceptance (`PUBLISHED`) is not completion (`COMPLETED`)**; if Redis
+loses an accepted job, the delivery stays `PUBLISHED` and is republished as the next generation after the redelivery timeout (C07).
 
 ---
 
@@ -2556,7 +3463,7 @@ Two separate import kinds (`product_imports.kind`):
 
 **Resume & retries:** the job processes `PENDING` rows in batches of 25, one transaction per batch, holding a Postgres advisory lock per import (one active import at a time). A crash resumes from remaining `PENDING` rows; a row is retried up to 3 times before `FAILED`.
 
-**Concurrent edits:** at apply time, if the target product/variant `version` differs from the row's `base_version`, the row becomes `NEEDS_REVIEW` (no overwrite). Inventory imports lock variants ascending and set `on_hand` via the same adjustment service as the Inventory page (so active reservations are never overwritten).
+**Concurrent edits:** at apply time, if the target product/variant `version` differs from the row's `base_version`, the row becomes `NEEDS_REVIEW` (no overwrite). Catalogue batches lock variants ascending then products (§4.1). Inventory imports call `aq_adjust_on_hand` per batch (variants ascending, `on_hand` only), so active reservations are never overwritten (C09 runs imports concurrently with checkouts).
 
 **Spreadsheet → database mapping (catalogue template "2. Products & Variants")**
 

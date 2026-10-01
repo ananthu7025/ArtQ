@@ -23,29 +23,31 @@
 | Errors | `{ "error": { "code", "message", "details" } }` |
 
 ### 1.1 Error codes
-`VALIDATION_ERROR` 400 · `UNAUTHENTICATED` 401 · `SESSION_INVALID` 401 · `STEP_UP_REQUIRED` 401 · `FORBIDDEN` 403 · `ORIGIN_REJECTED` 403 · `NOT_FOUND` 404 · `VERSION_CONFLICT` 409 · `OUT_OF_STOCK` 409 · `PRICE_CHANGED` 409 · `REQUEST_IN_PROGRESS` 409 · `REFUND_EXCEEDS_CAPTURED` 409 · `IDEMPOTENCY_KEY_REUSED` 422 · `COUPON_INVALID` / `COUPON_EXPIRED` / `COUPON_MIN_ORDER` / `COUPON_USAGE_EXCEEDED` / `COUPON_NOT_ELIGIBLE` 422 · `COD_NOT_AVAILABLE` 422 · `PINCODE_NOT_SERVICEABLE` 422 · `SHIPPING_RESTRICTED` 422 · `NOT_PUBLISHABLE` 422 · `INVALID_TRANSITION` 422 · `RETURN_NOT_ALLOWED` 422 · `OTP_INVALID` / `OTP_EXPIRED` / `MFA_INVALID` 422 · `PAYMENT_VERIFICATION_FAILED` 422 · `ACCOUNT_LOCKED` 423 · `RATE_LIMITED` 429 · `PAYMENT_PROVIDER_UNAVAILABLE` 503 · `INTERNAL` 500.
+`VALIDATION_ERROR` 400 · `UNAUTHENTICATED` 401 · `SESSION_INVALID` 401 · `STEP_UP_REQUIRED` 401 · `FORBIDDEN` 403 · `ORIGIN_REJECTED` 403 · `NOT_FOUND` 404 · `VERSION_CONFLICT` 409 · `OUT_OF_STOCK` 409 · `PRICE_CHANGED` 409 · `REQUEST_IN_PROGRESS` 409 · `REFUND_EXCEEDS_CAPACITY` 409 (`details.scope` = `item` (+ `orderItemId`) / `order` / `payment`) · `REFUND_NOT_RETRYABLE` 409 · `REFUND_NOT_CANCELLABLE` 409 · `IDEMPOTENCY_KEY_REUSED` 422 · `COUPON_INVALID` / `COUPON_EXPIRED` / `COUPON_MIN_ORDER` / `COUPON_USAGE_EXCEEDED` / `COUPON_NOT_ELIGIBLE` 422 · `COD_NOT_AVAILABLE` 422 · `PINCODE_NOT_SERVICEABLE` 422 · `SHIPPING_RESTRICTED` 422 · `NOT_PUBLISHABLE` 422 · `INVALID_TRANSITION` 422 · `RETURN_NOT_ALLOWED` 422 · `OTP_INVALID` / `OTP_EXPIRED` / `MFA_INVALID` 422 · `PAYMENT_VERIFICATION_FAILED` 422 · `ACCOUNT_LOCKED` 423 · `RATE_LIMITED` 429 · `PAYMENT_PROVIDER_UNAVAILABLE` 503 · `INTERNAL` 500.
 
 ### 1.2 Idempotency (required header `Idempotency-Key: <uuid>` on these operations)
 
-| Operation (`operation`) | Endpoint | Scope |
-|-------------------------|----------|-------|
-| `checkout.initiate` | `POST /checkout/initiate` | `user:<id>` if authenticated, else `cart:<cartId>` |
-| `payment.retry` | `POST /orders/:orderNumber/payment/retry` | user / guest-order / cart |
-| `order.cancel` | `POST /me/orders/:n/cancel`, `POST /orders/:n/cancel` (guest), `POST /admin/orders/:id/cancel` | user / order / `staff:<id>` |
-| `refund.create` | `POST /admin/orders/:id/refunds` | `staff:<id>` |
-| `return.create` | `POST /me/orders/:n/returns`, `POST /orders/:n/returns` | user / order |
+| Operation (`operation`) | Endpoint | Scope (who) | Target resource (what) |
+|-------------------------|----------|-------------|------------------------|
+| `checkout.initiate` | `POST /checkout/initiate` | `user:<id>` if authenticated, else `cart:<cartId>` | `cart:<cartId>` |
+| `payment.retry` | `POST /orders/:orderNumber/payment/retry` | `user:<id>` / `order:<number>` (guest order cookie) / `cart:<id>` | `order:<orderNumber>` |
+| `order.cancel` | `POST /me/orders/:n/cancel`, `POST /orders/:n/cancel` (guest), `POST /admin/orders/:id/cancel` | `user:<id>` / `order:<number>` / `staff:<id>` | `order:<orderNumber>` |
+| `refund.create` | `POST /admin/orders/:id/refunds` | `staff:<id>` | `order:<orderNumber>` |
+| `return.create` | `POST /me/orders/:n/returns`, `POST /orders/:n/returns` | `user:<id>` / `order:<number>` | `order:<orderNumber>` |
 
-Behaviour (`idempotency_keys`, unique `(scope, operation, key)`; request hash = SHA-256 of canonical JSON body):
+**Fingerprint.** `request_hash = SHA-256(canonical JSON {operation, target, scope, body})` (keys sorted, no insignificant whitespace; the body after zod parsing, so defaults are explicit). The target is also stored separately (`target_resource`). Reusing a key with the same body against a **different** order is therefore a conflict, never a replay of the first order's response (verified by C10).
 
-| Existing record | Request hash | Response |
-|-----------------|--------------|----------|
-| none | n/a | Insert `PROCESSING` (lock 60 s) and execute |
-| `COMPLETED` | same | **Replay** stored status code + body (header `Idempotent-Replayed: true`) |
-| `COMPLETED` or `PROCESSING` | different | 422 `IDEMPOTENCY_KEY_REUSED` |
-| `PROCESSING`, lock live | same | 409 `REQUEST_IN_PROGRESS`, `Retry-After: 2` |
-| `PROCESSING`, lock expired (crash) | same | Take over (conditional update) and **resume** from the referenced resource state (e.g. adopt the existing order/attempt) instead of re-executing |
+Behaviour (`aq_idempotency_begin`, unique `(scope, operation, key)`):
 
-Records expire after 24 h. Business-level dedupe also applies: at most one `PENDING_PAYMENT` order per cart, one open payment attempt per order, and refund `idempotency_key` unique per order.
+| Existing record | Target + hash | Outcome | Response |
+|-----------------|---------------|---------|----------|
+| none | n/a | `NEW` | Insert `PROCESSING` (lock 60 s) and execute |
+| `COMPLETED` | same | `REPLAY` | Stored status code + body (header `Idempotent-Replayed: true`) |
+| any | different target **or** different hash | `CONFLICT` | 422 `IDEMPOTENCY_KEY_REUSED` |
+| `PROCESSING`, lock live | same | `IN_PROGRESS` | 409 `REQUEST_IN_PROGRESS`, `Retry-After: 2` |
+| `PROCESSING`, lock expired (crash) | same | `TAKEOVER` | **Resume** from the referenced resource (e.g. adopt the existing order/attempt/refund) instead of re-executing |
+
+Records expire after 24 h. Business-level dedupe also applies: at most one `PENDING_PAYMENT` order per cart, one open payment attempt per order, refund `idempotency_key` unique per order. Provider-facing idempotency is separate: refund attempts carry their own `X-Refund-Idempotency` key (architecture.md §10.2).
 
 ---
 
@@ -161,7 +163,7 @@ Return photos are uploaded under the order routes so the order-scoped cookie (`P
 | Method | Path | Description |
 |--------|------|-------------|
 | GET/PATCH | `/me` | Profile; PATCH `{name, phone, marketingOptIn}` (phone is contact-only at launch) |
-| POST | `/me/email/change` → `/me/email/verify` | OTP to the new email; notifies the old one; `auth_version++` |
+| POST | `/me/email/change` → `/me/email/verify` | OTP to the new email; notifies the old one; `aq_revoke_all_sessions` (both auth versions++, all sessions revoked; the client logs in again) |
 | POST | `/me/password` | `{currentPassword, newPassword}` |
 | DELETE | `/me` | `{password}` → soft delete (anonymised after 30 days; orders retained) |
 | CRUD | `/me/addresses[/:id]`, `POST /me/addresses/:id/default` | Max 10 |
@@ -202,7 +204,7 @@ Return photos are uploaded under the order routes so the order-scoped cookie (`P
 |--------|------|-------------|
 | POST | `/checkout/quote` | `{shippingAddressId | shippingAddress, paymentMethod}` → `CartView` + `codAvailable`, `codReason?` |
 | POST | `/checkout/initiate` | **Idempotency-Key required.** Creates or returns the order (below) |
-| POST | `/checkout/verify` | `{orderNumber, razorpayPaymentId, razorpaySignature}`. **`razorpay_order_id` from the client is ignored**: the server uses the stored provider order id. Response `200 {status:'PLACED'}` / `202 {status:'PROCESSING'}` / `422 PAYMENT_VERIFICATION_FAILED` |
+| POST | `/checkout/verify` | `{orderNumber, razorpayPaymentId, razorpaySignature}`. **`razorpay_order_id` from the client is ignored**: the server checks the signature against the stored provider order id, fetches the payment from Razorpay and calls the same `aq_apply_provider_payment` used by the webhook and reconciler. Response `200 {status:'PLACED'}` (also when the payment was already applied by the webhook) / `202 {status:'PROCESSING'}` (authorized, or provider unreachable) / `200 {status:'REVIEW'}` (held for amount mismatch) / `422 PAYMENT_VERIFICATION_FAILED` |
 | GET | `/checkout/status/:orderNumber` | `{status, paymentStatus, displayStatus}` for polling; authorized by the cart cookie that created the order or the owner's Bearer (guests with order access use `GET /orders/:orderNumber`) |
 | POST | `/checkout/payment-failed` | `{orderNumber, razorpayPaymentId?, error}`: informational log only, never changes state by itself |
 | POST | `/webhooks/razorpay` | Signature on raw body; inbox semantics (architecture.md §8.1) |
@@ -320,10 +322,12 @@ CRUD `/admin/product-types`, `/admin/categories`, `/admin/techniques` (image med
 ### 4.7 Refunds, returns, COD (MVP) 
 | Method | Path | Permission | Notes |
 |--------|------|------------|-------|
-| GET | `/admin/orders/:id/refundable` | refunds:create | Per item: max quantity/amount, shipping & COD-fee refundable, capacity left |
-| POST | `/admin/orders/:id/refunds` | refunds:create + step-up | Idempotency-Key; `{kind, items:[{orderItemId, quantity, amount}], shippingAmount, codFeeAmount, reason, returnRequestId?, manualReference?}` → `201 {refundId, status:'REQUESTED'}`; 409 `REFUND_EXCEEDS_CAPTURED` |
-| GET | `/admin/refunds?status=` | refunds:create | Queue incl. `UNKNOWN`/`FAILED` |
-| POST | `/admin/refunds/:id/retry` | refunds:create | Only `FAILED` (creates nothing new; re-sends with same receipt after provider check) |
+| GET | `/admin/orders/:id/refundable` | refunds:create | Per item `{quantity, netAmount, reservedQty, reservedAmount, refundedQty, refundedAmount, availableQty, availableAmount}`; order `{shipping:{fee, reserved, available}, codFee:{…}, total:{cap, reserved, refunded, available}}`; payment `{amount, reserved, refunded, available}`. "Reserved" includes `REQUESTED`/`PENDING`/`UNKNOWN`/`PROCESSED` refunds |
+| POST | `/admin/orders/:id/refunds` | refunds:create + step-up | Idempotency-Key (target `order:<number>`); `{kind, items:[{orderItemId, quantity, amount}], shippingAmount, codFeeAmount, reason, returnRequestId?}` → `201 {refundId, status:'REQUESTED', attempt:{no:1, receipt}}` (COD: `MANUAL_BANK`, no attempt); 409 `REFUND_EXCEEDS_CAPACITY` with `details.scope` |
+| POST | `/admin/refunds/:id/manual-processed` | refunds:create + step-up | COD only: `{manualReference}` → `PROCESSED` |
+| GET | `/admin/refunds?status=` | refunds:create | Queue incl. `UNKNOWN`/`FAILED`, attempts with key, receipt, last HTTP status |
+| POST | `/admin/refunds/:id/retry` | refunds:create + step-up | Only `FAILED`. Reacquires capacity, then creates attempt n+1 with a **new** `X-Refund-Idempotency` key and receipt → `202 {attempt:{no, receipt}}`; 409 `REFUND_EXCEEDS_CAPACITY` if a newer refund used the capacity (refund stays `FAILED`); 409 `REFUND_NOT_RETRYABLE` otherwise. `UNKNOWN` refunds are not retried by staff: the reconciler resends the same attempt |
+| POST | `/admin/refunds/:id/cancel` | refunds:create | Only **manual (COD)** refunds still `REQUESTED` → `CANCELLED`, capacity released (`aq_cancel_manual_refund`). Online refunds cannot be cancelled once requested (a provider call may be in flight); their capacity is released only by a definitive `FAILED` result → 409 `REFUND_NOT_CANCELLABLE` |
 | GET | `/admin/returns?status=` · `/admin/returns/:id` | returns:receive | |
 | POST | `/admin/returns/:id/decide` | returns:decide | `{decision:'APPROVE'|'REJECT', items:[{orderItemId, approvedQty}], note}` |
 | POST | `/admin/returns/:id/in-transit` · `/receive` · `/inspect` | returns:receive | `receive {items:[{orderItemId, receivedQty}]}`; `inspect {items:[{orderItemId, sellableQty, damagedQty}]}` (restocks sellable) |
@@ -350,7 +354,7 @@ CRUD `/admin/product-types`, `/admin/categories`, `/admin/techniques` (image med
 | Resource | Endpoints | Permission |
 |----------|-----------|------------|
 | Payment exceptions | `GET /admin/payment-exceptions?status=&type=`; `GET /:id`; `POST /:id/resolve {resolution, note}`; `POST /:id/dismiss {note}`; `POST /admin/payments/reconcile {orderId? | from,to}` (manual run) | payments:exceptions |
-| Jobs & webhooks | `GET /admin/ops/summary` (queue depths, failed counts, inbox status counts, outbox backlog, last scheduler runs); `GET /admin/ops/webhooks?status=`; `POST /admin/ops/webhooks/:id/retry` (DEAD/FAILED → RECEIVED); `GET /admin/ops/outbox?status=`; `POST /admin/ops/outbox/:id/retry`; `GET /admin/ops/jobs/failed`; `POST /admin/ops/jobs/:id/retry` | jobs:read / jobs:retry |
+| Jobs & webhooks | `GET /admin/ops/summary` (queue depths, failed counts, inbox status counts, outbox backlog, last scheduler runs); `GET /admin/ops/webhooks?status=`; `POST /admin/ops/webhooks/:id/retry` (DEAD/FAILED → RECEIVED); `GET /admin/ops/outbox-deliveries?status=&consumer=` (PENDING/LEASED/PUBLISHED-not-completed/DEAD with generation, last error); `POST /admin/ops/outbox-deliveries/:id/retry` (DEAD → PENDING, generation reset); `GET /admin/ops/jobs/failed`; `POST /admin/ops/jobs/:id/retry` | jobs:read / jobs:retry |
 | Staff & permissions | CRUD `/admin/staff` (role changes revoke admin sessions); `POST /admin/staff/:id/reset-mfa` (step-up); `POST /admin/staff/:id/revoke-sessions` | staff:manage |
 | Settings | `GET /admin/settings`; `PUT /admin/settings/:key` (STORE_INFO, PAYMENT toggles, ORDER, TAX, NOTIFY; step-up) | settings:write |
 | Audit logs | `GET /admin/audit-logs?entity=&entityId=&actor=&action=&from=&to=` | audit:read |

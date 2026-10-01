@@ -232,10 +232,10 @@ Sections: Basics (name, slug, type, category (filtered by type), techniques) · 
 | **Restock Requests** | Waiting customers grouped by variant (count, oldest date, current availability); "Notify now" when back in stock |
 | **Product Types / Categories / Techniques** | CRUD with image, slug, description, order, active, home/menu flags, tile link override, SEO; delete blocked while in use |
 | **Inventory** | On hand / reserved / available per variant; recount, adjustment and damage write-off (reason required); movement ledger; inventory import; oversold alerts |
-| **Returns & Refunds** | Return queue (decide → in transit → received → inspected → refund → close); refund creation with item allocation and capacity display; refund queue with failed/unknown handling; manual COD refunds with bank reference |
+| **Returns & Refunds** | Return queue (decide → in transit → received → inspected → refund → close); refund creation with item allocation and capacity display (what is already reserved by pending refunds, what is still available per item, shipping, COD fee and payment); refund queue with failed/unknown handling and per-attempt detail; retry of failed refunds (only if capacity is still free); manual COD refunds with bank reference (cancellable until processed) |
 | **COD Remittances** | Record courier remittances against orders; outstanding COD list; mismatch alerts |
 | **Payment Exceptions** | Queue of excess/late captures, mismatches, stuck authorizations, failed/unknown refunds, dead webhooks/outbox, oversold, coupon over-limit; resolve/dismiss with note; manual reconcile |
-| **Jobs & Webhooks** | Queue depths, failed jobs (retry), webhook inbox status (retry dead), outbox backlog, last scheduler runs |
+| **Jobs & Webhooks** | Queue depths, failed jobs (retry), webhook inbox status (retry dead), outbox deliveries by consumer (pending, published but not completed, dead; retry dead), search queue depth, last scheduler runs |
 | **Imports** | Upload catalogue or inventory sheet → validation preview with row outcomes and messages → confirm → progress → result file; resolve "needs review" rows; templates |
 | **Media** | Library with state (processing/ready/failed/rejected), usage, retry, delete when unused |
 | **CMS & Messages** | Hero/slides, announcement bar, home sections, reels, testimonials, FAQs, policy pages, Instagram moments; contact & custom-work inbox with private attachments |
@@ -294,7 +294,7 @@ The system tracks lifecycle, payment, fulfilment and returns separately (databas
 ### 8.6 Cancellations, late payments, refunds
 - Customers can cancel while the order is placed/confirmed **and not yet packed**. Staff can cancel until it is shipped. Prepaid cancellations are refunded in full automatically (including shipping and COD fee if any).
 - A payment that arrives after the order expired: the order is restored if all items are still available; otherwise it is refunded in full and the customer is emailed. A payment for a cancelled order is always refunded. A duplicate (second) payment is refunded automatically.
-- Refunds never exceed what was captured (enforced atomically). Item refunds are limited to what was paid for each item after discounts. Shipping is refunded only for full cancellation before dispatch or merchant-fault returns (staff choice). The COD fee is refunded only for full cancellation before dispatch.
+- Refunds never exceed what was captured, per payment, per order, per item (what was paid for it after discounts), for shipping and for the COD fee. Refunds that are still pending or whose outcome is unknown count against these limits, so two staff members can never refund the same thing twice at the same time. A refund that definitively failed frees its amount; it can be retried only while that amount is still free. Shipping is refunded only for full cancellation before dispatch or merchant-fault returns (staff choice). The COD fee is refunded only for full cancellation before dispatch.
 - Online refunds go back to the original payment method (5–7 working days). COD refunds are made by bank/UPI transfer with a recorded reference.
 
 ### 8.7 Publication gate (product readiness)

@@ -1,13 +1,23 @@
-# ArtQ: Architecture Review (2026-10-01)
+# ArtQ: Architecture Reviews
 
-Senior architecture/solution review of the planning documents, with the resulting changes. Use it to see **what changed, why, and where**.
+Two senior architecture/solution reviews of the planning documents, with the resulting changes. Use this file to see **what changed, why, where, and what has actually been executed**.
 
-## 1. Repository state at review time
+| Review | Baseline | Sections |
+|--------|----------|----------|
+| 1 | `fe85b89` (initial docs) | §1–§2 (matrix), §4 (historical validation) |
+| 2 | `ea660fa` (after review 1) | §5 (findings, verification, matrix), §6 (reproducible validation) |
+| Both | | §3 scope & estimates, §7 limitations, §8 open decisions |
+
+Legend for every matrix: **Doc** = documentation correction; **Exec** = covered by an executable check in `tools/doc-validation` (database layer only); **App** = application behaviour that does not exist yet and is covered by a planned acceptance test.
+
+## 1. Review 1: repository state
 - `main` at `fe85b89`: `README.md`, `docs/*.md` (7 documents), `ArtQ Site Ref.png`, `ArtQ_Product_Import_All_Items.xlsx`, `.claude/settings.json`. **No application code** exists, so every finding below is a **design/documentation fix**. No runtime bug has been "fixed", because there is no runtime yet.
 - The GitHub repository is **public** and contains the client's product spreadsheet and site screenshot. Recommendation (owner decision): make the repository private or remove the client files from history.
 - The admin screenshot referenced in the review brief was **not available** to the reviewer (not attached, not in the repo). Admin requirements were derived from the brief's explicit list of visible modules and Products-page features; no other modules were inferred.
 
-## 2. Issue-to-fix matrix
+## 2. Review 1: issue-to-fix matrix
+> Section references are as of `ea660fa`. Review 2 refined rows 1.4, 2.1, 2.5, 2.6, 3.1–3.3, 4.1, 4.4, 5.1, 6.4 and 7.4 (see §5); database.md §8 was renumbered.
+
 Legend: A = architecture.md, D = database.md, P = product.md, API = api.md, DS = design-system.md, C = catalog.md, T = tasklist.md.
 
 ### 2.1 Authentication & authorization
@@ -106,14 +116,14 @@ Legend: A = architecture.md, D = database.md, P = product.md, API = api.md, DS =
 |---|-------------|-------|
 | 10.1 | 14 required acceptance scenarios | T Acceptance tests (AT-01…AT-14) |
 
-## 3. Scope & estimates (summary)
-- **MVP:** storefront, accounts (email), guest checkout, Razorpay + COD, reconciliation, refunds/returns/credit notes, inventory reservations, coupons, shipping rules, full admin incl. screenshot modules and operations views, CMS, SEO.
+## 3. Scope & estimates (current)
+- **MVP:** storefront, accounts (email), guest checkout, Razorpay + COD, reconciliation, refunds/returns/credit notes, inventory reservations, coupons, shipping rules, full admin including the screenshot modules and the operations views, CMS, SEO.
 - **Post-launch:** SMS/WhatsApp + phone login, courier API, reviews, abandoned carts, collections, advanced reports, split shipments, bundles, loyalty, PWA.
-- **Effort:** 109.5 dev-days + 16.5 contingency ≈ **126 dev-days**; **16–19 calendar weeks** for two developers at 8 dev-days/week (tasklist.md).
+- **Effort:** 113 dev-days of MVP scope + 17 contingency = **130 dev-days**; **17–20 calendar weeks** for two developers at 8 dev-days/week. The baseline is **94** dev-days (tasklist.md explains the derivation).
 
-## 4. Validation results
+## 4. Review 1 validation (historical: PostgreSQL 18 only, ad-hoc scripts; superseded by §6)
 
-### 4.1 Checks executed (documentation artifacts, not application tests)
+### 4.1 Checks executed then (documentation artifacts, not application tests)
 | Check | Method | Result |
 |-------|--------|--------|
 | Previous embedded Prisma schema | `prisma validate` (6.19.3) on the schema extracted from `git show HEAD:docs/database.md` | **Invalid** (123 error lines: single-line enums) |
@@ -133,11 +143,83 @@ Legend: A = architecture.md, D = database.md, P = product.md, API = api.md, DS =
 
 Validation environment: macOS, Node v24.14.0, Prisma 6.19.3, PostgreSQL 18 (local scratch cluster, deleted after use).
 
-### 4.2 Not executed
+### 4.2 Not executed then
 - **No application tests exist or were run**; there is no code. AT-01…AT-14 (tasklist.md) are specified and become CI gates during implementation.
 - Razorpay API capabilities assumed in architecture.md §7 (fetch order by receipt, list payments of an order, refund receipts, event-id header, late authorization) were **not verified** against a live/test account. Task 4.0 verifies them.
 - Prisma 7 compatibility, the Next.js/sharp/argon2 Node 24 build and email-provider idempotency support are verified in task 0.1.
 - GST rates/HSN codes and invoice rules need accountant confirmation (D-1–D-3).
 
-## 5. Open decisions
-Business inputs only; the full list with defaults and deadlines is in [product.md §11](product.md#11-open-decisions-business-inputs-only): D-1 tax classification · D-2 invoice timing/format · D-3 tax on shipping/COD fee · D-4 COD parameters · D-5 return policy · D-6 serviceability policy · D-7 courier & resin carriage · D-8 large resin packs · D-9 prepaid RTO refund · D-10 product data corrections · D-11 swatch colours · D-12 domain · D-13 shipping values · D-14 coupon restore on cancel · D-15 operations owner · D-16 Razorpay account settings.
+## 5. Review 2 (baseline `ea660fa`)
+
+### 5.1 Repository state
+- `main` = `ea660fa` = the reviewed baseline; clean working tree. Still **no application code**. Changes in this review are uncommitted on `main` (not pushed, merged or deployed).
+- New: `tools/doc-validation/` (package with pinned tools, extractor, runner, checks C00–C13).
+- Each finding was checked against the files before changing anything. Results are below.
+
+### 5.2 Findings: verification and fixes
+
+| # | Finding | Verified against `ea660fa` | Fix | Where | Type |
+|---|---------|---------------------------|-----|-------|------|
+| 1 | Payment side effects not gated | **Confirmed.** D §8.3 gated only the payment upsert. Coupon counters, sold counts, cart, history and outbox ran unconditionally, and "excess" was keyed on `payment_status = PAID`, which is false after a refund | `aq_apply_provider_payment`: bind via stored attempt → order lock → monotonic upsert → **allocation set once (gate)** → per-branch side effects, each gated by its own affected-row check. EXCESS = "another APPLIED payment exists", so it holds after partial/full refunds. Late capture after expiry/cancellation per policy. Verify, webhook and reconciler call this one function | D §3.10, §4.6, §6b, §8.2; A §7; API §3.8 | Doc + Exec (C03, C04) |
+| 2 | BullMQ job ids with `:` | **Confirmed.** `wh:<id>` (2 parts) is rejected by BullMQ 5.81.5 and 6.3.11 ("Custom Id cannot contain :"). `outbox:<id>:<consumer>` is accepted only through a legacy 3-part carve-out | `wh-<id>`, `outbox-<deliveryId>-<generation>` | A §8; D §8.6–8.7 | Doc + Exec (C02) |
+| 3 | Refund idempotency relied on `receipt` | **Confirmed.** The old receipt-only design gave no protection against a resend after a timeout. Razorpay documents `X-Refund-Idempotency` (≥10 chars, `[A-Za-z0-9_-]`), same key + identical body on retry, a conflict for a different body or an in-flight request, and `receipt` as an optional field it also treats as a duplicate guard | `refund_attempts` with persisted key, receipt and immutable request; same key + body on resend; new attempt (new key + receipt) only after a definitive failure; outcome table for timeout, in-progress, mismatch, unknown. Order creation (receipt lookup) and capture (re-fetch) recovery are defined separately | D §3.10, §6b; A §7.3, §7.4, §10.2; API §4.7 | Doc + Exec (C06 for the DB side); provider behaviour App (task 4.0, AT-16) |
+| 4 | Item capacity used processed amounts only | **Confirmed.** The item check compared against `refunded_amount`, so pending refunds were not counted; there were no shipping/COD-fee limits, no retry path and no COD equivalent | Reserved counters at item, shipping, COD-fee, order and payment level; counted statuses REQUESTED/PENDING/UNKNOWN/PROCESSED; FAILED releases; atomic retry reacquisition; COD manual refunds with the same counters; manual cancel only for COD | D §3.10, §4.5, §6, §6b, §8.5; API §4.7; P §8.6; T 5.4 | Doc + Exec (C05, C06) |
+| 5 | Outbox dispatcher held locks while publishing to Redis | **Confirmed.** D §8.8 called `queue.add` between `FOR UPDATE SKIP LOCKED` and `COMMIT` | `outbox_deliveries` per consumer; claim (short TX, lease token, generation) → publish outside TX → fenced ack; PUBLISHED ≠ COMPLETED; redelivery after timeout; dead after 10 generations; consumer dedupe on the delivery row; retention | D §3.11, §6b, §8.7; A §1.2, §8.2–8.4, §13 | Doc + Exec (C07 with real Redis loss) |
+| 6 | Trigger locks broke the lock order | **Confirmed empirically.** The variant trigger updated the parent product inside the variant loop. Negative control: 43–74 deadlocks per 600 mixed operations across runs. Two further real defects surfaced while fixing this: explicit `FOR UPDATE` locks conflicting with FK key-share locks (149 deadlocks), and a non-deterministic search vector (`string_agg` without `ORDER BY`) that made drift checks report false mismatches | Triggers never lock other tables' rows (BEFORE trigger on the product's own columns + append-only reindex queue); global lock order covering all flows; `FOR NO KEY UPDATE` everywhere; search worker locks first, then computes | D §1, §4.1, §6, §6b, §7; A §6.3 | Doc + Exec (C09) |
+| 7 | Idempotency fingerprint lacked target | **Confirmed.** The hash covered the body only | Fingerprint = {operation, target, scope, body}; `target_resource` column; target mismatch is always CONFLICT | D §3.10, §6b; API §1.2 | Doc + Exec (C10) |
+| 8 | Global `auth_version` contradiction | **Confirmed.** A role change incremented the global version, which also invalidated storefront sessions despite the text | Separate `storefront_auth_version` / `admin_auth_version`; `aq_session_valid`, `aq_change_role`, `aq_revoke_all_sessions`; cache invalidation on every change | D §3.1, §6b; A §5.2, §5.4 | Doc + Exec (C13); HTTP layer App (AT-21) |
+| 9 | Webhook leases not fenced | **Confirmed.** Success/failure updates matched on id only | `lease_token`; fenced claim/begin/renew/complete/fail; completion in the same TX as the domain change (raises ⇒ rollback) | D §3.11, §6b, §8.6; A §8.1 | Doc + Exec (C08) |
+| 10a | Partial dimensions passed | **Confirmed.** `(all NULL) OR (l>0 AND w>0 AND h>0)` evaluates to NULL (passes) when only some are set | All absent, or all present and positive | D §6 | Doc + Exec (C11) |
+| 10b | Inspection quantities | **Confirmed.** `-1 + 3 = 2` was accepted; no completeness check before INSPECTED | Individually bounded, paired, summing; finalisation trigger | D §3.12, §6 | Doc + Exec (C11) |
+| 10c | Refund lock sequence | **Confirmed.** The refund SQL locked the payment without the order lock | Order → payment → order-owned rows in every refund function | D §4.1, §6b | Doc + Exec (C05, C06) |
+| 10d | Publication readiness overstated | **Confirmed.** The DB check trusted `is_publishable` | `products_publish_gate_trg` recomputes readiness from images, variants and tax data on every transition to ACTIVE; post-publish changes are guarded by the service and detected by `published_not_ready`; explicit service-vs-DB table | D §3.3, §6 | Doc + Exec (C12) |
+| 11a | "Maximum" staleness | **Confirmed.** No maximum is enforced | Normal-case ≈ 3 min, no hard maximum; outage behaviour (stale HTML served, live availability/cart/checkout fail closed) | A §6.1 | Doc |
+| 11b | Baseline 94 → 104 | **Not confirmed.** At `fe85b89` the phase table and the 69 task estimates both sum to **94** (6+12+11+15+8+14+11+8+9); the header said "≈ 95–110". No 104 figure exists in the history | Kept 94 and documented the derivation; recalculated all totals (113 MVP + 17 = 130) | T | Doc |
+| 12 | Validation not reproducible; PG version unpinned | **Confirmed.** Review 1 ran ad-hoc scripts on PostgreSQL 18 while deployment said "16+" | Pinned PostgreSQL 16 for every environment; committed validator; matrix run 16.14 (required) + 18.3 (informational) | A §2, §12; D header; T 0.3, 0.9; `tools/doc-validation` | Exec |
+
+### 5.3 Other changes made while fixing the above
+- UUID primary keys now use `dbgenerated("gen_random_uuid()")`. Prisma's client-side `uuid()` left SQL-created rows without ids (found by C13).
+- `processed_messages` removed: the delivery row is the durable dedupe record.
+- `refunds.receipt` moved to `refund_attempts` (one receipt per attempt, because Razorpay rejects a reused receipt).
+- Order-level refund statuses gained `CANCELLED` (manual COD refunds only); `payments.allocation` gained `LATE` and `HELD` and is nullable until decided.
+- Paid-order cancellation now has explicit gating for the coupon reversal (D §4.2).
+- Dispatch (D §8.4) is still service SQL, not a function. Task 5.2 converts it and adds a check.
+
+## 6. Review 2 validation (reproducible)
+
+**How to reproduce:** `cd tools/doc-validation && npm ci && npm run validate` (PostgreSQL 16.14 via the pinned `embedded-postgres` binaries, plus `redis-server` on PATH). For the forward-compatibility run: `PG_BIN_DIR=<pg18>/bin npm run validate`.
+
+**Environment of the recorded run:** macOS arm64, Node v24.14.0, Prisma 6.19.3, BullMQ 5.81.5 (+ 6.3.11 for comparison), pg 8.16.3, Redis 8.6.2.
+
+| Check | What it executes | PG 16.14 | PG 18.3 | Result detail (16.14 run) |
+|-------|------------------|:--:|:--:|------|
+| C00 | Prisma validate + DDL from the schema extracted from database.md | PASS | PASS | 74 tables |
+| C01 | 0001 + 0002 + 0003 extracted from database.md | PASS | PASS | applied |
+| C02 | BullMQ job ids on a real Redis | PASS | PASS | `wh:42` rejected by 5.81.5 and 6.3.11; hyphen ids accepted; duplicate `jobId` ignored |
+| C03 | Same capture via verify + webhook + reconciler (3 concurrent + 2 later, incl. an older `authorized`) | PASS | PASS | 1 APPLIED, 4 DUPLICATE; coupon (reserved 0, redeemed 1); sold 3; 1 history row; 1 event; 3 deliveries |
+| C04 | Excess after partial and full refund; late capture (expired ± stock, cancelled); amount mismatch | PASS | PASS | EXCESS ×2 with automatic refunds, `order.placed` once; expired+stock → APPLIED; expired−stock → LATE; cancelled → LATE; mismatch → HELD |
+| C05 | 8 concurrent refunds on one item, 6 on shipping, 5 COD manual; manual cancel | PASS | PASS | 1 / 1 / 1 accepted; loser error `REFUND_EXCEEDS_CAPACITY:item`; cancel releases once; online refund not cancellable |
+| C06 | Failed refund retried after capacity reuse; per-attempt keys; stale results; concurrent retries | PASS | PASS | retry blocked while capacity used; attempt 2 key `artq-refund-1-a2`; stale result ignored; 4 concurrent retries → 1 |
+| C07 | Outbox: publish, **FLUSHALL Redis**, redeliver, stale duplicate job, fencing, dead | PASS | PASS | redelivered as generation 2; effect once; stale ack rejected; DEAD + exception |
+| C08 | Webhook: worker A stalls, B reclaims and completes, A resumes | PASS | PASS | A fenced at begin/complete/fail/renew; one `order.placed` |
+| C09 | 1,200 mixed multi-variant ops at concurrency 24 + negative control | PASS | PASS | 0 deadlocks, all drift/negative/stale-search/queue counts 0; old trigger: 43–74 deadlocks per 600 ops across runs |
+| C10 | Cross-resource key reuse for refund/cancel/retry/return; replay; takeover; 10 concurrent | PASS | PASS | CONFLICT (also with an identical hash); `{"NEW":1,"IN_PROGRESS":9}` |
+| C11 | Partial dims; inspection quantities; finalisation | PASS | PASS | all invalid combinations rejected; the old expressions are shown to have accepted them |
+| C12 | Publish gate trigger; final unit; final coupon use; invoice/order-item immutability | PASS | PASS | gate lists failing checks; PROCESSING image rejected; drift view catches post-publish breakage; 5 of 12; 1 of 10 |
+| C13 | Audience-specific auth versions | PASS | PASS | role change keeps storefront, kills admin; block kills both |
+
+Stability: C03, C05, C07 and C09 were re-run three more times on 16.14, all PASS; after the deterministic-order fix, C09 alone passed **25/25** consecutive runs, followed by a final full run of all checks on 16.14 and 18.3 (all PASS). Result files are written to `tools/doc-validation/.tmp/results-<version>.json` (git-ignored).
+
+**Iterations during this review (the checks found real defects in the first drafts):** C09 initially failed with 149 deadlocks (`FOR UPDATE` vs FK key-share), then intermittently with "stale" search vectors. The reproduced cause was **non-deterministic term order** (`string_agg` over variants without `ORDER BY`), not stale content; fixed with `ORDER BY id`. The search worker's lock-then-compute step, added first on the theory of snapshot reuse after a lock wait, is kept as a defensive measure, but no check demonstrates that race; C10 with a return-type mismatch; C13 with missing DB-side UUID defaults; C04/C03 failures were test-fixture mistakes. All were fixed in the documented SQL, not by weakening checks.
+
+## 7. Limitations: what is still unverified or unimplemented
+- **No application exists.** Nothing here shows that future TypeScript services, HTTP middleware (cookies, CSRF/Origin, rate limits), the admin UI or the storefront behave as specified. Those are AT-01…AT-21 (tasklist.md), all **unimplemented**.
+- **Provider behaviour is simulated.** The checks pass provider results into the functions. Not verified against a Razorpay test account (task 4.0): order lookup by `receipt`; exact refund-idempotency status codes (409 vs 400) and error bodies; idempotency-key retention period; late authorization; webhook event-id header; capture "already captured" error shape.
+- **Email provider idempotency** support is assumed per provider choice (task 0.1); without it, duplicate emails are possible after a crash.
+- **Dispatch / invoice issue**, paid-order cancellation, RTO and return-receipt restocking are specified as service SQL but have **no executable check yet** (tasks 5.2–5.6).
+- **Performance** is not validated (C09 shows deadlock freedom at moderate concurrency, not throughput).
+- The **admin screenshot** has still not been provided to the reviewer; admin requirements rely on the listed modules and features.
+- The repository is **public** and contains client files (owner decision).
+
+## 8. Open decisions
+Business inputs only; the full list with defaults and deadlines is in [product.md §11](product.md#11-open-decisions-business-inputs-only): D-1 tax classification · D-2 invoice timing/format · D-3 tax on shipping/COD fee · D-4 COD parameters · D-5 return policy · D-6 serviceability policy · D-7 courier & resin carriage · D-8 large resin packs · D-9 prepaid RTO refund · D-10 product data corrections · D-11 swatch colours · D-12 domain · D-13 shipping values · D-14 coupon restore on cancel · D-15 operations owner · D-16 Razorpay account settings (auto-capture, KYC; and confirmation that refund idempotency keys are enabled on the account).

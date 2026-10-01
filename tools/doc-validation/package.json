@@ -1,0 +1,19 @@
+{
+  "name": "artq-doc-validation",
+  "private": true,
+  "type": "module",
+  "description": "Executable checks for the schema, integrity SQL and reference transactions embedded in docs/database.md. Not application tests.",
+  "engines": {
+    "node": ">=24.11 <25"
+  },
+  "scripts": {
+    "validate": "node run.mjs"
+  },
+  "dependencies": {
+    "bullmq": "5.81.5",
+    "embedded-postgres": "16.14.0-beta.17",
+    "pg": "8.16.3",
+    "prisma": "6.19.3",
+    "bullmq6": "npm:bullmq@6.3.11"
+  }
+}
