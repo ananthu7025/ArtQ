@@ -4,14 +4,42 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
-    "./tokens.css": "./src/tokens.css"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./tokens.css": "./src/tokens.css",
+    "./theme.css": "./src/theme.css"
   },
-  "files": ["dist", "src/tokens.css"],
+  "files": [
+    "dist",
+    "src/tokens.css",
+    "src/theme.css"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
   },
-  "peerDependencies": { "react": "^19.0.0" },
-  "devDependencies": { "@artq/config": "workspace:*", "@types/react": "19.3.0", "react": "19.3.0", "typescript": "6.0.3" }
+  "peerDependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@artq/config": "workspace:*",
+    "@types/react": "19.3.0",
+    "react": "19.3.0",
+    "typescript": "6.0.3",
+    "@testing-library/dom": "10.4.2",
+    "@testing-library/react": "16.3.3",
+    "@testing-library/user-event": "14.6.7",
+    "@types/react-dom": "19.3.0",
+    "axe-core": "4.13.0",
+    "jsdom": "29.1.1",
+    "react-dom": "19.3.0",
+    "vitest": "5.0.3"
+  },
+  "dependencies": {
+    "@artq/shared": "workspace:*"
+  }
 }

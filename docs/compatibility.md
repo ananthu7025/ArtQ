@@ -30,6 +30,7 @@
 | HTTP middleware | helmet / cors / pino-http | 8.3.0 / 2.8.6 / 11.0.0 | Task 0.4 |
 | Redis client | ioredis | 5.11.1 | Same version BullMQ 5.81.5 resolves |
 | Test infra | embedded-postgres (dev) / yaml (dev) | 16.14.0-beta.17 / 2.9.1 | Real PostgreSQL 16.14 for local integration tests without Docker; CI uses service containers (`TEST_DATABASE_URL`, `TEST_REDIS_URL`) |
+| UI tests | jsdom / @testing-library/react / user-event / axe-core | **29.1.1** / 16.3.3 / 14.6.7 / 4.13.0 | jsdom 30.x requires Node ≥ 24.15; the dev machine runs 24.14.0. Upgrade Node to the current 24 LTS (24.21.0) to move to jsdom 30 |
 | Local object storage | adobe/s3mock | 5.2.3 | MinIO no longer publishes community images on Docker Hub or Quay (checked 2026-10-01) |
 | Database | PostgreSQL | **16** (16.14 tested) | Deployment major (architecture.md §2) |
 | Cache/queue store | Redis | 7+ (8.6.2 tested) | |
