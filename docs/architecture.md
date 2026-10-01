@@ -174,7 +174,8 @@ request → requestId → pino-http → helmet → CORS (allowlist; browser hint
   → cartToken (only on /v1/cart*, /v1/checkout*)
   → authOptional | authRequired(audience) | requirePermission(perm) [+ requireRecentMfa for step-up]
   → validate({body, query, params}) (zod strict)
-  → idempotency(operation) (on endpoints listed in api.md §1.2)
+  → idempotency(operation) (on endpoints listed in api.md §1.2: begin → owner token; services call
+     aq_idempotency_assert_owner as the first statement of every transaction, attach/renew/complete with the token)
   → controller → service → prisma
   → errorHandler → {error:{code,message,details}}; Sentry for 5xx
 ```
@@ -404,7 +405,7 @@ Product status changes to `ACTIVE` only through `POST /v1/admin/products/:id/pub
 ## 7. Checkout & payments
 
 ### 7.1 Principles
-1. **A Razorpay checkout signature proves authenticity, not capture.** The signature is checked against the **stored** `payment_attempts.provider_order_id` (the client's order id is ignored). The payment is then fetched from Razorpay and passed to **`aq_apply_provider_payment`**, the single function used by browser verification, the webhook worker and the reconciler. It binds payment → provider order → ArtQ order through the stored attempt, checks amount and currency, requires `captured`, decides the allocation under the order lock, and performs each side effect at most once (database.md §8.2).
+1. **A Razorpay checkout signature proves authenticity, not capture.** The signature is checked against the **stored** `payment_attempts.provider_order_id` (the client's order id is ignored). The payment is then fetched from Razorpay and passed to **`aq_apply_provider_payment`**, the single function used by browser verification, the webhook worker and the reconciler. It binds payment → provider order → ArtQ order through the stored attempt, checks amount and currency, and requires a payment that was captured **and has no provider refunds** before it can fund an order (a payment first seen refunded is `VOID`, or `HELD` when partially refunded; the provider's `amount_refunded` is part of the fetched snapshot). It decides the allocation under the order lock and performs each side effect at most once. A payment reported before its provider order was mapped is recorded `UNLINKED` and is recovered exactly once by the next call after the mapping exists (database.md §8.2).
 2. **Persist before calling out.** The payment attempt row (with our `receipt`) exists before `orders.create` is called; results are written after.
 3. **No DB transaction spans a network call.**
 4. **Everything is idempotent and monotonic**: idempotency keys on client mutations, unique provider ids, status ranks, inbox dedupe, outbox + consumer dedupe.
@@ -445,7 +446,8 @@ sequenceDiagram
 | Razorpay `orders.create` definitively fails (4xx) | Provider response | TX: attempt `CREATION_FAILED`; order stays `PENDING_PAYMENT` with reservations until expiry; idempotency COMPLETED with `201 {payment:null, retryPayment:true}` | "Payment couldn't start. Retry" → `/payment/retry` |
 | Razorpay timeout / 5xx / network error | Exception | Attempt `PROVIDER_UNKNOWN`; response 202 `{status:"PAYMENT_STARTING", retryAfter:3}`; idempotency left `PROCESSING` with short lock | Spinner, then automatic retry with the same key |
 | API crashes after Razorpay created the order, before TX2 | Attempt still `CREATING`; idempotency `PROCESSING` with expired lock (`TAKEOVER`) | Razorpay has **no idempotency header for order creation**; recovery is by our `receipt`. On client retry (same key) or the reconciler (every minute): look the order up by `receipt = AQA_n` → if found, adopt `provider_order_id` → `CREATED`; if not found 2 min after the attempt started → create the provider order (same receipt) or mark `CREATION_FAILED`. If two provider orders ever exist for one attempt, payments on either still bind via whichever id is stored, and payments on an unstored id are `UNLINKED` (reconciliation) | Same as success once adopted |
-| Client repeats initiate (double click, retry) | Same key | `COMPLETED` → replay stored response; `PROCESSING` + live lock → 409 `REQUEST_IN_PROGRESS` + `Retry-After`; same key + different body → 422 `IDEMPOTENCY_KEY_REUSED` | Single order |
+| Client repeats initiate (double click, retry) | Same key | `COMPLETED` → replay stored response; `PROCESSING` + live lock → 409 `REQUEST_IN_PROGRESS` + `Retry-After`; same key + different body or target → 422 `IDEMPOTENCY_KEY_REUSED` | Single order |
+| Original request stalls past its lease; a retry takes over; the original resumes | `TAKEOVER` issues a new owner token (generation + 1) | The new owner resumes the attached order/attempt (never recreates). The stale request's next transaction fails `aq_idempotency_assert_owner` (`IDEMPOTENCY_OWNERSHIP_LOST`) and rolls back; its renew returns false; its complete is rejected. Its HTTP response is 409 `REQUEST_SUPERSEDED`, and a client retry replays the new owner's response | One order, one response |
 | Client sends a new key for the same cart while an order is pending | `orders_one_pending_per_cart_uq` | Return the existing pending order (200) instead of creating another | Same order |
 | Signature invalid | HMAC mismatch | 422 `PAYMENT_VERIFICATION_FAILED`; audit; the webhook/reconciler remains the source of truth | "Verifying payment…" then real status |
 | Provider fetch fails during verify | Timeout | `payment_status = PROCESSING`; 202 `{status:"PROCESSING"}`; client polls `GET /v1/checkout/status/:orderNumber` (every 3 s, up to 2 min) | "We're confirming your payment" |
@@ -456,16 +458,19 @@ sequenceDiagram
 | Capture after expiry or cancellation | Webhook/reconciler | database.md §4.6 rules | Confirmation or refund notice |
 | Second distinct capture (also after partial/full refund) | Another `APPLIED` payment exists for the order | `EXCESS` allocation + automatic refund + exception | Duplicate-payment refund notice |
 | Same payment reported again (verify + webhook + reconciler, any order, any number of times) | `payments.allocation` already set | `DUPLICATE`: no side effects | Nothing changes |
+| Webhook (or verify) for a capture arrives before TX2 saved `provider_order_id` | No attempt maps the provider order | Payment recorded `UNLINKED` + `UNLINKED_PAYMENT`; no order touched. Once TX2 or the reconciler adopts the provider order, the next verify/webhook/reconciler call recovers it once (bind → allocate → resolve exception); concurrent recoveries serialise on the order lock | "Processing", then normal confirmation |
+| Payment first observed already refunded (e.g. refunded in the Razorpay dashboard before ArtQ saw the capture) | Fetched `status = refunded` or `amount_refunded > 0` | Fully refunded ⇒ `VOID`: order not funded, provider refund recorded once, no second refund possible. Partially refunded ⇒ `HELD` + `REFUNDED_BEFORE_APPLY` for staff; only the remainder is refundable | "Your payment was refunded" / "We're verifying your payment" |
+| Payment reported with a different provider order, amount or currency than stored, or mapping to another order | Identity check | `CONFLICT` + `PAYMENT_IDENTITY_CONFLICT`; nothing attached | "We're verifying your payment" |
 
 **Payment retry** (`POST /v1/orders/:orderNumber/payment/retry`, Idempotency-Key, op `payment.retry`): allowed while `PENDING_PAYMENT` and not expired. It closes the previous open attempt (`CLOSED`) after checking with the provider that it has no authorized/captured payment, creates a new attempt (`CREATING` → provider → `CREATED`), and extends `expires_at` by at most 15 minutes (maximum total 60 minutes).
 
 ### 7.4 Reconciliation (worker schedulers)
 | Job | Schedule | Action |
 |-----|----------|--------|
-| `payments.reconcile-attempts` | every 1 min | Attempts in `CREATING`/`PROVIDER_UNKNOWN` older than 60 s: find the provider order by receipt; adopt or create/mark failed. Attempts `CREATED` for `PENDING_PAYMENT`/`PROCESSING` orders: `GET /orders/{id}/payments` → apply any captured, capture stale authorized |
+| `payments.reconcile-attempts` | every 1 min | Attempts in `CREATING`/`PROVIDER_UNKNOWN` older than 60 s: find the provider order by receipt; adopt or create/mark failed. Attempts `CREATED` for `PENDING_PAYMENT`/`PROCESSING` orders: `GET /orders/{id}/payments` → apply any captured, capture stale authorized. **UNLINKED recovery:** for every `UNLINKED` payment whose `provider_order_id` now matches an attempt, re-fetch the payment and call `aq_apply_provider_payment` (binds once, allocates, resolves the exception); payments still unmatched after 24 h stay `UNLINKED` with their exception OPEN for staff |
 | `orders.expire-pending` | every 1 min | Pre-expiry provider check, then `aq_release_unpaid_order` (database.md §8.3) |
 | `refunds.reconcile` | every 5 min | `UNKNOWN` attempts: first `GET /payments/{id}/refunds` and match `receipt`/`notes.aq_refund_id` → found ⇒ record result; not found ⇒ resend the **same attempt** (same `X-Refund-Idempotency` key, same stored request). `PENDING` → fetch refund by id → `aq_mark_refund_processed` when processed. `REQUESTED` whose delivery is not completed → handled by the outbox (§8.2) |
-| `payments.reconcile-daily` | 02:30 IST | List the previous day's Razorpay payments and refunds; compare with DB: missing → `UNLINKED_PAYMENT`; amount/status differences → `RECON_MISMATCH` |
+| `payments.reconcile-daily` | 02:30 IST | List the previous day's Razorpay payments and refunds; every fetched payment goes through `aq_apply_provider_payment` (missing → recorded/allocated; refunded at the provider → `VOID`/`HELD` or, for allocated payments, `RECON_MISMATCH` when the provider's `amount_refunded` exceeds ArtQ's counted refunds); refund records not in the ledger → `RECON_MISMATCH` |
 | `inventory.drift-check` | 03:00 IST | `variant_reservation_drift`, `product_aggregate_drift`, coupon counters → alert |
 | `cod.remittance-overdue` | daily | COD orders `COD_COLLECTED` > 14 days without remittance → notification |
 

@@ -73,9 +73,10 @@ export async function attempt(q, orderId, amount, status = 'CREATED') {
   return { attemptId: id, providerOrderId: 'order_' + u };
 }
 
-export async function apply(q, { providerOrderId, paymentId, amount, status = 'CAPTURED', actor = 'WEBHOOK', currency = 'INR' }) {
-  return val(q, `SELECT aq_apply_provider_payment($1,$2,$3,$4,$5,now(),'upi','{}'::jsonb,$6)`,
-    [providerOrderId, paymentId, amount, currency, status, actor]);
+// Provider snapshot as fetched from Razorpay GET /payments/{id}: amount, currency, status, amount_refunded.
+export async function apply(q, { providerOrderId, paymentId, amount, status = 'CAPTURED', amountRefunded = 0, actor = 'WEBHOOK', currency = 'INR' }) {
+  return val(q, `SELECT aq_apply_provider_payment($1,$2,$3,$4,$5,$6,now(),'upi','{}'::jsonb,$7)`,
+    [providerOrderId, paymentId, amount, currency, status, amountRefunded, actor]);
 }
 
 export function assert(cond, msg) { if (!cond) throw new Error('ASSERT: ' + msg); }

@@ -384,3 +384,4 @@ Engineering defaults are shown; the build proceeds with them unless the client d
 | D-14 | Restore coupon use when a paid order is cancelled before dispatch? | Owner | Yes | Phase 4 |
 | D-15 | Who handles payment exceptions and COD remittance day-to-day; escalation phone | Owner | Owner (business hours) | Before launch |
 | D-16 | Razorpay account: KYC, auto-capture setting, settlement account | Owner | Auto-capture on | Phase 4 (test), launch (live) |
+| D-17 | Funding policy for a payment first seen **partially refunded** at Razorpay (e.g. refunded in the dashboard before ArtQ processed it) | Owner | Hold for manual review; staff may refund the remainder; the order is not fulfilled automatically | Phase 4 |

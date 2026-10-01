@@ -36,10 +36,12 @@ Requirements: Node 24, `redis-server` on PATH (or `REDIS_SERVER`), and a platfor
 | C07 | Outbox: Redis loses a published job → redelivered from PostgreSQL; consumer dedupe; fencing (#5) |
 | C08 | Webhook lease: stalled worker fenced after reclaim (#9) |
 | C09 | Multi-variant transactions + triggers under concurrency; negative control with the old trigger (#6) |
-| C10 | Idempotency: cross-resource key reuse conflicts; replay/in-progress/takeover (#7) |
+| C10 | Idempotency: cross-resource key reuse conflicts; replay/in-progress; fenced takeover (stale owner rejected, resume not recreate, single owner under concurrency) |
 | C11 | Partial dimensions; return inspection quantities and finalisation (#10) |
 | C12 | Publish-gate trigger; final-unit stock/coupon; invoice and order-item immutability (#10) |
 | C13 | Audience-specific auth versions (#8) |
+| C14 | UNLINKED payment recovery: capture before mapping, concurrent recovery once, identity conflicts rejected |
+| C15 | Payments first observed refunded/partially refunded; CAPTURED→REFUNDED; out-of-order and concurrent observations |
 
 ## What a PASS does and does not prove
 - **Proves:** the embedded schema compiles; the SQL applies on the tested PostgreSQL versions; the database
@@ -48,4 +50,4 @@ Requirements: Node 24, `redis-server` on PATH (or `REDIS_SERVER`), and a platfor
 - **Does not prove:** that the future TypeScript services call these functions correctly, Razorpay's actual API
   behaviour (provider calls are simulated by passing provider results in), email delivery, HTTP/cookie/CSRF
   behaviour, UI behaviour, or performance at production scale. Those are covered by the application
-  acceptance tests AT-01…AT-21 in `docs/tasklist.md`, which do not exist yet.
+  acceptance tests AT-01…AT-23 in `docs/tasklist.md`, which do not exist yet.

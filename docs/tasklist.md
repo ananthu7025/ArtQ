@@ -15,26 +15,27 @@
 | Phase | Name | Outcome | Dev-days |
 |-------|------|---------|---------:|
 | 0 | Foundations & compatibility | Node 24 toolchain proven, CI (incl. doc validation), environments, tokens | 7.5 |
-| 1 | Core platform & security | Schema + money/stock functions, customer auth, **admin MFA**, permissions, audit, outbox deliveries, fenced inbox, idempotency, media | 19 |
+| 1 | Core platform & security | Schema + money/stock functions, customer auth, **admin MFA**, permissions, audit, outbox deliveries, fenced inbox, fenced idempotency, media | 19.5 |
 | 2 | Catalogue & admin catalogue | Products page, editor, gate, import, inventory, all behind secure admin | 16 |
 | 3 | Storefront browsing | Home, listing, PDP, search with correct caching | 13 |
-| 4 | **Purchase flow** | Cart, coupons, shipping, checkout, Razorpay, COD, reconciliation | 19.5 |
+| 4 | **Purchase flow** | Cart, coupons, shipping, checkout, Razorpay, COD, reconciliation (incl. UNLINKED recovery, refunded-first payments) | 20 |
 | 5 | **Merchant operations** | Orders, fulfilment, invoices, cancellations, refunds (attempts + provider idempotency), returns, COD, exceptions | 18.5 |
 | 6 | Content, SEO, admin completeness | CMS, content pages, SEO, staff/settings/audit UIs | 7 |
-| 7 | Hardening & launch | Acceptance suite (AT-01…AT-21), perf, security, a11y, restore drill, go-live | 12.5 |
-| | **MVP total** | | **113** |
+| 7 | Hardening & launch | Acceptance suite (AT-01…AT-23), perf, security, a11y, restore drill, go-live | 12.5 |
+| | **MVP total** | | **114** |
 | | Contingency (15 %) | | **17** |
-| | **Planned MVP effort** | | **130 dev-days** |
+| | **Planned MVP effort** | | **131 dev-days** |
 
-**Calendar duration:** 130 ÷ 8 dev-days/week ≈ **16.5 weeks** of build. With typical client-input waits (photos, counts, accountant approval, Razorpay live KYC), plan for **17–20 weeks** from kickoff to launch. Dev-days measure effort; weeks are calendar time with two people working in parallel.
+**Calendar duration:** 131 ÷ 8 dev-days/week ≈ **16.5 weeks** of build. With typical client-input waits (photos, counts, accountant approval, Razorpay live KYC), plan for **17–20 weeks** from kickoff to launch. Dev-days measure effort; weeks are calendar time with two people working in parallel.
 
-**Why it changed (130 d vs. the 94 d baseline, +36 d):**
-- **+19 d of MVP scope (113 vs 94):**
+**Why it changed (131 d vs. the 94 d baseline, +37 d):**
+- **+20 d of MVP scope (114 vs 94):**
   - First review: about +24.5 d of new reliability and security work (admin MFA and session rotation, payment attempts and the recovery matrix, reconciliation, durable inbox, outbox, idempotency, reservation-based inventory, coupon reservation, refunds with item allocation, credit notes, COD remittance/RTO, returns workflow, publication gate, import row outcomes/resume, private media, SSRF-safe fetching, exception and jobs views, promotion pipeline, restore drill, acceptance suite).
   - Second review: +3.5 d. Doc-validation CI gate +0.5 (0.9); money/stock database functions +1 (1.1); per-consumer outbox deliveries with fenced leases +0.5 (1.8); fenced webhook leases +0.5 (1.9); refund attempts with `X-Refund-Idempotency` +0.5 (5.4); seven additional acceptance scenarios +0.5 (7.1).
+  - Third review: +1 d. Fenced idempotency ownership (owner token, assert/attach/renew/complete, resume-on-takeover) +0.5 (1.10); UNLINKED payment recovery and reconciliation of payments first seen refunded +0.5 (4.9). Two acceptance scenarios (AT-22, AT-23) reuse existing harness work (7.1 unchanged).
   - −9 d moved to the post-launch backlog: collections, abandoned carts, advanced reports, reviews, SMS.
-  - Check: 94 + 24.5 + 3.5 − 9 = 113.
-- **+17 d contingency (15 % of 113).** The baseline plan had none.
+  - Check: 94 + 24.5 + 3.5 + 1 − 9 = 114.
+- **+17 d contingency (15 % of 114 = 17.1, rounded).** The baseline plan had none.
 
 ## Milestones
 | Milestone | End of | What is demonstrable |
@@ -69,7 +70,7 @@ Reconciliation, refund safety, authorization and inventory correctness are **MVP
 - [ ] **0.9 Doc-validation gate** (0.5 d): run `tools/doc-validation` (PostgreSQL 16.14 + Redis) in CI on every change to `docs/database.md` or `tools/doc-validation/**`; publish the results JSON as a build artifact.
   ✅ A PR that breaks the embedded schema, SQL or functions cannot merge.
 
-## Phase 1: Core platform & security (19 d)
+## Phase 1: Core platform & security (19.5 d)
 - [ ] **1.1 Schema, migrations & money/stock functions** (3 d): database.md §5 + database.md §6 + database.md §6b as `0001_init` + `0002_constraints_search_integrity` + `0003_money_stock_functions`, copied verbatim from the validated doc blocks; thin typed wrappers in `apps/api` for every `aq_*` function (no re-implementation of their logic).
   ✅ Applies on empty DB; constraint tests (publish gate, refund cap, snapshot/invoice immutability, coupon capacity, category/type FK) pass.
 - [ ] **1.2 Shared pure functions** (2 d): money, tax rounding (database.md §4.4), slug, size normalisation, pricing (architecture.md §6.4) and the **single shipping algorithm** (architecture.md §6.5) with ≥ 40 table tests (threshold edges, coupon pushing below threshold, FREE_SHIPPING coupon, > 10 kg cap, volumetric > actual, COD fee never waived, non-serviceable pincode).
@@ -88,7 +89,7 @@ Reconciliation, refund safety, authorization and inventory correctness are **MVP
   ✅ Kill dispatcher between enqueue and commit → no duplicate email; outbox DEAD → exception.
 - [ ] **1.9 Webhook inbox framework** (1.5 d): signature verify, durable insert, ack-after-commit, `wh-<id>` enqueue, fenced lease (`aq_webhook_claim/begin/renew/complete/fail`), retry/backoff, DEAD, sweeper.
   ✅ AT-04 passes on a synthetic provider.
-- [ ] **1.10 Idempotency middleware** (1 d): scope/operation/key, request hash, PROCESSING lock, replay, conflict, takeover after lock expiry, 24 h purge.
+- [ ] **1.10 Idempotency middleware** (1.5 d): scope/operation/key/target fingerprint, PROCESSING lock, replay, conflict; **owner token** from `aq_idempotency_begin` carried through the request; `aq_idempotency_assert_owner` as the first statement of each transaction; attach/renew/complete with the token; `IDEMPOTENCY_OWNERSHIP_LOST` → 409 `REQUEST_SUPERSEDED`; resume-on-takeover helpers for order, attempt and refund; 24 h purge.
   ✅ AT-02 passes.
 - [ ] **1.11 Media** (2 d): presign with size/type constraints, complete with HEAD check, worker sniff + sharp re-encode, states, private bucket + authorized redirects, SSRF-safe fetcher.
   ✅ Spoofed MIME rejected; private URL denied to other users; fetcher refuses `http://169.254.169.254`, `localhost`, redirect-to-private, > 20 MB.
@@ -122,7 +123,7 @@ Reconciliation, refund safety, authorization and inventory correctness are **MVP
 - [ ] **3.6 PDP** (2.5 d): live availability, notify-me, pincode serviceability, JSON-LD.
 - [ ] **3.7 Search UX** (1 d).
 
-## Phase 4: Purchase flow (19.5 d) → **M2**
+## Phase 4: Purchase flow (20 d) → **M2**
 - [ ] **4.0 Razorpay spike** (0.5 d): on the test account confirm fetch-by-receipt, order payments list, capture, refunds with receipt, event-id header, late authorization behaviour, auto-capture setting.
   ✅ Findings recorded; any gap has a documented fallback.
 - [ ] **4.1 Cart backend** (1.5 d): token cookie, re-pricing, clamping, merge.
@@ -136,7 +137,7 @@ Reconciliation, refund safety, authorization and inventory correctness are **MVP
 - [ ] **4.7 Initiate** (2 d): idempotent initiate, TX1/TX2, attempts, one pending order per cart, failure matrix rows 1–6 (architecture.md §7.3).
   ✅ AT-01, AT-02, AT-03 pass.
 - [ ] **4.8 Verify, status, retry, COD** (2 d): stored provider order id, signature, provider fetch, amount/currency/status checks, `PROCESSING` state, polling endpoint, payment retry (idempotent), COD placement.
-- [ ] **4.9 Webhooks, reconciliation, expiry, late/excess captures** (2.5 d): Razorpay handlers on the inbox, reconcile-attempts, expire-pending with pre-check, daily reconciliation, exceptions creation.
+- [ ] **4.9 Webhooks, reconciliation, expiry, late/excess captures** (3 d): Razorpay handlers on the inbox (payment snapshot incl. `amount_refunded`), reconcile-attempts incl. **UNLINKED recovery** sweep, expire-pending with pre-check, daily reconciliation (first-seen-refunded payments → VOID/HELD; ledger vs provider refunds → RECON_MISMATCH), exceptions creation.
   ✅ AT-04, AT-05, AT-06, AT-07 pass.
 - [ ] **4.10 Order notifications & confirmation** (1 d): outbox events → emails, success/processing pages, analytics `purchase` once.
 - [ ] **M2 demo** on staging.
@@ -165,7 +166,7 @@ Reconciliation, refund safety, authorization and inventory correctness are **MVP
 - [ ] **6.5 Staff & Permissions, Settings, Audit Logs UIs** (1 d).
 
 ## Phase 7: Hardening & launch (12.5 d) → **M4**
-- [ ] **7.1 Acceptance suite** (4.5 d): implement AT-01…AT-21 (below) in CI (integration with Testcontainers + Playwright on staging).
+- [ ] **7.1 Acceptance suite** (4.5 d): implement AT-01…AT-23 (below) in CI (integration with Testcontainers + Playwright on staging).
 - [ ] **7.2 Performance** (1.5 d): Lighthouse, bundle, `EXPLAIN` on listing/search, k6 (100 rps listing, 20 rps checkout quote).
 - [ ] **7.3 Security review** (1.5 d): auth/session, CSRF/Origin, IDOR (orders, attachments, addresses), SSRF, upload validation, permission matrix, secrets.
 - [ ] **7.4 Accessibility & browsers** (1 d): storefront **and admin** (contrast, keyboard, reachable nav).
@@ -198,8 +199,10 @@ Reconciliation, refund safety, authorization and inventory correctness are **MVP
 | **AT-17** | Redis loses an outbox job after `PUBLISHED`; a stale duplicate job also arrives | Integration (real Redis) | Delivery republished as next generation after timeout; effect once; delivery COMPLETED (C07) |
 | **AT-18** | Webhook worker stalls past its lease, another worker reclaims and completes, the first resumes | Integration | Stale complete/fail/renew rejected; domain change once; event PROCESSED (C08) |
 | **AT-19** | Multi-variant checkouts + releases + inventory imports + catalogue variant edits + taxonomy renames + search worker at concurrency ≥ 20 | Integration | No deadlocks (40P01); reservation/aggregate drift empty; search vectors current after the queue drains (C09) |
-| **AT-20** | Same idempotency key + identical body reused against a different order (cancel, payment retry, refund, return) | API | 422 `IDEMPOTENCY_KEY_REUSED`; first order's response never replayed (C10) |
+| **AT-20** | Same idempotency key + identical body reused against a different order (cancel, payment retry, refund, return); request A stalls past its lease, B takes over, A resumes | API | Cross-resource: 422 `IDEMPOTENCY_KEY_REUSED`. Takeover: one order/refund (resumed), A's mutations roll back and A gets 409 `REQUEST_SUPERSEDED`, later retries replay B; concurrent takeovers → one owner (C10) |
 | **AT-21** | Role change and block with live storefront + admin sessions | API | Role change: admin session 401 on next request, storefront session keeps working; block: both 401 (C13) |
+| **AT-22** | Webhook for a capture arrives before TX2 saves the provider order id; then TX2/reconciler saves it; webhook redelivery, verify and reconciler race | Integration (provider stub) | First call UNLINKED (no order effects); after mapping exactly one APPLIED, effects once, exception resolved; conflicting order/amount reports never attach; unmatched payments stay visible (C14) |
+| **AT-23** | Payment first observed fully refunded / partially refunded; CAPTURED then REFUNDED; older CAPTURED after REFUNDED; concurrent observations | Integration (provider stub) | Fully refunded → VOID, no fulfilment, no second refund; partial → HELD + review, only remainder refundable; later/older observations side-effect free; unexplained provider refund → RECON_MISMATCH (C15) |
 
 Each row maps to database.md §8 and architecture.md §7–§8. Where a row cites a C-check, the **database-level** behaviour already has an executable check in `tools/doc-validation`. The AT itself (through HTTP, the services, Razorpay test mode and the browser) is **not implemented** until task 7.1.
 

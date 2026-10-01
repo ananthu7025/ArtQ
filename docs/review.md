@@ -6,6 +6,7 @@ Two senior architecture/solution reviews of the planning documents, with the res
 |--------|----------|----------|
 | 1 | `fe85b89` (initial docs) | §1–§2 (matrix), §4 (historical validation) |
 | 2 | `ea660fa` (after review 1) | §5 (findings, verification, matrix), §6 (reproducible validation) |
+| 3 | `8fe33f4` (after review 2) | §9 (payment recovery, refunded-first payments, idempotency fencing) |
 | Both | | §3 scope & estimates, §7 limitations, §8 open decisions |
 
 Legend for every matrix: **Doc** = documentation correction; **Exec** = covered by an executable check in `tools/doc-validation` (database layer only); **App** = application behaviour that does not exist yet and is covered by a planned acceptance test.
@@ -119,7 +120,7 @@ Legend: A = architecture.md, D = database.md, P = product.md, API = api.md, DS =
 ## 3. Scope & estimates (current)
 - **MVP:** storefront, accounts (email), guest checkout, Razorpay + COD, reconciliation, refunds/returns/credit notes, inventory reservations, coupons, shipping rules, full admin including the screenshot modules and the operations views, CMS, SEO.
 - **Post-launch:** SMS/WhatsApp + phone login, courier API, reviews, abandoned carts, collections, advanced reports, split shipments, bundles, loyalty, PWA.
-- **Effort:** 113 dev-days of MVP scope + 17 contingency = **130 dev-days**; **17–20 calendar weeks** for two developers at 8 dev-days/week. The baseline is **94** dev-days (tasklist.md explains the derivation).
+- **Effort:** 114 dev-days of MVP scope + 17 contingency = **131 dev-days**; **17–20 calendar weeks** for two developers at 8 dev-days/week. The baseline stays **94** dev-days (tasklist.md explains the derivation); review 3 added +1 d (tasks 1.10 and 4.9).
 
 ## 4. Review 1 validation (historical: PostgreSQL 18 only, ad-hoc scripts; superseded by §6)
 
@@ -174,7 +175,7 @@ Validation environment: macOS, Node v24.14.0, Prisma 6.19.3, PostgreSQL 18 (loca
 | 10c | Refund lock sequence | **Confirmed.** The refund SQL locked the payment without the order lock | Order → payment → order-owned rows in every refund function | D §4.1, §6b | Doc + Exec (C05, C06) |
 | 10d | Publication readiness overstated | **Confirmed.** The DB check trusted `is_publishable` | `products_publish_gate_trg` recomputes readiness from images, variants and tax data on every transition to ACTIVE; post-publish changes are guarded by the service and detected by `published_not_ready`; explicit service-vs-DB table | D §3.3, §6 | Doc + Exec (C12) |
 | 11a | "Maximum" staleness | **Confirmed.** No maximum is enforced | Normal-case ≈ 3 min, no hard maximum; outage behaviour (stale HTML served, live availability/cart/checkout fail closed) | A §6.1 | Doc |
-| 11b | Baseline 94 → 104 | **Not confirmed.** At `fe85b89` the phase table and the 69 task estimates both sum to **94** (6+12+11+15+8+14+11+8+9); the header said "≈ 95–110". No 104 figure exists in the history | Kept 94 and documented the derivation; recalculated all totals (113 MVP + 17 = 130) | T | Doc |
+| 11b | Baseline 94 → 104 | **Not confirmed.** At `fe85b89` the phase table and the 69 task estimates both sum to **94** (6+12+11+15+8+14+11+8+9); the header said "≈ 95–110". No 104 figure exists in the history | Kept 94 and documented the derivation; recalculated all totals (113 MVP + 17 = 130 at review 2; 114 + 17 = 131 after review 3) | T | Doc |
 | 12 | Validation not reproducible; PG version unpinned | **Confirmed.** Review 1 ran ad-hoc scripts on PostgreSQL 18 while deployment said "16+" | Pinned PostgreSQL 16 for every environment; committed validator; matrix run 16.14 (required) + 18.3 (informational) | A §2, §12; D header; T 0.3, 0.9; `tools/doc-validation` | Exec |
 
 ### 5.3 Other changes made while fixing the above
@@ -213,7 +214,7 @@ Stability: C03, C05, C07 and C09 were re-run three more times on 16.14, all PASS
 **Iterations during this review (the checks found real defects in the first drafts):** C09 initially failed with 149 deadlocks (`FOR UPDATE` vs FK key-share), then intermittently with "stale" search vectors. The reproduced cause was **non-deterministic term order** (`string_agg` over variants without `ORDER BY`), not stale content; fixed with `ORDER BY id`. The search worker's lock-then-compute step, added first on the theory of snapshot reuse after a lock wait, is kept as a defensive measure, but no check demonstrates that race; C10 with a return-type mismatch; C13 with missing DB-side UUID defaults; C04/C03 failures were test-fixture mistakes. All were fixed in the documented SQL, not by weakening checks.
 
 ## 7. Limitations: what is still unverified or unimplemented
-- **No application exists.** Nothing here shows that future TypeScript services, HTTP middleware (cookies, CSRF/Origin, rate limits), the admin UI or the storefront behave as specified. Those are AT-01…AT-21 (tasklist.md), all **unimplemented**.
+- **No application exists.** Nothing here shows that future TypeScript services, HTTP middleware (cookies, CSRF/Origin, rate limits), the admin UI or the storefront behave as specified. Those are AT-01…AT-23 (tasklist.md), all **unimplemented**.
 - **Provider behaviour is simulated.** The checks pass provider results into the functions. Not verified against a Razorpay test account (task 4.0): order lookup by `receipt`; exact refund-idempotency status codes (409 vs 400) and error bodies; idempotency-key retention period; late authorization; webhook event-id header; capture "already captured" error shape.
 - **Email provider idempotency** support is assumed per provider choice (task 0.1); without it, duplicate emails are possible after a crash.
 - **Dispatch / invoice issue**, paid-order cancellation, RTO and return-receipt restocking are specified as service SQL but have **no executable check yet** (tasks 5.2–5.6).
@@ -222,4 +223,60 @@ Stability: C03, C05, C07 and C09 were re-run three more times on 16.14, all PASS
 - The repository is **public** and contains client files (owner decision).
 
 ## 8. Open decisions
-Business inputs only; the full list with defaults and deadlines is in [product.md §11](product.md#11-open-decisions-business-inputs-only): D-1 tax classification · D-2 invoice timing/format · D-3 tax on shipping/COD fee · D-4 COD parameters · D-5 return policy · D-6 serviceability policy · D-7 courier & resin carriage · D-8 large resin packs · D-9 prepaid RTO refund · D-10 product data corrections · D-11 swatch colours · D-12 domain · D-13 shipping values · D-14 coupon restore on cancel · D-15 operations owner · D-16 Razorpay account settings (auto-capture, KYC; and confirmation that refund idempotency keys are enabled on the account).
+Business inputs only; the full list with defaults and deadlines is in [product.md §11](product.md#11-open-decisions-business-inputs-only): D-1 tax classification · D-2 invoice timing/format · D-3 tax on shipping/COD fee · D-4 COD parameters · D-5 return policy · D-6 serviceability policy · D-7 courier & resin carriage · D-8 large resin packs · D-9 prepaid RTO refund · D-10 product data corrections · D-11 swatch colours · D-12 domain · D-13 shipping values · D-14 coupon restore on cancel · D-15 operations owner · D-16 Razorpay account settings (auto-capture, KYC; and confirmation that refund idempotency keys are enabled on the account) · D-17 funding policy for payments first seen partially refunded.
+
+## 9. Review 3 (baseline `8fe33f4`)
+
+### 9.1 Repository state
+`main` = `8fe33f4` = the reviewed baseline; clean tree; still **no application code**. The corrections are in the executable reference
+SQL in `docs/database.md` (the `aq_*` functions the API is specified to call), the validator and the dependent docs. They are uncommitted
+on `main`: not pushed, merged or deployed.
+
+### 9.2 Findings: verification against the baseline
+Each finding was **reproduced before fixing** with a probe against the unmodified baseline SQL (PostgreSQL 16.14):
+
+| # | Finding | Baseline behaviour observed | Status |
+|---|---------|-----------------------------|--------|
+| 1 | UNLINKED payments never recovered | Capture before mapping → `UNLINKED`; after saving `provider_order_id` the next call returned `DUPLICATE`; the payment kept `order_id = NULL`, `allocation = UNLINKED`; the order stayed `PENDING_PAYMENT` | **Confirmed** |
+| 2 | Payment first seen `REFUNDED` funded the order | First observation `REFUNDED` → `APPLIED`; order `PLACED` | **Confirmed** |
+| 3 | Idempotency takeover not fenced | After B's takeover, stale A's `aq_idempotency_complete` succeeded and stored A's response over B's record | **Confirmed** |
+| (found while testing) | `aq_raise_exception` used the dedupe key as `outbox_events.aggregate_id` (`VARCHAR(40)`) | Dedupe keys longer than 40 characters (e.g. `PAYMENT_IDENTITY_CONFLICT:<payment>:<provider order>`) failed the whole transaction | **Confirmed and fixed** (aggregate id = exception row id) |
+
+### 9.3 Corrections
+
+| # | Correction | Where | Type |
+|---|------------|-------|------|
+| 1 | Explicit recovery transition `UNLINKED → bound (order_id, attempt_id), allocation NULL`, performed under the order lock and gated by `WHERE allocation = 'UNLINKED' AND order_id IS NULL AND provider_order_id = <reported>`; then the normal allocation gate runs (so duplicates stay duplicates). Identity (provider order, amount, currency, bound order) is never overwritten; a mismatching report returns `CONFLICT` + `PAYMENT_IDENTITY_CONFLICT`. The `UNLINKED_PAYMENT` exception now carries the payment id, stays OPEN while unmatched, and is RESOLVED only after recovery. The reconciler sweeps recoverable UNLINKED payments | D §3.10, §4.6, §6b, §8.2; A §7.1, §7.3, §7.4; API §3.8 | Doc + Exec (C14) |
+| 2 | Capture history is separated from funding eligibility. `aq_apply_provider_payment` takes the provider's `amount_refunded`; `payments.provider_amount_refunded` (monotonic). First observation fully refunded ⇒ new allocation `VOID` (no order, inventory, coupon, history or outbox effects); partially refunded ⇒ `HELD` + `REFUNDED_BEFORE_APPLY` (OPEN) because no funding policy exists. Money already refunded is recorded once as a `PROCESSED` `PROVIDER_INITIATED` refund, so payment capacity blocks a second refund; only the remainder of a HELD payment is refundable. Later observations on allocated payments are side-effect free; if the provider reports more refunded than the ledger counts ⇒ `RECON_MISMATCH` (order totals not auto-adjusted) | D §3.10, §4.6, §5, §6, §6b, §8.2; A §7.1, §7.3, §7.4; API §3.8 | Doc + Exec (C15) |
+| 3 | `idempotency_keys.owner_token` + `generation`. `NEW`/`TAKEOVER` issue a fresh token (generation + 1). New `aq_idempotency_assert_owner` (first statement of each transaction), `aq_idempotency_attach`, `aq_idempotency_renew`; `aq_idempotency_complete` now requires the token. Stale owners are rejected inside the transaction, so their domain changes roll back; the API answers them 409 `REQUEST_SUPERSEDED`. Takeover returns the attached resource and the new owner resumes it; refund attempt keys and requests are unchanged | D §3.10, §4.1, §6b, §8.1, §8.5; A §4, §7.3; API §1.1–§1.2; T 1.10 | Doc + Exec (C10) |
+
+Signature changes (no deployed callers exist; the validator and docs were updated):
+`aq_apply_provider_payment(provider_order_id, payment_id, amount, currency, status, amount_refunded, captured_at, method, raw, actor)`;
+`aq_idempotency_begin(...)` now also returns `owner_token, generation`;
+`aq_idempotency_complete(scope, op, key, owner_token, code, body, resource_type, resource_id)`.
+Schema: `payments.provider_amount_refunded`, `idempotency_keys.owner_token/generation`, enum values `PaymentAllocation.VOID`,
+`RefundKind.PROVIDER_INITIATED`, `ExceptionType.PAYMENT_IDENTITY_CONFLICT` / `REFUNDED_BEFORE_APPLY`; checks updated.
+
+### 9.4 Tests executed
+`cd tools/doc-validation && npm run validate` (PostgreSQL 16.14) and `PG_BIN_DIR=<pg18>/bin npm run validate` (18.3): **all 16 checks PASS on both**.
+New or extended checks:
+
+| Check | Scenarios (all executed) | Result |
+|-------|--------------------------|--------|
+| C10 (extended) | A owns and creates the order, stalls; lease expires; B `TAKEOVER` (gen 2) receives the order and resumes without a second order; A's resource mutation + attach, assert, renew and complete are all rejected and A's insert rolls back; B completes; later requests replay B; refund takeover resumes the same refund with an unchanged provider key and request; 10 concurrent takeovers → exactly one owner; 10 concurrent NEW → one owner | PASS |
+| C14 (new) | Capture before mapping → UNLINKED (exception OPEN, no order effects); conflicting order mapping and amount → CONFLICT, not attached; mapping saved; 5 concurrent webhook/verify/reconciler + 3 sequential calls → 1 APPLIED, 7 DUPLICATE; order, coupon, sold count, cart, history, `order.placed`, reservations each exactly once; exception RESOLVED; unmatched payment stays OPEN; bound payment reported under another order → CONFLICT | PASS |
+| C15 (new) | First observation fully REFUNDED → VOID (order unpaid, PROVIDER_INITIATED refund, capacity exhausted, further refund rejected); older CAPTURED afterwards → DUPLICATE, status stays REFUNDED; partially refunded first → HELD (OPEN, only remainder refundable); CAPTURED → own refund → REFUNDED reconciles without exception; dashboard refund → one RECON_MISMATCH, totals untouched, no new refund; 6 concurrent fully-refunded observations → 1 VOID, 1 refund record; mixed CAPTURED/REFUNDED race → exactly one allocation, fulfilment only if funded | PASS |
+
+Stability: C03, C10, C14 and C15 together re-run 8 times on 16.14, 0 failures. All earlier checks (C00–C13) still pass with the new signatures.
+
+### 9.5 Remaining limitations and provider assumptions
+- **No application code**: the TypeScript middleware/services that must carry the owner token, map `IDEMPOTENCY_OWNERSHIP_LOST` to 409 and call the reconciler sweep are unimplemented (tasks 1.10, 4.9; AT-20, AT-22, AT-23).
+- **Not verified against a live Razorpay account:** the payment entity's `amount_refunded` and `refund_status` semantics (assumed: partial refunds keep status `captured`; `refunded` means fully refunded); whether a webhook can precede the order-create response in practice; refund listing used to explain provider refunds.
+- `RECON_MISMATCH` for provider refunds on allocated payments is **surfaced, not auto-corrected**: staff record the external refund (an admin action to add) so order totals stay consistent. A partially refunded `HELD` payment has **no funding policy**; it stays HELD until a business decision (D-17 below).
+- A stale owner that already created a Razorpay order before being fenced leaves a provider order with the same receipt; the resuming owner adopts it by receipt (provider behaviour unverified, task 4.0).
+
+### 9.6 Migration / rollout
+- Nothing is deployed, so these are **initial-migration** changes: regenerate `0001_init` from the updated schema and ship `0002`/`0003` as embedded; no data migration.
+- If a version of `0003` had ever been applied, `aq_idempotency_begin` and `aq_apply_provider_payment` change signature/return type: `DROP FUNCTION` the old signatures first (`CREATE OR REPLACE` cannot change a return type), add the columns with defaults, and backfill `owner_token = gen_random_uuid()` for any `PROCESSING` idempotency rows before adding `idempotency_owner_ck`.
+- Deploy API and worker together: callers must pass `amount_refunded` and owner tokens in the same release as the new functions.
+- New business decision **D-17**: funding policy for payments first seen partially refunded (default: HELD for manual review; staff may refund the remainder).

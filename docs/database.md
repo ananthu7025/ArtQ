@@ -215,14 +215,14 @@ Other order rules:
 
 | Table | Rules |
 |-------|-------|
-| `idempotency_keys` | `UNIQUE(scope, operation, key)`. `scope` = `user:<id>` / `cart:<id>` / `order:<number>` (guest order cookie) / `staff:<id>`. `operation` ∈ `checkout.initiate`, `payment.retry`, `order.cancel`, `refund.create`, `return.create`. **`target_resource`** = the resource the request mutates (`cart:<id>`, `order:<number>`, `order:<id>` for admin). **`request_hash`** = sha256 of canonical JSON `{operation, target, scope, body}` (api.md §1.2). `aq_idempotency_begin` returns `NEW`, `REPLAY`, `IN_PROGRESS`, `TAKEOVER` or `CONFLICT`; a different target **or** hash under the same key is always `CONFLICT`. Retention 24 h |
+| `idempotency_keys` | `UNIQUE(scope, operation, key)`. `scope` = `user:<id>` / `cart:<id>` / `order:<number>` (guest order cookie) / `staff:<id>`. `operation` ∈ `checkout.initiate`, `payment.retry`, `order.cancel`, `refund.create`, `return.create`. **`target_resource`** = the resource the request mutates (`cart:<id>`, `order:<number>`, `order:<id>` for admin). **`request_hash`** = sha256 of canonical JSON `{operation, target, scope, body}` (api.md §1.2). `aq_idempotency_begin` returns `NEW`, `REPLAY`, `IN_PROGRESS`, `TAKEOVER` or `CONFLICT`; a different target **or** hash under the same key is always `CONFLICT`. **Ownership fencing:** `NEW` and `TAKEOVER` issue a fresh `owner_token` and `generation + 1`; attaching the resource (`aq_idempotency_attach`), renewing the lease (`aq_idempotency_renew`) and completing (`aq_idempotency_complete`) all require the current token, and `aq_idempotency_assert_owner` is the first statement of every transaction that acts for the request, so a stale owner's domain mutation rolls back before commit. A `TAKEOVER` returns the attached resource so the new owner **resumes** it (order, attempt, refund) instead of recreating it. Retention 24 h |
 | `payment_attempts` | One per **Razorpay order**, created **before** calling Razorpay (`CREATING`, our `receipt` `AQA_<id>`); `provider_order_id` stored when known; at most one open attempt per order. `PAID` when a captured payment is applied; `CLOSED` when superseded/expired; `CREATION_FAILED` when Razorpay definitively rejected creation |
-| `payments` | One per **Razorpay payment id** (unique). Monotonic `status_rank`: `CREATED 0 < FAILED 1 < AUTHORIZED 2 < CAPTURED 3 < REFUNDED 4` (failed → authorized allowed: Razorpay late authorization). **`allocation`** is NULL until the first time the payment is seen captured, then set **exactly once** under the order lock: `APPLIED` (funds the order), `EXCESS` (another APPLIED payment already funds the order, whatever its later refund state), `LATE` (order expired without restorable stock, or cancelled), `HELD` (amount/currency mismatch or unexpected order state), `UNLINKED` (no attempt matches). The `allocation IS NULL → value` update is **the gate** for every payment side effect (§8.2). `refund_reserved` (counted refunds) and `amount_refunded` (processed) with `amount_refunded ≤ refund_reserved ≤ amount` |
-| `refunds` | Every refund, provider or manual. `status`: `REQUESTED` (capacity reserved) → `PENDING` (provider accepted) → `PROCESSED`; `UNKNOWN` (outcome unknown; resend the **same** attempt or reconcile); `FAILED` (definitive; capacity released); `CANCELLED` (manual COD refund withdrawn before processing via `aq_cancel_manual_refund`; capacity released; online refunds are never cancelled because a provider call may be in flight). **Counted toward capacity: `REQUESTED`, `PENDING`, `UNKNOWN`, `PROCESSED`.** Components `items_amount + shipping_amount + cod_fee_amount + unallocated_amount = amount`; `unallocated_amount` only for `EXCESS_CAPTURE`/`LATE_CAPTURE` refunds of a non-funding payment. `attempt_no` = current provider attempt. `idempotency_key` = the API key (unique per order). `method = MANUAL_BANK` for COD (no payment, no provider attempt) |
+| `payments` | One per **Razorpay payment id** (unique). Monotonic `status_rank`: `CREATED 0 < FAILED 1 < AUTHORIZED 2 < CAPTURED 3 < REFUNDED 4` (failed → authorized allowed: Razorpay late authorization). **`allocation`** is NULL until the first time the payment is seen captured, then set **exactly once** under the order lock: `APPLIED` (funds the order), `EXCESS` (another APPLIED payment already funds the order, whatever its later refund state), `LATE` (order expired without restorable stock, or cancelled), `HELD` (amount/currency mismatch, **partially refunded before ArtQ applied it**, or unexpected order state), `VOID` (**captured and fully refunded before ArtQ applied it**: funds nothing), `UNLINKED` (no attempt maps its provider order *yet*). The `allocation IS NULL → value` update is **the gate** for every payment side effect (§8.2). **Capture history ≠ eligibility to fund:** `status_rank ≥ 3` means "was captured"; only a payment with `provider_amount_refunded = 0` may become `APPLIED`/`EXCESS`/`LATE`. **UNLINKED recovery:** once the attempt's `provider_order_id` exists, the next verify/webhook/reconciler call performs the one-time transition `UNLINKED → (order_id, attempt_id bound, allocation NULL)` under the order lock (gated `WHERE allocation = 'UNLINKED' AND order_id IS NULL`), then allocates normally and resolves the `UNLINKED_PAYMENT` exception. Identity (provider order id, amount, currency, bound order) is never overwritten; a mismatching report returns `CONFLICT` + `PAYMENT_IDENTITY_CONFLICT`. `provider_amount_refunded` (provider's `amount_refunded`, monotonic), `refund_reserved` (counted refunds) and `amount_refunded` (processed) with `amount_refunded ≤ refund_reserved ≤ amount`; `provider_amount_refunded > refund_reserved` on an allocated payment raises `RECON_MISMATCH` (money refunded at the provider that the ledger does not explain) |
+| `refunds` | Every refund, provider or manual. `status`: `REQUESTED` (capacity reserved) → `PENDING` (provider accepted) → `PROCESSED`; `UNKNOWN` (outcome unknown; resend the **same** attempt or reconcile); `FAILED` (definitive; capacity released); `CANCELLED` (manual COD refund withdrawn before processing via `aq_cancel_manual_refund`; capacity released; online refunds are never cancelled because a provider call may be in flight). **Counted toward capacity: `REQUESTED`, `PENDING`, `UNKNOWN`, `PROCESSED`.** Components `items_amount + shipping_amount + cod_fee_amount + unallocated_amount = amount`; `unallocated_amount` only for `EXCESS_CAPTURE`/`LATE_CAPTURE` refunds of a non-funding payment (allocation `EXCESS`, `LATE`, `HELD` or `VOID`) and for **`PROVIDER_INITIATED`** refunds: money the provider had already refunded when ArtQ first allocated the payment, recorded once as `PROCESSED` (idempotency key `provider-refunded-<payment id>`) so payment capacity can never refund it again. `attempt_no` = current provider attempt. `idempotency_key` = the API key (unique per order). `method = MANUAL_BANK` for COD (no payment, no provider attempt) |
 | `refund_attempts` | One per provider call series: **`provider_idempotency_key`** (`artq-refund-<id>-a<n>`, sent as `X-Refund-Idempotency`), `receipt` (`AQR_<id>_A<n>`, correlation only), immutable `request` JSON (payment id, amount, speed, receipt, notes). Retries of the same attempt reuse key + request byte-for-byte; a retry after `FAILED` creates attempt n+1 with a new key and receipt |
 | `refund_items` | Item allocation (quantity, amount, included tax) for credit notes and item capacity |
 | Capacity counters | `order_items.refund_reserved_qty/amount` (≤ quantity / net_amount), `orders.refund_reserved_total` (≤ captured_amount, or total for COD), `refund_reserved_shipping` (≤ shipping_fee), `refund_reserved_cod_fee` (≤ cod_fee), `payments.refund_reserved` (≤ amount). Changed only by `aq_refund_capacity(refund, ±1)` with conditional updates; `refunded_*` counters (processed) are always ≤ the reserved ones (DB checks) |
-| `payment_exceptions` | Durable queue of money/stock problems: `AMOUNT_MISMATCH`, `CURRENCY_MISMATCH`, `EXCESS_CAPTURE`, `LATE_CAPTURE_EXPIRED`, `LATE_CAPTURE_CANCELLED`, `UNLINKED_PAYMENT`, `CAPTURE_STUCK_AUTHORIZED`, `PROVIDER_ORDER_UNKNOWN`, `REFUND_FAILED`, `REFUND_UNKNOWN`, `REFUND_IDEMPOTENCY_MISMATCH`, `WEBHOOK_DEAD`, `OUTBOX_DEAD`, `RECON_MISMATCH`, `COUPON_OVER_LIMIT`, `OVERSOLD`, `COD_REMITTANCE_MISMATCH`, `PUBLISHED_NOT_READY`. `dedupe_key` unique so repeated detection never duplicates |
+| `payment_exceptions` | Durable queue of money/stock problems: `AMOUNT_MISMATCH`, `CURRENCY_MISMATCH`, `EXCESS_CAPTURE`, `LATE_CAPTURE_EXPIRED`, `LATE_CAPTURE_CANCELLED`, `UNLINKED_PAYMENT`, `CAPTURE_STUCK_AUTHORIZED`, `PROVIDER_ORDER_UNKNOWN`, `REFUND_FAILED`, `REFUND_UNKNOWN`, `REFUND_IDEMPOTENCY_MISMATCH`, `PAYMENT_IDENTITY_CONFLICT`, `REFUNDED_BEFORE_APPLY` (OPEN for partial, auto-RESOLVED for full), `WEBHOOK_DEAD`, `OUTBOX_DEAD`, `RECON_MISMATCH`, `COUPON_OVER_LIMIT`, `OVERSOLD`, `COD_REMITTANCE_MISMATCH`, `PUBLISHED_NOT_READY`. `dedupe_key` unique so repeated detection never duplicates |
 
 ### 3.11 Reliability tables
 
@@ -271,7 +271,7 @@ Every transaction acquires row locks in this order and only in this order. Expli
 
 | Step | Rows | Notes |
 |------|------|-------|
-| 1 | The claimed lease row: `webhook_events` (`aq_webhook_begin`) or `outbox_deliveries` (`aq_outbox_begin_consume`) | Only workers |
+| 1 | The claimed lease/ownership row: `idempotency_keys` (`aq_idempotency_assert_owner`, API requests), `webhook_events` (`aq_webhook_begin`) or `outbox_deliveries` (`aq_outbox_begin_consume`) | At most one per transaction |
 | 2 | `orders` (ascending id if several) | Payment application, releases, refunds, fulfilment, returns |
 | 3 | **Order-owned rows**: `order_items`, `inventory_reservations`, `coupon_redemptions`, `refunds`, `refund_items`, `refund_attempts`, `return_requests` (+items), `shipments`, `invoices` of that order | Only modified while holding that order's lock, so their relative position is free; within the group, ascending id |
 | 4 | `payments` (ascending id) | |
@@ -340,7 +340,12 @@ Rounding: per order line, included tax = `net − round_half_up(net × 100 / (10
 
 | Situation | Action | Customer communication |
 |-----------|--------|------------------------|
-| Duplicate notification of the **same** payment id (verify, webhook, reconciler, retries) | `allocation` already set ⇒ `DUPLICATE`, **no side effects** (monotonic status update only) | none |
+| Duplicate notification of the **same** payment id (verify, webhook, reconciler, retries) | `allocation` already set ⇒ `DUPLICATE`, **no side effects** (monotonic status / refunded-amount update only) | none |
+| Capture reported **before** the attempt's provider order id was saved | Recorded `UNLINKED` (no order touched, `UNLINKED_PAYMENT` exception). After the mapping exists, the next verify/webhook/reconciler call binds it once and allocates normally; the exception is resolved | normal flow once recovered |
+| Payment report whose provider order, amount or currency differs from the stored payment, or that maps to a different order | `CONFLICT`: nothing attached or changed; `PAYMENT_IDENTITY_CONFLICT` exception | "We're verifying your payment" |
+| **First** observation already **fully refunded** (`refunded`, or `amount_refunded = amount`) | `allocation = VOID`; order not funded (stays unpaid/expires); provider refund recorded once as `PROVIDER_INITIATED` (capacity exhausted, so no second refund); `REFUNDED_BEFORE_APPLY` auto-resolved | "Your payment was refunded; the order was not placed" (with the expiry notice) |
+| **First** observation **partially refunded** (`captured`, `0 < amount_refunded < amount`) | `allocation = HELD` (no funding policy); refunded part recorded as `PROVIDER_INITIATED`; `REFUNDED_BEFORE_APPLY` OPEN for staff; only the remainder can still be refunded | "We're verifying your payment" |
+| Captured and applied, later reported refunded | `DUPLICATE`; if the provider's refunded amount exceeds ArtQ's counted refunds ⇒ `RECON_MISMATCH` (order totals not auto-adjusted, no new refund) | per refund flow |
 | Second **distinct** captured payment while another payment is `APPLIED` to the order, including after `PARTIALLY_REFUNDED`/`REFUNDED` | `allocation = EXCESS`; exception `EXCESS_CAPTURE`; automatic refund of that payment (`EXCESS_CAPTURE`, `unallocated_amount`) | "We received a duplicate payment; refunded in 5–7 working days" |
 | Capture for an `EXPIRED` order, stock reacquirable | `aq_reacquire_order` (all-or-nothing subtransaction) → `APPLIED`, new reservations, coupon re-redeemed or `over_limit`, `EXPIRED → PLACED`, `PAID` | normal order confirmation |
 | Capture for an `EXPIRED` order, stock not reacquirable | `allocation = LATE`, full automatic refund (`LATE_CAPTURE`), exception `LATE_CAPTURE_EXPIRED`, order stays `EXPIRED` | "Payment received after your order expired and the item sold out; full refund issued" |
@@ -573,6 +578,7 @@ enum PaymentAllocation {
   LATE
   HELD
   UNLINKED
+  VOID
 }
 enum RefundKind {
   CANCELLATION
@@ -581,6 +587,7 @@ enum RefundKind {
   EXCESS_CAPTURE
   LATE_CAPTURE
   PRICE_ADJUSTMENT
+  PROVIDER_INITIATED
 }
 enum RefundMethod {
   ORIGINAL_PAYMENT
@@ -613,6 +620,8 @@ enum ExceptionType {
   COD_REMITTANCE_MISMATCH
   REFUND_IDEMPOTENCY_MISMATCH
   PUBLISHED_NOT_READY
+  PAYMENT_IDENTITY_CONFLICT
+  REFUNDED_BEFORE_APPLY
 }
 enum ExceptionStatus {
   OPEN
@@ -1630,6 +1639,9 @@ model IdempotencyKey {
   operation    String            @db.VarChar(60)
   key          String            @db.VarChar(100)
   targetResource String          @map("target_resource") @db.VarChar(80)
+  /// Fencing: a fresh token and generation+1 on NEW and TAKEOVER. Every later write must present the token.
+  ownerToken   String?           @map("owner_token") @db.Uuid
+  generation   Int               @default(0)
   requestHash  String            @map("request_hash") @db.Char(64)
   status       IdempotencyStatus @default(PROCESSING)
   lockedUntil  DateTime          @map("locked_until") @db.Timestamptz
@@ -1680,6 +1692,9 @@ model Payment {
   allocation        PaymentAllocation?
   allocatedAt       DateTime?             @map("allocated_at") @db.Timestamptz
   refundReserved    Int                   @default(0) @map("refund_reserved")
+  /// Provider-reported amount_refunded (authoritative, monotonic). Refunds ArtQ did not initiate are recorded as
+  /// PROVIDER_INITIATED refunds so capacity never allows refunding the same money twice.
+  providerAmountRefunded Int              @default(0) @map("provider_amount_refunded")
   amountRefunded    Int                   @default(0) @map("amount_refunded")
   capturedAt        DateTime?             @map("captured_at") @db.Timestamptz
   errorCode         String?               @map("error_code") @db.VarChar(80)
@@ -2370,20 +2385,23 @@ ALTER TABLE inventory_movements ADD CONSTRAINT movements_after_ck CHECK (on_hand
 -- ── Payments & refunds ──────────────────────────────────────────────────
 ALTER TABLE payment_attempts ADD CONSTRAINT attempts_amount_ck CHECK (amount > 0);
 ALTER TABLE payments ADD CONSTRAINT payments_amount_ck CHECK (
-  amount > 0 AND refund_reserved BETWEEN 0 AND amount AND amount_refunded BETWEEN 0 AND refund_reserved);
+  amount > 0 AND refund_reserved BETWEEN 0 AND amount AND amount_refunded BETWEEN 0 AND refund_reserved
+  AND provider_amount_refunded BETWEEN 0 AND amount);
 ALTER TABLE payments ADD CONSTRAINT payments_allocation_ck CHECK (
   (allocation IS NULL) = (allocated_at IS NULL)
   AND (allocation IS NULL OR allocation = 'UNLINKED' OR status_rank >= 3));
 ALTER TABLE refunds ADD CONSTRAINT refunds_amount_ck CHECK (
   amount > 0 AND items_amount >= 0 AND shipping_amount >= 0 AND cod_fee_amount >= 0 AND unallocated_amount >= 0
   AND amount = items_amount + shipping_amount + cod_fee_amount + unallocated_amount
-  AND (unallocated_amount = 0 OR (kind IN ('EXCESS_CAPTURE','LATE_CAPTURE')
+  AND (unallocated_amount = 0 OR (kind IN ('EXCESS_CAPTURE','LATE_CAPTURE','PROVIDER_INITIATED')
                                   AND items_amount = 0 AND shipping_amount = 0 AND cod_fee_amount = 0)));
 ALTER TABLE refunds ADD CONSTRAINT refunds_method_ck CHECK (
   (method = 'ORIGINAL_PAYMENT' AND payment_id IS NOT NULL) OR (method = 'MANUAL_BANK' AND payment_id IS NULL));
 ALTER TABLE refund_attempts ADD CONSTRAINT refund_attempts_key_ck CHECK (
   provider_idempotency_key ~ '^[A-Za-z0-9_-]{10,64}$' AND attempt_no >= 1);
 ALTER TABLE refund_items ADD CONSTRAINT refund_items_ck CHECK (quantity >= 0 AND amount >= 0 AND tax_amount BETWEEN 0 AND amount);
+ALTER TABLE idempotency_keys ADD CONSTRAINT idempotency_owner_ck CHECK (
+  (status <> 'PROCESSING' OR owner_token IS NOT NULL) AND generation >= 0);
 ALTER TABLE webhook_events ADD CONSTRAINT webhook_lease_ck CHECK (
   (status = 'PROCESSING') = (lease_token IS NOT NULL AND locked_until IS NOT NULL));
 ALTER TABLE outbox_deliveries ADD CONSTRAINT outbox_lease_ck CHECK (
@@ -2594,10 +2612,10 @@ critical is left to comments. Behaviour is exercised by checks C03–C13 (review
 
 | Function | Used by | Purpose |
 |----------|---------|---------|
-| `aq_idempotency_begin` / `aq_idempotency_complete` | idempotency middleware | key + target + hash; NEW/REPLAY/IN_PROGRESS/TAKEOVER/CONFLICT |
+| `aq_idempotency_begin`, `aq_idempotency_assert_owner`, `aq_idempotency_attach`, `aq_idempotency_renew`, `aq_idempotency_complete` | idempotency middleware + the services it wraps | key + target + hash; NEW/REPLAY/IN_PROGRESS/TAKEOVER/CONFLICT; owner token fencing |
 | `aq_reserve_order`, `aq_reserve_coupon` | checkout TX1 | stock + coupon capacity |
 | `aq_release_unpaid_order` | expiry job, pre-payment cancellation | release stock/coupon, close attempts |
-| `aq_apply_provider_payment` | **verify, webhook worker, reconciler** | the only way a payment changes an order |
+| `aq_apply_provider_payment` | **verify, webhook worker, reconciler** | the only way a payment changes an order; also recovers UNLINKED payments and handles payments first seen refunded |
 | `aq_reacquire_order` | (internal) late capture | all-or-nothing re-reservation |
 | `aq_request_refund`, `aq_retry_refund`, `aq_refund_attempt_result`, `aq_mark_refund_processed`, `aq_cancel_manual_refund`, `aq_refund_capacity` | refund API, `refund.send` consumer, webhook, reconciler | capacity + provider attempts |
 | `aq_adjust_on_hand`, `aq_edit_variants`, `aq_refresh_products` | Inventory page/import, catalogue editor | lock-ordered stock and catalogue writes |
@@ -2634,17 +2652,19 @@ END $$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION aq_raise_exception(p_type TEXT, p_dedupe TEXT, p_order INT, p_payment INT, p_refund INT, p_amount INT, p_details JSONB)
 RETURNS BOOLEAN AS $$
-DECLARE n INT;
+DECLARE eid INT;
 BEGIN
   INSERT INTO payment_exceptions (type, dedupe_key, order_id, payment_id, refund_id, amount, details)
   VALUES (p_type::"ExceptionType", p_dedupe, p_order, p_payment, p_refund, p_amount, COALESCE(p_details, '{}'))
-  ON CONFLICT (dedupe_key) DO NOTHING;
-  GET DIAGNOSTICS n = ROW_COUNT;
-  IF n = 1 THEN
+  ON CONFLICT (dedupe_key) DO NOTHING
+  RETURNING id INTO eid;
+  IF eid IS NOT NULL THEN
     IF p_order IS NOT NULL THEN UPDATE orders SET has_open_exception = TRUE WHERE id = p_order; END IF;
-    PERFORM aq_emit('payment_exception', p_dedupe, 'payment.exception_raised', jsonb_build_object('type', p_type, 'order_id', p_order), ARRAY['notify.admin']);
+    -- aggregate id = exception row id (dedupe keys can exceed outbox_events.aggregate_id's 40 characters)
+    PERFORM aq_emit('payment_exception', eid::TEXT, 'payment.exception_raised',
+                    jsonb_build_object('type', p_type, 'order_id', p_order, 'dedupe_key', p_dedupe), ARRAY['notify.admin']);
   END IF;
-  RETURN n = 1;
+  RETURN eid IS NOT NULL;
 END $$ LANGUAGE plpgsql;
 
 -- Product aggregates; locks products in ascending id order (lock-order step "products").
@@ -2660,35 +2680,73 @@ END $$ LANGUAGE plpgsql;
 
 -- ── Idempotency (api.md §1.2) ──────────────────────────────────────────
 -- p_hash = sha256(canonical JSON {operation, target, scope, body}) computed by the API.
+-- Ownership is fenced: NEW and TAKEOVER issue a fresh owner_token and generation+1. Every later write
+-- (attach resource, renew, complete) must present the token, inside the same transaction as the domain
+-- change it guards, so a stale owner is rejected before its mutation can commit.
 CREATE OR REPLACE FUNCTION aq_idempotency_begin(p_scope TEXT, p_op TEXT, p_key TEXT, p_target TEXT, p_hash TEXT, p_lock_s INT DEFAULT 60)
-RETURNS TABLE (outcome TEXT, response_code INT, response_body JSONB, resource_type TEXT, resource_id TEXT) AS $$
+RETURNS TABLE (outcome TEXT, response_code INT, response_body JSONB, resource_type TEXT, resource_id TEXT, owner_token UUID, generation INT) AS $$
 #variable_conflict use_column
-DECLARE k idempotency_keys%ROWTYPE; ins INT;
+DECLARE k idempotency_keys%ROWTYPE; t UUID; g INT;
 BEGIN
-  INSERT INTO idempotency_keys (scope, operation, key, target_resource, request_hash, status, locked_until, expires_at)
-  VALUES (p_scope, p_op, p_key, p_target, p_hash, 'PROCESSING', now() + make_interval(secs => p_lock_s), now() + interval '24 hours')
-  ON CONFLICT (scope, operation, key) DO NOTHING;
-  GET DIAGNOSTICS ins = ROW_COUNT;
-  IF ins = 1 THEN RETURN QUERY SELECT 'NEW'::TEXT, NULL::INT, NULL::JSONB, NULL::TEXT, NULL::TEXT; RETURN; END IF;
+  INSERT INTO idempotency_keys (scope, operation, key, target_resource, request_hash, status, locked_until, expires_at, owner_token, generation)
+  VALUES (p_scope, p_op, p_key, p_target, p_hash, 'PROCESSING', now() + make_interval(secs => p_lock_s), now() + interval '24 hours',
+          gen_random_uuid(), 1)
+  ON CONFLICT (scope, operation, key) DO NOTHING
+  RETURNING idempotency_keys.owner_token, idempotency_keys.generation INTO t, g;
+  IF FOUND THEN
+    RETURN QUERY SELECT 'NEW'::TEXT, NULL::INT, NULL::JSONB, NULL::TEXT, NULL::TEXT, t, g; RETURN;
+  END IF;
   SELECT * INTO k FROM idempotency_keys i WHERE i.scope = p_scope AND i.operation = p_op AND i.key = p_key FOR NO KEY UPDATE;
   IF k.target_resource <> p_target OR k.request_hash <> p_hash THEN
-    RETURN QUERY SELECT 'CONFLICT'::TEXT, 422, NULL::JSONB, NULL::TEXT, NULL::TEXT; RETURN;          -- IDEMPOTENCY_KEY_REUSED
+    RETURN QUERY SELECT 'CONFLICT'::TEXT, 422, NULL::JSONB, NULL::TEXT, NULL::TEXT, NULL::UUID, NULL::INT; RETURN;   -- IDEMPOTENCY_KEY_REUSED
   ELSIF k.status = 'COMPLETED' THEN
-    RETURN QUERY SELECT 'REPLAY'::TEXT, k.response_code, k.response_body, k.resource_type::TEXT, k.resource_id::TEXT; RETURN;
+    RETURN QUERY SELECT 'REPLAY'::TEXT, k.response_code, k.response_body, k.resource_type::TEXT, k.resource_id::TEXT, NULL::UUID, NULL::INT; RETURN;
   ELSIF k.locked_until > now() THEN
-    RETURN QUERY SELECT 'IN_PROGRESS'::TEXT, 409, NULL::JSONB, NULL::TEXT, NULL::TEXT; RETURN;       -- REQUEST_IN_PROGRESS
+    RETURN QUERY SELECT 'IN_PROGRESS'::TEXT, 409, NULL::JSONB, NULL::TEXT, NULL::TEXT, NULL::UUID, NULL::INT; RETURN;  -- REQUEST_IN_PROGRESS
   END IF;
-  UPDATE idempotency_keys SET locked_until = now() + make_interval(secs => p_lock_s) WHERE id = k.id;
-  RETURN QUERY SELECT 'TAKEOVER'::TEXT, NULL::INT, NULL::JSONB, k.resource_type::TEXT, k.resource_id::TEXT;     -- resume from resource state
+  -- Lease expired: the previous owner is presumed dead. Fence it out with a new token + generation.
+  UPDATE idempotency_keys SET locked_until = now() + make_interval(secs => p_lock_s),
+         owner_token = gen_random_uuid(), generation = idempotency_keys.generation + 1
+   WHERE id = k.id
+  RETURNING idempotency_keys.owner_token, idempotency_keys.generation INTO t, g;
+  RETURN QUERY SELECT 'TAKEOVER'::TEXT, NULL::INT, NULL::JSONB, k.resource_type::TEXT, k.resource_id::TEXT, t, g;  -- resume from resource
 END $$ LANGUAGE plpgsql;
 
-CREATE OR REPLACE FUNCTION aq_idempotency_complete(p_scope TEXT, p_op TEXT, p_key TEXT, p_code INT, p_body JSONB, p_rtype TEXT, p_rid TEXT)
+-- First statement of every transaction that acts for an idempotent request: locks the record and proves ownership.
+CREATE OR REPLACE FUNCTION aq_idempotency_assert_owner(p_scope TEXT, p_op TEXT, p_key TEXT, p_token UUID) RETURNS void AS $$
+BEGIN
+  PERFORM 1 FROM idempotency_keys
+   WHERE scope = p_scope AND operation = p_op AND key = p_key AND status = 'PROCESSING' AND owner_token = p_token
+   FOR NO KEY UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'IDEMPOTENCY_OWNERSHIP_LOST:%', p_key USING ERRCODE = 'P0003'; END IF;
+END $$ LANGUAGE plpgsql;
+
+-- Record the resource created for this request (same transaction as its creation).
+CREATE OR REPLACE FUNCTION aq_idempotency_attach(p_scope TEXT, p_op TEXT, p_key TEXT, p_token UUID, p_rtype TEXT, p_rid TEXT)
+RETURNS void AS $$
+BEGIN
+  PERFORM aq_idempotency_assert_owner(p_scope, p_op, p_key, p_token);
+  UPDATE idempotency_keys SET resource_type = p_rtype, resource_id = p_rid
+   WHERE scope = p_scope AND operation = p_op AND key = p_key AND owner_token = p_token;
+END $$ LANGUAGE plpgsql;
+
+-- Extend the lease during a slow provider call. FALSE ⇒ ownership lost: stop and do not call out again.
+CREATE OR REPLACE FUNCTION aq_idempotency_renew(p_scope TEXT, p_op TEXT, p_key TEXT, p_token UUID, p_lock_s INT DEFAULT 60)
+RETURNS BOOLEAN AS $$
+DECLARE n INT;
+BEGIN
+  UPDATE idempotency_keys SET locked_until = now() + make_interval(secs => p_lock_s)
+   WHERE scope = p_scope AND operation = p_op AND key = p_key AND status = 'PROCESSING' AND owner_token = p_token;
+  GET DIAGNOSTICS n = ROW_COUNT; RETURN n = 1;
+END $$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION aq_idempotency_complete(p_scope TEXT, p_op TEXT, p_key TEXT, p_token UUID, p_code INT, p_body JSONB, p_rtype TEXT, p_rid TEXT)
 RETURNS void AS $$
 BEGIN
   UPDATE idempotency_keys SET status = 'COMPLETED', response_code = p_code, response_body = p_body,
-         resource_type = p_rtype, resource_id = p_rid, completed_at = now()
-   WHERE scope = p_scope AND operation = p_op AND key = p_key AND status = 'PROCESSING';
-  IF NOT FOUND THEN RAISE EXCEPTION 'idempotency record % not PROCESSING', p_key; END IF;
+         resource_type = COALESCE(p_rtype, resource_type), resource_id = COALESCE(p_rid, resource_id), completed_at = now()
+   WHERE scope = p_scope AND operation = p_op AND key = p_key AND status = 'PROCESSING' AND owner_token = p_token;
+  IF NOT FOUND THEN RAISE EXCEPTION 'IDEMPOTENCY_OWNERSHIP_LOST:%', p_key USING ERRCODE = 'P0003'; END IF;
 END $$ LANGUAGE plpgsql;
 
 -- ── Inventory ───────────────────────────────────────────────────────────
@@ -2848,48 +2906,109 @@ BEGIN
 END $$ LANGUAGE plpgsql;
 
 -- ── Payment application (verify, webhook and reconciliation all call this) ─────
--- Inputs come from a provider FETCH made before the transaction (never from the browser).
--- Returns: UNLINKED | NOT_CAPTURED | AUTHORIZED | DUPLICATE | APPLIED | EXCESS | LATE | HELD
+-- Inputs come from a provider FETCH made before the transaction (never from the browser):
+-- order_id, payment id, amount, currency, status and amount_refunded of the Razorpay payment entity.
+-- Returns: UNLINKED | CONFLICT | NOT_CAPTURED | AUTHORIZED | DUPLICATE | APPLIED | EXCESS | LATE | HELD | VOID
+--
+-- Capture history (status_rank >= 3: captured or refunded) is separate from ELIGIBILITY TO FUND an order:
+-- only a captured payment with no provider refunds may fund. A payment first seen already (partially) refunded
+-- never initiates fulfilment: fully refunded → VOID; partially refunded → HELD (no funding policy; review).
 CREATE OR REPLACE FUNCTION aq_apply_provider_payment(
-  p_provider_order_id TEXT, p_payment_id TEXT, p_amount INT, p_currency TEXT, p_status TEXT,
+  p_provider_order_id TEXT, p_payment_id TEXT, p_amount INT, p_currency TEXT, p_status TEXT, p_amount_refunded INT,
   p_captured_at TIMESTAMPTZ, p_method TEXT, p_raw JSONB, p_actor TEXT)
 RETURNS TEXT AS $$
 DECLARE
   att RECORD; o RECORD; pay RECORD; red RECORD; c RECORD; it RECORD;
-  v_rank INT; v_alloc TEXT; v_refund INT; n INT;
+  v_rank INT; v_refunded INT; v_alloc TEXT; v_refund INT; n INT; v_recovered BOOLEAN := FALSE;
 BEGIN
   v_rank := CASE p_status WHEN 'CREATED' THEN 0 WHEN 'FAILED' THEN 1 WHEN 'AUTHORIZED' THEN 2
                           WHEN 'CAPTURED' THEN 3 WHEN 'REFUNDED' THEN 4 END;
   IF v_rank IS NULL THEN RAISE EXCEPTION 'unknown provider status %', p_status; END IF;
+  IF p_amount_refunded IS NULL OR p_amount_refunded < 0 OR p_amount_refunded > p_amount THEN
+    RAISE EXCEPTION 'invalid provider amount_refunded % for amount %', p_amount_refunded, p_amount;
+  END IF;
+  -- Razorpay status "refunded" means fully refunded; take the larger figure if the entity is inconsistent.
+  v_refunded := CASE WHEN p_status = 'REFUNDED' THEN p_amount ELSE p_amount_refunded END;
 
   -- 1. Bind payment → provider order → ArtQ order via the STORED attempt.
   SELECT id, order_id, amount, currency INTO att FROM payment_attempts WHERE provider_order_id = p_provider_order_id;
   IF NOT FOUND THEN
+    -- No mapping (yet): record the payment as UNLINKED, never attach it to any order.
     INSERT INTO payments (provider_payment_id, provider_order_id, method, amount, currency, status, status_rank,
-                          allocation, allocated_at, captured_at, raw, updated_at)
+                          provider_amount_refunded, allocation, allocated_at, captured_at, raw, updated_at)
     VALUES (p_payment_id, p_provider_order_id, p_method, p_amount, p_currency, p_status::"ProviderPaymentStatus", v_rank,
-            'UNLINKED', now(), p_captured_at, p_raw, now())
-    ON CONFLICT (provider_payment_id) DO NOTHING;
-    PERFORM aq_raise_exception('UNLINKED_PAYMENT', 'UNLINKED_PAYMENT:' || p_payment_id, NULL, NULL, NULL, p_amount, NULL);
-    RETURN 'UNLINKED';
+            v_refunded, 'UNLINKED', now(), p_captured_at, p_raw, now())
+    ON CONFLICT (provider_payment_id) DO UPDATE
+       SET status = CASE WHEN EXCLUDED.status_rank > payments.status_rank THEN EXCLUDED.status ELSE payments.status END,
+           status_rank = GREATEST(payments.status_rank, EXCLUDED.status_rank),
+           provider_amount_refunded = GREATEST(payments.provider_amount_refunded, EXCLUDED.provider_amount_refunded),
+           captured_at = COALESCE(payments.captured_at, EXCLUDED.captured_at), updated_at = now()
+     WHERE payments.provider_order_id = EXCLUDED.provider_order_id
+       AND payments.amount = EXCLUDED.amount AND payments.currency = EXCLUDED.currency;
+    SELECT * INTO pay FROM payments WHERE provider_payment_id = p_payment_id;
+    IF pay.provider_order_id <> p_provider_order_id OR pay.amount <> p_amount OR pay.currency <> p_currency THEN
+      PERFORM aq_raise_exception('PAYMENT_IDENTITY_CONFLICT', 'PAYMENT_IDENTITY_CONFLICT:' || p_payment_id || ':' || p_provider_order_id,
+                                 pay.order_id, pay.id, NULL, p_amount, jsonb_build_object('reported_provider_order_id', p_provider_order_id,
+                                 'stored_provider_order_id', pay.provider_order_id, 'reported_amount', p_amount, 'stored_amount', pay.amount));
+      RETURN 'CONFLICT';
+    END IF;
+    IF pay.allocation = 'UNLINKED' THEN
+      PERFORM aq_raise_exception('UNLINKED_PAYMENT', 'UNLINKED_PAYMENT:' || p_payment_id, NULL, pay.id, NULL, p_amount,
+                                 jsonb_build_object('provider_order_id', p_provider_order_id));
+      RETURN 'UNLINKED';
+    END IF;
+    RETURN 'DUPLICATE';
   END IF;
 
   -- 2. Order lock first (lock order §4.1); every decision below is made under it.
   SELECT * INTO o FROM orders WHERE id = att.order_id FOR NO KEY UPDATE;
 
-  -- 3. Monotonic upsert: equal or lower rank never overwrites.
+  -- 3. Monotonic upsert. Identity (provider order, amount, currency) is never overwritten; status and
+  --    provider_amount_refunded only move forward; order_id/attempt_id are set only on insert or by step 5.
   INSERT INTO payments (order_id, attempt_id, provider_payment_id, provider_order_id, method, amount, currency,
-                        status, status_rank, captured_at, raw, updated_at)
+                        status, status_rank, provider_amount_refunded, captured_at, raw, updated_at)
   VALUES (o.id, att.id, p_payment_id, p_provider_order_id, p_method, p_amount, p_currency,
-          p_status::"ProviderPaymentStatus", v_rank, p_captured_at, p_raw, now())
+          p_status::"ProviderPaymentStatus", v_rank, v_refunded, p_captured_at, p_raw, now())
   ON CONFLICT (provider_payment_id) DO UPDATE
-     SET status = EXCLUDED.status, status_rank = EXCLUDED.status_rank,
-         captured_at = COALESCE(payments.captured_at, EXCLUDED.captured_at), raw = EXCLUDED.raw, updated_at = now()
-   WHERE payments.status_rank < EXCLUDED.status_rank;
+     SET status = CASE WHEN EXCLUDED.status_rank > payments.status_rank THEN EXCLUDED.status ELSE payments.status END,
+         status_rank = GREATEST(payments.status_rank, EXCLUDED.status_rank),
+         provider_amount_refunded = GREATEST(payments.provider_amount_refunded, EXCLUDED.provider_amount_refunded),
+         captured_at = COALESCE(payments.captured_at, EXCLUDED.captured_at),
+         raw = CASE WHEN EXCLUDED.status_rank >= payments.status_rank THEN EXCLUDED.raw ELSE payments.raw END,
+         updated_at = now()
+   WHERE payments.provider_order_id = EXCLUDED.provider_order_id
+     AND payments.amount = EXCLUDED.amount AND payments.currency = EXCLUDED.currency
+     AND (EXCLUDED.status_rank > payments.status_rank OR EXCLUDED.provider_amount_refunded > payments.provider_amount_refunded);
   SELECT * INTO pay FROM payments WHERE provider_payment_id = p_payment_id FOR NO KEY UPDATE;
 
-  -- 4. Not captured yet: at most a first-time UNPAID → PROCESSING indicator.
+  -- 4. Identity check: a payment can never be attached to an order other than the one its stored
+  --    provider order maps to, nor change amount/currency.
+  IF pay.provider_order_id <> p_provider_order_id OR pay.amount <> p_amount OR pay.currency <> p_currency
+     OR (pay.order_id IS NOT NULL AND pay.order_id <> o.id) THEN
+    PERFORM aq_raise_exception('PAYMENT_IDENTITY_CONFLICT', 'PAYMENT_IDENTITY_CONFLICT:' || p_payment_id || ':' || p_provider_order_id,
+                               o.id, pay.id, NULL, p_amount, jsonb_build_object('reported_provider_order_id', p_provider_order_id,
+                               'stored_provider_order_id', pay.provider_order_id, 'stored_order_id', pay.order_id,
+                               'reported_amount', p_amount, 'stored_amount', pay.amount));
+    RETURN 'CONFLICT';
+  END IF;
+
+  -- 5. Recovery transition UNLINKED → (bound, allocation NULL). Gated: exactly one caller performs it.
+  IF pay.allocation = 'UNLINKED' THEN
+    UPDATE payments SET order_id = o.id, attempt_id = att.id, allocation = NULL, allocated_at = NULL, updated_at = now()
+     WHERE id = pay.id AND allocation = 'UNLINKED' AND order_id IS NULL AND provider_order_id = p_provider_order_id;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    IF n = 0 THEN RETURN 'DUPLICATE'; END IF;
+    v_recovered := TRUE;
+    SELECT * INTO pay FROM payments WHERE id = pay.id;
+  END IF;
+
+  -- 6. Not captured yet: at most a first-time UNPAID → PROCESSING indicator.
   IF pay.status_rank < 3 THEN
+    IF v_recovered THEN
+      UPDATE payment_exceptions SET status = 'RESOLVED', resolved_at = now(), order_id = o.id, payment_id = pay.id,
+             resolution = 'Recovered: bound to order ' || o.order_number || ' (not captured yet)'
+       WHERE dedupe_key = 'UNLINKED_PAYMENT:' || p_payment_id AND status <> 'RESOLVED';
+    END IF;
     IF pay.status = 'AUTHORIZED' THEN
       UPDATE orders SET payment_status = 'PROCESSING' WHERE id = o.id AND status = 'PENDING_PAYMENT' AND payment_status = 'UNPAID';
       GET DIAGNOSTICS n = ROW_COUNT;
@@ -2899,12 +3018,26 @@ BEGIN
     RETURN 'NOT_CAPTURED';
   END IF;
 
-  -- 5. THE GATE: a captured payment is allocated exactly once. Duplicates stop here.
-  IF pay.allocation IS NOT NULL THEN RETURN 'DUPLICATE'; END IF;
+  -- 7. THE GATE: a captured payment is allocated exactly once. Later observations only reconcile refunds.
+  IF pay.allocation IS NOT NULL THEN
+    IF pay.provider_amount_refunded > pay.refund_reserved THEN
+      -- Money refunded at the provider that the ArtQ ledger does not account for (e.g. dashboard refund):
+      -- surface for review; never auto-adjust order totals or create another refund.
+      PERFORM aq_raise_exception('RECON_MISMATCH', 'REFUND_RECON:' || p_payment_id || ':' || pay.provider_amount_refunded,
+                                 o.id, pay.id, NULL, pay.provider_amount_refunded - pay.refund_reserved,
+                                 jsonb_build_object('provider_amount_refunded', pay.provider_amount_refunded,
+                                                    'ledger_refund_reserved', pay.refund_reserved, 'allocation', pay.allocation));
+    END IF;
+    RETURN 'DUPLICATE';
+  END IF;
 
-  -- 6. Allocation decision (under the order lock).
+  -- 8. Allocation decision (under the order lock). Eligibility to fund is checked before anything else.
   IF pay.amount <> att.amount OR pay.currency <> att.currency THEN
     v_alloc := 'HELD';
+  ELSIF pay.provider_amount_refunded >= pay.amount THEN
+    v_alloc := 'VOID';                 -- captured and fully refunded before ArtQ applied it: funds nothing
+  ELSIF pay.provider_amount_refunded > 0 THEN
+    v_alloc := 'HELD';                 -- partially refunded before apply: no funding policy ⇒ review
   ELSIF EXISTS (SELECT 1 FROM payments x WHERE x.order_id = o.id AND x.allocation = 'APPLIED' AND x.id <> pay.id) THEN
     v_alloc := 'EXCESS';               -- order already funded, whatever its later refund state
   ELSIF o.payment_method = 'RAZORPAY' AND o.status = 'PENDING_PAYMENT' THEN
@@ -2922,7 +3055,36 @@ BEGIN
   GET DIAGNOSTICS n = ROW_COUNT;
   IF n = 0 THEN RETURN 'DUPLICATE'; END IF;
 
-  -- 7. Side effects, each gated by its own transition.
+  IF v_recovered THEN
+    UPDATE payment_exceptions SET status = 'RESOLVED', resolved_at = now(), order_id = o.id, payment_id = pay.id,
+           resolution = 'Recovered: bound to order ' || o.order_number || ', allocation ' || v_alloc
+     WHERE dedupe_key = 'UNLINKED_PAYMENT:' || p_payment_id AND status <> 'RESOLVED';
+  END IF;
+
+  -- 9. Money already refunded at the provider before allocation: record it once as a PROCESSED
+  --    PROVIDER_INITIATED refund so payment capacity can never refund the same money again.
+  IF pay.provider_amount_refunded > 0 THEN
+    INSERT INTO refunds (order_id, payment_id, kind, method, status, amount, unallocated_amount, reason,
+                         idempotency_key, processed_at, updated_at)
+    VALUES (o.id, pay.id, 'PROVIDER_INITIATED', 'ORIGINAL_PAYMENT', 'PROCESSED', pay.provider_amount_refunded,
+            pay.provider_amount_refunded, 'Refunded at the provider before ArtQ applied the payment',
+            'provider-refunded-' || p_payment_id, now(), now());
+    UPDATE payments SET refund_reserved = refund_reserved + pay.provider_amount_refunded,
+                        amount_refunded = amount_refunded + pay.provider_amount_refunded
+     WHERE id = pay.id AND refund_reserved + pay.provider_amount_refunded <= amount;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    IF n <> 1 THEN RAISE EXCEPTION 'INVARIANT: provider refund exceeds payment % capacity', pay.id; END IF;
+    PERFORM aq_raise_exception('REFUNDED_BEFORE_APPLY', 'REFUNDED_BEFORE_APPLY:' || p_payment_id, o.id, pay.id, NULL,
+                               pay.provider_amount_refunded, jsonb_build_object('amount', pay.amount,
+                               'provider_amount_refunded', pay.provider_amount_refunded, 'allocation', v_alloc));
+    IF v_alloc = 'VOID' THEN
+      UPDATE payment_exceptions SET status = 'RESOLVED', resolved_at = now(),
+             resolution = 'Fully refunded at the provider; no funds held; order not funded'
+       WHERE dedupe_key = 'REFUNDED_BEFORE_APPLY:' || p_payment_id;
+    END IF;
+  END IF;
+
+  -- 10. Side effects, each gated by its own transition.
   IF v_alloc = 'APPLIED' THEN
     UPDATE orders SET status = 'PLACED', payment_status = 'PAID', captured_amount = captured_amount + pay.amount,
            placed_at = now(), expires_at = NULL, expired_at = NULL, version = version + 1
@@ -2931,12 +3093,10 @@ BEGIN
     IF n <> 1 THEN RAISE EXCEPTION 'INVARIANT: order % could not transition to PLACED', o.id; END IF;
     UPDATE payment_attempts SET status = 'PAID' WHERE id = att.id;
 
-    -- sold counts: products ascending (before coupons in the lock order)
     FOR it IN SELECT product_id, sum(quantity)::INT AS q FROM order_items WHERE order_id = o.id GROUP BY product_id ORDER BY product_id LOOP
       UPDATE products SET sold_count = sold_count + it.q WHERE id = it.product_id;
     END LOOP;
 
-    -- coupon: RESERVED → REDEEMED (normal) or RELEASED → REDEEMED (late capture; capacity re-checked)
     SELECT * INTO red FROM coupon_redemptions WHERE order_id = o.id AND status IN ('RESERVED','RELEASED');
     IF FOUND THEN
       SELECT * INTO c FROM coupons WHERE id = red.coupon_id FOR NO KEY UPDATE;
@@ -2978,10 +3138,20 @@ BEGIN
     RETURN v_alloc;
   END IF;
 
-  -- HELD
-  PERFORM aq_raise_exception(CASE WHEN pay.currency <> att.currency THEN 'CURRENCY_MISMATCH' ELSE 'AMOUNT_MISMATCH' END,
-                             'HELD:' || p_payment_id, o.id, pay.id, NULL, pay.amount,
-                             jsonb_build_object('expected', att.amount, 'received', pay.amount, 'order_status', o.status));
+  IF v_alloc = 'VOID' THEN
+    RETURN 'VOID';                     -- no order, inventory, coupon, history or outbox effects
+  END IF;
+
+  -- HELD: amount/currency mismatch, partially refunded before apply, or unexpected order state.
+  IF pay.amount <> att.amount OR pay.currency <> att.currency THEN
+    PERFORM aq_raise_exception(CASE WHEN pay.currency <> att.currency THEN 'CURRENCY_MISMATCH' ELSE 'AMOUNT_MISMATCH' END,
+                               'HELD:' || p_payment_id, o.id, pay.id, NULL, pay.amount,
+                               jsonb_build_object('expected', att.amount, 'received', pay.amount, 'order_status', o.status));
+  ELSIF pay.provider_amount_refunded = 0 THEN
+    PERFORM aq_raise_exception('AMOUNT_MISMATCH', 'HELD:' || p_payment_id, o.id, pay.id, NULL, pay.amount,
+                               jsonb_build_object('reason', 'unexpected order state', 'order_status', o.status,
+                                                  'payment_method', o.payment_method));
+  END IF;
   RETURN 'HELD';
 END $$ LANGUAGE plpgsql;
 
@@ -3055,7 +3225,7 @@ BEGIN
   IF p_payment IS NOT NULL THEN
     SELECT * INTO pay FROM payments WHERE id = p_payment AND order_id = p_order FOR NO KEY UPDATE;
     IF NOT FOUND OR pay.status_rank < 3 THEN RAISE EXCEPTION 'REFUND_PAYMENT_INVALID' USING ERRCODE = 'P0001'; END IF;
-    IF (p_kind IN ('EXCESS_CAPTURE','LATE_CAPTURE')) <> (pay.allocation IN ('EXCESS','LATE')) THEN
+    IF (p_kind IN ('EXCESS_CAPTURE','LATE_CAPTURE')) <> (pay.allocation IN ('EXCESS','LATE','HELD','VOID')) THEN
       RAISE EXCEPTION 'REFUND_PAYMENT_INVALID:allocation' USING ERRCODE = 'P0001';
     END IF;
     v_method := 'ORIGINAL_PAYMENT';
@@ -3346,41 +3516,51 @@ Each numbered block is **one short transaction** (`BEGIN … COMMIT`); provider 
 
 ### 8.1 Checkout initiate
 ```
-TX0  aq_idempotency_begin(scope, 'checkout.initiate', key, 'cart:<id>', hash)
-       REPLAY → return stored response · IN_PROGRESS → 409 · CONFLICT → 422 · TAKEOVER → resume from resource (8.2 recovery)
-TX1  re-price (priceCart) → INSERT orders, order_items → aq_reserve_order(order) → [aq_reserve_coupon(…)]
-     → INSERT payment_attempts (CREATING, receipt AQA_<id>) → UPDATE idempotency_keys SET resource_type/resource_id
-     (OUT_OF_STOCK / COUPON_* raise ⇒ ROLLBACK ⇒ aq_idempotency_complete(…, 409|422, body))
-NET  Razorpay POST /v1/orders {amount, currency:'INR', receipt:'AQA_<id>', notes}   (timeout 10 s)
-TX2  UPDATE payment_attempts SET provider_order_id=…, status='CREATED' WHERE id=… AND status IN ('CREATING','PROVIDER_UNKNOWN')
-     → aq_idempotency_complete(…, 201, body, 'order', orderNumber)
+TX0  (outcome, …, resource, token) := aq_idempotency_begin(scope, 'checkout.initiate', key, 'cart:<id>', hash)
+       REPLAY → return stored response · IN_PROGRESS → 409 · CONFLICT → 422
+       NEW → continue with token · TAKEOVER → continue with the NEW token and RESUME the attached resource (below)
+TX1  aq_idempotency_assert_owner(scope, op, key, token)                          -- first statement; raises if superseded
+     re-price (priceCart) → INSERT orders, order_items → aq_reserve_order(order) → [aq_reserve_coupon(…)]
+     → INSERT payment_attempts (CREATING, receipt AQA_<id>) → aq_idempotency_attach(scope, op, key, token, 'order', orderNumber)
+     (OUT_OF_STOCK / COUPON_* raise ⇒ ROLLBACK ⇒ aq_idempotency_complete(scope, op, key, token, 409|422, body, NULL, NULL))
+NET  aq_idempotency_renew(…, token) if slow (false ⇒ stop: a newer owner is in charge)
+     Razorpay POST /v1/orders {amount, currency:'INR', receipt:'AQA_<id>', notes}   (timeout 10 s)
+TX2  aq_idempotency_assert_owner(…, token)
+     UPDATE payment_attempts SET provider_order_id=…, status='CREATED' WHERE id=… AND status IN ('CREATING','PROVIDER_UNKNOWN')
+     → aq_idempotency_complete(scope, op, key, token, 201, body, 'order', orderNumber)
 ```
-Order-creation recovery (no idempotency header exists for Razorpay orders): on timeout the attempt becomes `PROVIDER_UNKNOWN`; the
-reconciler or a retried request looks the order up by `receipt` before creating a new one (architecture.md §7.3).
+**Resume after TAKEOVER** (resource = existing order): never create a second order. Load the order's open attempt. `CREATED` ⇒ return
+its Razorpay details. `CREATING`/`PROVIDER_UNKNOWN` ⇒ look the provider order up by the attempt's **existing** receipt and adopt it;
+create one (same receipt) only if none exists. Order-creation recovery has no provider idempotency header; the receipt is the key
+(architecture.md §7.3). A stale owner that resumes later fails `aq_idempotency_assert_owner` in TX2 and its transaction rolls back;
+if it already created a provider order, that order carries the same receipt and is adopted by the resuming owner's receipt lookup or left unpaid to expire. C10 verifies the database fencing; the provider-side behaviour is not executed (task 4.0).
 
 ### 8.2 Apply a provider payment: verify, webhook and reconciliation share one call
 ```
-NET  GET /v1/payments/{payment_id}                         (provider truth: order_id, amount, currency, status)
+NET  GET /v1/payments/{payment_id}           (provider truth: order_id, amount, currency, status, amount_refunded)
 TX   [worker only] aq_webhook_begin(event, token)           (fenced; false ⇒ stop)
-     outcome := aq_apply_provider_payment(provider_order_id, payment_id, amount, currency, status, captured_at, method, raw, actor)
+     outcome := aq_apply_provider_payment(provider_order_id, payment_id, amount, currency, status, amount_refunded,
+                                          captured_at, method, raw, actor)
      [worker only] aq_webhook_complete(event, token)         (raises LEASE_LOST ⇒ whole TX rolls back)
 ```
-`aq_apply_provider_payment` (§6b) in order: bind via the **stored** attempt (else `UNLINKED`) → lock order → monotonic upsert →
-`rank < 3`: only a first-time `UNPAID → PROCESSING` (affected-row gated) → **gate:** `allocation IS NOT NULL ⇒ DUPLICATE, no side
-effects` → decide allocation under the order lock (`HELD` mismatch · `EXCESS` if another APPLIED payment exists · `APPLIED` ·
-`APPLIED`/`LATE` for expired via `aq_reacquire_order` · `LATE` for cancelled · `HELD` otherwise) → `UPDATE payments SET allocation
-… WHERE allocation IS NULL` (affected-row gate) → side effects for that branch only: order transition (must affect exactly 1 row
-or the TX raises), attempt `PAID`, sold counts, coupon (gated by the redemption transition), cart, history, outbox; or exception +
-automatic refund (`aq_request_refund` with `unallocated_amount`) for `EXCESS`/`LATE`.
+`aq_apply_provider_payment` (§6b) in order: bind via the **stored** attempt (no mapping ⇒ record `UNLINKED`, touch no order) →
+lock order → monotonic upsert (identity never overwritten) → identity check (`CONFLICT`) → **UNLINKED recovery** (one-time, gated) →
+`rank < 3`: only a first-time `UNPAID → PROCESSING` → **gate:** `allocation IS NOT NULL ⇒ DUPLICATE` (plus `RECON_MISMATCH` if the
+provider reports more refunded than ArtQ counted) → **eligibility:** mismatch ⇒ `HELD` · fully refunded ⇒ `VOID` · partially refunded
+⇒ `HELD` → otherwise `EXCESS` if another APPLIED payment exists · `APPLIED` · `APPLIED`/`LATE` for expired via `aq_reacquire_order` ·
+`LATE` for cancelled · `HELD` otherwise → `UPDATE payments SET allocation … WHERE allocation IS NULL` (affected-row gate) → resolve a
+recovered `UNLINKED_PAYMENT` exception → record pre-existing provider refunds once (`PROVIDER_INITIATED`) → side effects for that branch only.
 
 | Outcome | Business side effects |
 |---------|-----------------------|
-| `DUPLICATE`, `NOT_CAPTURED` | none |
+| `DUPLICATE`, `NOT_CAPTURED` | none (an allocated payment may raise `RECON_MISMATCH`) |
 | `AUTHORIZED` | `UNPAID → PROCESSING` once + history |
-| `APPLIED` | order PLACED/PAID, captured_amount, attempt PAID, sold counts, coupon redeemed, cart converted, 2 history rows, `order.placed` event (3 deliveries) |
+| `APPLIED` (incl. after UNLINKED recovery) | order PLACED/PAID, captured_amount, attempt PAID, sold counts, coupon redeemed, cart converted, 2 history rows, `order.placed` event (3 deliveries); recovered `UNLINKED_PAYMENT` resolved |
 | `EXCESS`, `LATE` | exception (deduped), refund REQUESTED + attempt + `refund.requested` delivery, customer notice |
-| `HELD` | exception only |
-| `UNLINKED` | payment row + exception |
+| `VOID` | `PROVIDER_INITIATED` refund (PROCESSED) + payment counters; `REFUNDED_BEFORE_APPLY` (resolved); **no order, inventory, coupon, history or outbox effects** |
+| `HELD` | exception only (partial pre-refund: also a `PROVIDER_INITIATED` refund for the refunded part) |
+| `UNLINKED` | payment row (no order) + `UNLINKED_PAYMENT` exception |
+| `CONFLICT` | `PAYMENT_IDENTITY_CONFLICT` exception only |
 
 ### 8.3 Expire / cancel an unpaid order
 ```
@@ -3409,8 +3589,11 @@ Not yet an `aq_*` function and not covered by the executable checks (task 5.2 co
 
 ### 8.5 Refunds
 ```
-TX   aq_idempotency_begin(staff:<id>, 'refund.create', key, 'order:<id>', hash)
+TX0  (outcome, …, resource, token) := aq_idempotency_begin(staff:<id>, 'refund.create', key, 'order:<number>', hash)
+       TAKEOVER with resource 'refund' ⇒ return that refund (never create another; its attempt key and request are unchanged)
+TX1  aq_idempotency_assert_owner(…, token)
      refund_id := aq_request_refund(order, payment, kind, items, shipping, cod_fee, 0, reason, key, staff)
+     aq_idempotency_attach(…, token, 'refund', refund_id) → aq_idempotency_complete(…, token, 201, body, 'refund', refund_id)
                   -- inserts refund + items, aq_refund_capacity(+1) (raises REFUND_EXCEEDS_CAPACITY:<item|order|payment>),
                   -- creates attempt 1 (key artq-refund-<id>-a1, receipt AQR_<id>_A1, immutable request) + outbox refund.requested
 NET  [refund.send consumer] POST /v1/payments/{id}/refund  headers: X-Refund-Idempotency: <attempt key>  body: <attempt.request>

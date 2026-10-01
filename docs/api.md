@@ -23,7 +23,7 @@
 | Errors | `{ "error": { "code", "message", "details" } }` |
 
 ### 1.1 Error codes
-`VALIDATION_ERROR` 400 · `UNAUTHENTICATED` 401 · `SESSION_INVALID` 401 · `STEP_UP_REQUIRED` 401 · `FORBIDDEN` 403 · `ORIGIN_REJECTED` 403 · `NOT_FOUND` 404 · `VERSION_CONFLICT` 409 · `OUT_OF_STOCK` 409 · `PRICE_CHANGED` 409 · `REQUEST_IN_PROGRESS` 409 · `REFUND_EXCEEDS_CAPACITY` 409 (`details.scope` = `item` (+ `orderItemId`) / `order` / `payment`) · `REFUND_NOT_RETRYABLE` 409 · `REFUND_NOT_CANCELLABLE` 409 · `IDEMPOTENCY_KEY_REUSED` 422 · `COUPON_INVALID` / `COUPON_EXPIRED` / `COUPON_MIN_ORDER` / `COUPON_USAGE_EXCEEDED` / `COUPON_NOT_ELIGIBLE` 422 · `COD_NOT_AVAILABLE` 422 · `PINCODE_NOT_SERVICEABLE` 422 · `SHIPPING_RESTRICTED` 422 · `NOT_PUBLISHABLE` 422 · `INVALID_TRANSITION` 422 · `RETURN_NOT_ALLOWED` 422 · `OTP_INVALID` / `OTP_EXPIRED` / `MFA_INVALID` 422 · `PAYMENT_VERIFICATION_FAILED` 422 · `ACCOUNT_LOCKED` 423 · `RATE_LIMITED` 429 · `PAYMENT_PROVIDER_UNAVAILABLE` 503 · `INTERNAL` 500.
+`VALIDATION_ERROR` 400 · `UNAUTHENTICATED` 401 · `SESSION_INVALID` 401 · `STEP_UP_REQUIRED` 401 · `FORBIDDEN` 403 · `ORIGIN_REJECTED` 403 · `NOT_FOUND` 404 · `VERSION_CONFLICT` 409 · `OUT_OF_STOCK` 409 · `PRICE_CHANGED` 409 · `REQUEST_IN_PROGRESS` 409 · `REQUEST_SUPERSEDED` 409 · `REFUND_EXCEEDS_CAPACITY` 409 (`details.scope` = `item` (+ `orderItemId`) / `order` / `payment`) · `REFUND_NOT_RETRYABLE` 409 · `REFUND_NOT_CANCELLABLE` 409 · `IDEMPOTENCY_KEY_REUSED` 422 · `COUPON_INVALID` / `COUPON_EXPIRED` / `COUPON_MIN_ORDER` / `COUPON_USAGE_EXCEEDED` / `COUPON_NOT_ELIGIBLE` 422 · `COD_NOT_AVAILABLE` 422 · `PINCODE_NOT_SERVICEABLE` 422 · `SHIPPING_RESTRICTED` 422 · `NOT_PUBLISHABLE` 422 · `INVALID_TRANSITION` 422 · `RETURN_NOT_ALLOWED` 422 · `OTP_INVALID` / `OTP_EXPIRED` / `MFA_INVALID` 422 · `PAYMENT_VERIFICATION_FAILED` 422 · `ACCOUNT_LOCKED` 423 · `RATE_LIMITED` 429 · `PAYMENT_PROVIDER_UNAVAILABLE` 503 · `INTERNAL` 500.
 
 ### 1.2 Idempotency (required header `Idempotency-Key: <uuid>` on these operations)
 
@@ -41,11 +41,18 @@ Behaviour (`aq_idempotency_begin`, unique `(scope, operation, key)`):
 
 | Existing record | Target + hash | Outcome | Response |
 |-----------------|---------------|---------|----------|
-| none | n/a | `NEW` | Insert `PROCESSING` (lock 60 s) and execute |
+| none | n/a | `NEW` | Insert `PROCESSING` (lock 60 s) with a fresh **owner token** (generation 1) and execute |
 | `COMPLETED` | same | `REPLAY` | Stored status code + body (header `Idempotent-Replayed: true`) |
 | any | different target **or** different hash | `CONFLICT` | 422 `IDEMPOTENCY_KEY_REUSED` |
 | `PROCESSING`, lock live | same | `IN_PROGRESS` | 409 `REQUEST_IN_PROGRESS`, `Retry-After: 2` |
-| `PROCESSING`, lock expired (crash) | same | `TAKEOVER` | **Resume** from the referenced resource (e.g. adopt the existing order/attempt/refund) instead of re-executing |
+| `PROCESSING`, lock expired (crash or stall) | same | `TAKEOVER` | Fresh owner token, generation + 1; **resume** from the attached resource (existing order/attempt/refund) instead of re-executing |
+
+**Ownership fencing.** Only the current owner can act for a key: every transaction the request runs starts with
+`aq_idempotency_assert_owner(scope, operation, key, token)`, and attaching the resource, renewing the lease (during slow provider
+calls) and completing all require the token. When an earlier request resumes after a takeover, its database work rolls back
+(`IDEMPOTENCY_OWNERSHIP_LOST`, internal) and the API answers that request with **409 `REQUEST_SUPERSEDED`**. The client simply
+retries with the same key and receives the new owner's response (`REPLAY`) or `REQUEST_IN_PROGRESS`. Provider idempotency (refund
+attempt keys, order receipts) is stored with the resource, so resuming never changes it.
 
 Records expire after 24 h. Business-level dedupe also applies: at most one `PENDING_PAYMENT` order per cart, one open payment attempt per order, refund `idempotency_key` unique per order. Provider-facing idempotency is separate: refund attempts carry their own `X-Refund-Idempotency` key (architecture.md §10.2).
 
@@ -204,7 +211,7 @@ Return photos are uploaded under the order routes so the order-scoped cookie (`P
 |--------|------|-------------|
 | POST | `/checkout/quote` | `{shippingAddressId | shippingAddress, paymentMethod}` → `CartView` + `codAvailable`, `codReason?` |
 | POST | `/checkout/initiate` | **Idempotency-Key required.** Creates or returns the order (below) |
-| POST | `/checkout/verify` | `{orderNumber, razorpayPaymentId, razorpaySignature}`. **`razorpay_order_id` from the client is ignored**: the server checks the signature against the stored provider order id, fetches the payment from Razorpay and calls the same `aq_apply_provider_payment` used by the webhook and reconciler. Response `200 {status:'PLACED'}` (also when the payment was already applied by the webhook) / `202 {status:'PROCESSING'}` (authorized, or provider unreachable) / `200 {status:'REVIEW'}` (held for amount mismatch) / `422 PAYMENT_VERIFICATION_FAILED` |
+| POST | `/checkout/verify` | `{orderNumber, razorpayPaymentId, razorpaySignature}`. **`razorpay_order_id` from the client is ignored**: the server checks the signature against the stored provider order id, fetches the payment from Razorpay and calls the same `aq_apply_provider_payment` used by the webhook and reconciler. Response `200 {status:'PLACED'}` (also when the payment was already applied by the webhook) / `202 {status:'PROCESSING'}` (authorized, provider unreachable, or recorded `UNLINKED` because the provider order mapping is not saved yet; reconciliation recovers it) / `200 {status:'REVIEW'}` (held: amount/currency mismatch, partially refunded before apply, or identity conflict) / `200 {status:'PAYMENT_REFUNDED'}` (the payment was already fully refunded at the provider: the order is not placed) / `422 PAYMENT_VERIFICATION_FAILED` |
 | GET | `/checkout/status/:orderNumber` | `{status, paymentStatus, displayStatus}` for polling; authorized by the cart cookie that created the order or the owner's Bearer (guests with order access use `GET /orders/:orderNumber`) |
 | POST | `/checkout/payment-failed` | `{orderNumber, razorpayPaymentId?, error}`: informational log only, never changes state by itself |
 | POST | `/webhooks/razorpay` | Signature on raw body; inbox semantics (architecture.md §8.1) |
