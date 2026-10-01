@@ -2,6 +2,7 @@ import { PrismaClient } from '@prisma/client';
 import { Redis } from 'ioredis';
 import { pino } from 'pino';
 import { createApp } from './app.js';
+import { createAdminRouter } from './admin/router.js';
 import { adminAuthRouter } from './auth/admin-routes.js';
 import { authRouter } from './auth/routes.js';
 import { DEFAULT_AUTH_TIMINGS, AuthService } from './auth/service.js';
@@ -31,6 +32,9 @@ const service = new AuthService(prisma, cache, {
 const limiter = new RedisRateLimiter(redis);
 const onRateLimitError = (err: unknown) => log.warn({ err: String(err) }, 'rate limiter unavailable; request allowed');
 
+// Admin feature modules (Phase 2+) register on admin.routes; auth, rate limit and audit are wired by the factory.
+const admin = createAdminRouter({ prisma, cache, jwt, limiter, onRateLimitError, log, hasRecentStepUp: (sid) => service.hasRecentStepUp(sid) });
+
 const app = createApp({
   version: env.APP_VERSION,
   origins: { storefront: env.STOREFRONT_ORIGINS, admin: env.ADMIN_ORIGINS },
@@ -41,6 +45,7 @@ const app = createApp({
   routes: [
     authRouter({ prisma, cache, jwt, service, env: env.NODE_ENV, refreshMaxAgeS: DEFAULT_AUTH_TIMINGS.refreshIdleS, limiter, onRateLimitError }),
     adminAuthRouter({ prisma, cache, jwt, service, env: env.NODE_ENV, limiter, onRateLimitError }),
+    admin.router,
   ],
 });
 

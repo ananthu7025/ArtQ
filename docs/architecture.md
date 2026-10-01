@@ -296,7 +296,7 @@ sequenceDiagram
 - **Separation:** admin sessions (`audience=ADMIN`) use a separate cookie and route prefix. Staff accounts cannot use storefront login to obtain admin tokens, and storefront tokens are rejected by `/v1/admin/*`.
 
 ### 5.9 Permissions
-Permissions are declared in `packages/shared/permissions.ts` and checked by `requirePermission()`. **Each endpoint's request schema accepts only the fields its permission covers.** For example, the inventory endpoint's schema has no price fields, and unknown keys are rejected.
+Permissions are declared in `packages/shared/src/permissions.ts` and checked by `admin.can(permission)` from `createAdminRouter` (`apps/api/src/admin/router.ts`), which also authenticates every `/v1/admin/*` feature route, applies the per-admin rate limit, audits rejected requests and reports successful mutations that wrote no audit entry. **Each endpoint's request schema accepts only the fields its permission covers.** For example, the inventory endpoint's schema has no price fields, and unknown keys are rejected.
 
 | Permission | What it allows | STAFF | ADMIN | SUPER_ADMIN |
 |-----------|----------------|:-----:|:-----:|:-----------:|

@@ -1,5 +1,6 @@
 // /v1/admin/auth/* and GET /v1/admin/me (api.md §4.1). Email + password; MFA is deferred (owner decision 2026-10-02),
 // so step-up for sensitive actions is a password re-check. Only ADMIN_ORIGINS may call /v1/admin/* (createApp).
+import { permissionsFor } from '@artq/shared';
 import { Router, type Request, type RequestHandler, type Response } from 'express';
 import { z } from 'zod';
 import { AppError } from '../lib/errors.js';
@@ -71,7 +72,8 @@ export function adminAuthRouter(d: AdminAuthRouterDeps): Router {
     res.set('Cache-Control', 'no-store').json(await d.service.adminStepUp(req.auth!.sessionId, req.auth!.userId, req.body.password));
   });
   r.get('/admin/me', auth, perUser, async (req, res) => {
-    res.set('Cache-Control', 'private, no-store').json({ user: await d.service.me(req.auth!.userId) });
+    // permissions[] only drives what the SPA shows; every endpoint enforces its own permission server-side.
+    res.set('Cache-Control', 'private, no-store').json({ user: await d.service.me(req.auth!.userId), permissions: permissionsFor(req.auth!.role) });
   });
   return r;
 }

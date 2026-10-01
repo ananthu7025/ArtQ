@@ -6,3 +6,4 @@ export * from './size.js';
 export * from './slug.js';
 export * from './tax.js';
 export * from './settings.js';
+export * from './permissions.js';
