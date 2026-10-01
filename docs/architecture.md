@@ -262,6 +262,11 @@ SMS/WhatsApp are post-launch (DLT registration needed). At launch:
 - Email change always requires an OTP to the **new** email plus a notification to the old one; then `aq_revoke_all_sessions` (both versions++).
 
 ### 5.8 Admin authentication with mandatory MFA
+> **Status 2026-10-02: MFA deferred by the owner.** Admin login is currently email + password (staff roles only, shared
+> lockout, separate `ADMIN` session audience and cookie, 5-min access token, 12 h idle / 7 d absolute), and **step-up is a
+> password re-check** recorded in `sessions.mfa_verified_at` (10 minutes, per session). The design below is the target and
+> is tracked as tasklist 1.6b. Risk accepted until then: a stolen staff password gives admin access without a second factor.
+
 All staff roles (`STAFF`, `ADMIN`, `SUPER_ADMIN`) require TOTP. **No admin access or refresh token is issued before the MFA step completes.**
 
 ```mermaid

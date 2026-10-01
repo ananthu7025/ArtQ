@@ -3,7 +3,8 @@
 // a revoke can therefore never re-populate the cache with a stale "valid" entry after it.
 import type { Redis } from 'ioredis';
 
-export type CachedSession = { uid: number; aud: 'STOREFRONT' | 'ADMIN'; ver: number };
+/** `role` is safe to cache: a role change bumps admin_auth_version and tombstones the user's admin sessions. */
+export type CachedSession = { uid: number; aud: 'STOREFRONT' | 'ADMIN'; ver: number; role?: string };
 export type CacheLookup = { state: 'valid'; session: CachedSession } | { state: 'revoked' } | { state: 'miss' };
 
 export interface SessionCache {

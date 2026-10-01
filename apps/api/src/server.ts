@@ -2,6 +2,7 @@ import { PrismaClient } from '@prisma/client';
 import { Redis } from 'ioredis';
 import { pino } from 'pino';
 import { createApp } from './app.js';
+import { adminAuthRouter } from './auth/admin-routes.js';
 import { authRouter } from './auth/routes.js';
 import { DEFAULT_AUTH_TIMINGS, AuthService } from './auth/service.js';
 import { RedisSessionCache } from './auth/session-cache.js';
@@ -37,7 +38,10 @@ const app = createApp({
   readiness: makeReadinessChecks(prisma, redis),
   rateLimiter: limiter,
   onRateLimitError,
-  routes: [authRouter({ prisma, cache, jwt, service, env: env.NODE_ENV, refreshMaxAgeS: DEFAULT_AUTH_TIMINGS.refreshIdleS, limiter, onRateLimitError })],
+  routes: [
+    authRouter({ prisma, cache, jwt, service, env: env.NODE_ENV, refreshMaxAgeS: DEFAULT_AUTH_TIMINGS.refreshIdleS, limiter, onRateLimitError }),
+    adminAuthRouter({ prisma, cache, jwt, service, env: env.NODE_ENV, limiter, onRateLimitError }),
+  ],
 });
 
 const server = app.listen(env.PORT, () => log.info({ port: env.PORT }, 'api listening'));

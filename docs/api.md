@@ -245,17 +245,19 @@ Return photos are uploaded under the order routes so the order-scoped cookie (`P
 
 ## 4. Admin endpoints (`/admin/*`; audience admin; permission in brackets)
 
-### 4.1 Admin auth & MFA
+### 4.1 Admin auth (MFA deferred)
+**Status 2026-10-02:** the owner deferred MFA. Until it ships, admin login is email + password and step-up is a password
+re-check. The MFA endpoints below the table remain the target design (tasklist 1.6b).
+
 | Method | Path | Notes |
 |--------|------|-------|
-| POST | `/admin/auth/login` | `{email, password}` → `{challengeId, type:'MFA_LOGIN'|'MFA_ENROLL'}`. **Never returns tokens** |
-| POST | `/admin/auth/mfa/enroll/start` | `{challengeId}` → `{otpauthUri, qrSvg}` |
-| POST | `/admin/auth/mfa/enroll/confirm` | `{challengeId, code}` → `{recoveryCodes[10], accessToken}` + admin cookie |
-| POST | `/admin/auth/mfa/verify` | `{challengeId, code}` or `{challengeId, recoveryCode}` → `{accessToken}` + cookie |
-| POST | `/admin/auth/refresh` · `/admin/auth/logout` | Cookie (`Path=/v1/admin/auth`), Origin `https://admin.artq.in` |
-| POST | `/admin/auth/step-up` | `{code}` → sets `mfa_verified_at` |
-| POST | `/admin/me/recovery-codes/regenerate` | Step-up |
-| GET | `/admin/me` | `{user, permissions[]}`: the SPA hides navigation and actions without permission, and the server enforces |
+| POST | `/admin/auth/login` | `{email, password}` → `{accessToken, user}` + admin cookie. Staff roles only; a customer account, wrong password and unknown email all return the same 401 `INVALID_CREDENTIALS`; shared lockout (`ACCOUNT_LOCKED`); `ACCOUNT_BLOCKED`. Audited (`admin.login`) |
+| POST | `/admin/auth/refresh` · `/admin/auth/logout` | Cookie `__Secure-aq_admin_rt` (`Path=/v1/admin/auth`, 12 h idle / 7 d absolute), Origin from `ADMIN_ORIGINS`; same rotation, grace and reuse rules as the storefront |
+| POST | `/admin/auth/logout-all` | Bearer (admin) → revoke all sessions |
+| POST | `/admin/auth/step-up` | Bearer (admin), `{password}` → `{stepUpUntil}` (10 min, this session only); wrong passwords count toward the lockout. Audited (`admin.step_up`) |
+| GET | `/admin/me` | `{user}` (task 1.7 adds `permissions[]`): the SPA hides navigation and actions without permission, and the server enforces |
+
+Target MFA endpoints (deferred): `POST /admin/auth/login` → `{challengeId, type:'MFA_LOGIN'|'MFA_ENROLL'}` (no tokens); `POST /admin/auth/mfa/enroll/start` `{challengeId}` → `{otpauthUri, qrSvg}`; `POST /admin/auth/mfa/enroll/confirm` `{challengeId, code}` → `{recoveryCodes[10], accessToken}` + cookie; `POST /admin/auth/mfa/verify` `{challengeId, code | recoveryCode}` → `{accessToken}` + cookie; step-up `{code}`; `POST /admin/me/recovery-codes/regenerate` (step-up).
 
 ### 4.2 Dashboard & search
 `GET /admin/dashboard?range=today|7d|30d` [dashboard:read] → `{revenue, orders, aov, newCustomers, salesSeries[], ordersByStatus, pendingActions:{toConfirm, toPack, toShip, returnsToDecide, openExceptions, restockRequests, messages}, lowStock[], topProducts[]}`.

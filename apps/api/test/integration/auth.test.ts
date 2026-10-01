@@ -208,6 +208,44 @@ describe('login with password', () => {
   });
 });
 
+describe('guest orders join the account at login (architecture.md §5.6)', () => {
+  const guestOrder = async (email: string) => {
+    const cat = await catalog(prisma, [[{ price: 1000, onHand: 10 }]]);
+    const o = await tx(prisma, (t) => makeOrder(t, { lines: [{ variantId: cat.products[0]!.variantIds[0]!, qty: 1 }], reserve: false }));
+    await prisma.$executeRaw`UPDATE orders SET contact_email = ${email} WHERE id = ${o.orderId}`;
+    return o.orderId;
+  };
+
+  it('a verified customer who checked out as a guest sees the order after a password login', async () => {
+    const a = await account();
+    const orderId = await guestOrder(a.email.toUpperCase());
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: orderId } })).userId).toBeNull();
+    expect((await post('/auth/login', { email: a.email, password: PASSWORD })).status).toBe(200);
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: orderId } })).userId).toBe(a.userId);
+  });
+
+  it('… and after an email-code login', async () => {
+    const a = await account();
+    const orderId = await guestOrder(a.email);
+    await post('/auth/otp/request', { email: a.email, purpose: 'LOGIN' });
+    expect((await post('/auth/otp/verify', { email: a.email, purpose: 'LOGIN', code: await otpOf(a.email) })).status).toBe(200);
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: orderId } })).userId).toBe(a.userId);
+  });
+
+  it('a failed login links nothing; orders already owned by someone else are never moved', async () => {
+    const a = await account();
+    const other = await account();
+    const orderId = await guestOrder(a.email);
+    const owned = await guestOrder(a.email);
+    await prisma.order.update({ where: { id: owned }, data: { userId: other.userId } });
+    await post('/auth/login', { email: a.email, password: 'wrong-password' });
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: orderId } })).userId).toBeNull();
+    await post('/auth/login', { email: a.email, password: PASSWORD });
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: orderId } })).userId).toBe(a.userId);
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: owned } })).userId).toBe(other.userId);
+  });
+});
+
 describe('login with email OTP', () => {
   it('always answers {sent:true}; only active accounts get a code; the code logs in once', async () => {
     const a = await account();

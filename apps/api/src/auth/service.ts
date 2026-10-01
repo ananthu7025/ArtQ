@@ -1,4 +1,6 @@
-// Customer authentication (architecture.md §5.1–5.7, api.md §3.4). Storefront audience only; admin auth is task 1.6.
+// Authentication for both audiences (architecture.md §5.1–5.8, api.md §3.4 / §4.1): storefront customers and admin staff.
+// Admin login is email + password (MFA deferred by the owner, 2026-10-02); sensitive admin actions require a recent
+// password re-check ("step-up", recorded in sessions.mfa_verified_at).
 // PostgreSQL is the source of truth; emails are written to the outbox in the same transaction (delivered by task 1.8).
 import type { Prisma, PrismaClient, User } from '@prisma/client';
 import * as fn from '../db/functions.js';
@@ -24,12 +26,20 @@ export type AuthConfig = {
   setPasswordTtlS: number;     // 7 d
   lockoutThreshold: number;    // 5
   lockoutS: number;            // 900
+  adminAccessTtlS: number;     // 300
+  adminIdleS: number;          // 12 h
+  adminAbsoluteS: number;      // 7 d
+  stepUpWindowS: number;       // 600
 };
 
 export const DEFAULT_AUTH_TIMINGS = {
   accessTtlS: 600, refreshIdleS: 30 * 86_400, sessionAbsoluteS: 90 * 86_400, graceS: 30, otpTtlS: 600, otpMaxAttempts: 5,
   otpCooldownS: 30, otpPerTargetPerHour: 5, resetTtlS: 1800, setPasswordTtlS: 7 * 86_400, lockoutThreshold: 5, lockoutS: 900,
+  adminAccessTtlS: 300, adminIdleS: 12 * 3600, adminAbsoluteS: 7 * 86_400, stepUpWindowS: 600,
 } as const;
+
+export type SessionAudience = 'STOREFRONT' | 'ADMIN';
+export const STAFF_ROLES: readonly User['role'][] = ['STAFF', 'ADMIN', 'SUPER_ADMIN'];
 
 export type ClientMeta = { ip: string | null; userAgent: string | null };
 export type UserView = { id: number; name: string | null; email: string; emailVerified: boolean; phone: string | null; role: User['role']; marketingOptIn: boolean };
@@ -85,35 +95,64 @@ export class AuthService {
       if (!user || user.status !== 'PENDING_VERIFICATION') throw new AppError(422, 'OTP_INVALID', 'The code is not valid');
       const active = await tx.user.update({ where: { id: user.id }, data: { status: 'ACTIVE', emailVerifiedAt: new Date() } });
       await this.linkGuestOrders(tx, active);
-      return this.startSession(tx, active, meta);
+      return this.startSession(tx, active, meta, 'STOREFRONT');
     });
   }
 
   // ── Login ────────────────────────────────────────────────────────────────
 
   async login(input: { email: string; password: string }, meta: ClientMeta): Promise<Issued> {
-    const email = normaliseEmail(input.email);
-    const user = await this.liveUser(this.prisma, email);
-    if (!user || !user.passwordHash) {
-      await verifyPassword(await this.dummy(), input.password);      // same cost whether or not the account exists
-      throw new AppError(401, 'INVALID_CREDENTIALS', 'Email or password is incorrect');
-    }
-    if (user.lockedUntil && user.lockedUntil > new Date()) throw this.locked(user.lockedUntil);
-    if (!(await verifyPassword(user.passwordHash, input.password))) {
-      const [u] = await this.prisma.$queryRaw<{ locked_until: Date | null }[]>`
-        UPDATE users SET
-          locked_until = CASE WHEN failed_login_count + 1 >= ${this.cfg.lockoutThreshold}::int THEN now() + make_interval(secs => ${this.cfg.lockoutS}::int) ELSE locked_until END,
-          failed_login_count = CASE WHEN failed_login_count + 1 >= ${this.cfg.lockoutThreshold}::int THEN 0 ELSE failed_login_count + 1 END
-        WHERE id = ${user.id} RETURNING locked_until`;
-      if (u?.locked_until && u.locked_until > new Date()) throw this.locked(u.locked_until);
-      throw new AppError(401, 'INVALID_CREDENTIALS', 'Email or password is incorrect');
-    }
+    const user = await this.checkPassword(normaliseEmail(input.email), input.password);
     if (user.status === 'PENDING_VERIFICATION') throw new AppError(403, 'NOT_VERIFIED', 'Verify your email to continue');
     if (user.status !== 'ACTIVE') throw new AppError(403, 'ACCOUNT_BLOCKED', 'This account is disabled');
     return this.prisma.$transaction(async (tx) => {
       const u = await tx.user.update({ where: { id: user.id }, data: { failedLoginCount: 0, lockedUntil: null, lastLoginAt: new Date() } });
-      return this.startSession(tx, u, meta);
+      await this.linkGuestOrders(tx, u);       // a verified account holder who checked out as a guest (architecture.md §5.6)
+      return this.startSession(tx, u, meta, 'STOREFRONT');
     }, TX);
+  }
+
+  /**
+   * Admin panel login (api.md §4.1): staff roles only, separate session audience and cookie. A non-staff account gets
+   * the same INVALID_CREDENTIALS as a wrong password, so the admin login never reveals who has an account.
+   */
+  async adminLogin(input: { email: string; password: string }, meta: ClientMeta): Promise<Issued> {
+    const user = await this.checkPassword(normaliseEmail(input.email), input.password);
+    if (!STAFF_ROLES.includes(user.role) || user.status === 'PENDING_VERIFICATION') {
+      throw new AppError(401, 'INVALID_CREDENTIALS', 'Email or password is incorrect');
+    }
+    if (user.status !== 'ACTIVE') throw new AppError(403, 'ACCOUNT_BLOCKED', 'This account is disabled');
+    return this.prisma.$transaction(async (tx) => {
+      const u = await tx.user.update({ where: { id: user.id }, data: { failedLoginCount: 0, lockedUntil: null, lastLoginAt: new Date() } });
+      await tx.auditLog.create({ data: { actorId: u.id, action: 'admin.login', entity: 'user', entityId: String(u.id), ip: meta.ip, userAgent: meta.userAgent?.slice(0, 500) ?? null } });
+      return this.startSession(tx, u, meta, 'ADMIN');
+    }, TX);
+  }
+
+  /**
+   * Step-up for sensitive admin actions (architecture.md §5.8, password instead of TOTP while MFA is deferred):
+   * re-entering the password marks the session as recently re-authenticated. Wrong passwords count toward the lockout.
+   */
+  async adminStepUp(sessionId: string, userId: number, password: string): Promise<{ stepUpUntil: string }> {
+    const user = await this.prisma.user.findUniqueOrThrow({ where: { id: userId } });
+    await this.checkPassword(user.email, password);
+    const [r] = await this.prisma.$queryRaw<{ until: Date }[]>`
+      UPDATE sessions SET mfa_verified_at = now() WHERE id = ${sessionId}::uuid AND audience = 'ADMIN' AND revoked_at IS NULL
+      RETURNING now() + make_interval(secs => ${this.cfg.stepUpWindowS}::int) AS until`;
+    if (!r) throw new AppError(401, 'SESSION_INVALID', 'Your session has ended. Please log in again.');
+    await this.prisma.auditLog.create({ data: { actorId: userId, sessionId, action: 'admin.step_up', entity: 'session', entityId: sessionId } });
+    return { stepUpUntil: r.until.toISOString() };
+  }
+
+  /** Role change (architecture.md §5.4): admin sessions end at once (DB + cache); storefront sessions stay valid. */
+  async changeRole(userId: number, role: User['role']): Promise<void> {
+    const sids = await this.prisma.$transaction(async (tx) => {
+      const live = await tx.session.findMany({ where: { userId, audience: 'ADMIN', revokedAt: null }, select: { id: true } });
+      await fn.changeRole(tx, userId, role);
+      await tx.$executeRaw`UPDATE refresh_tokens SET status = 'REVOKED' WHERE status <> 'REVOKED' AND session_id IN (SELECT id FROM sessions WHERE user_id = ${userId} AND audience = 'ADMIN')`;
+      return live.map((s) => s.id);
+    }, TX);
+    await this.cache.revoke(sids);
   }
 
   /** Always `{sent:true, resendAfter}`; a code is only created for an ACTIVE account and within the per-target limits. */
@@ -133,13 +172,15 @@ export class AuthService {
       const user = await this.liveUser(tx, email);
       if (!user || user.status !== 'ACTIVE') throw new AppError(422, 'OTP_INVALID', 'The code is not valid');
       const u = await tx.user.update({ where: { id: user.id }, data: { failedLoginCount: 0, lockedUntil: null, lastLoginAt: new Date() } });
-      return this.startSession(tx, u, meta);
+      await this.linkGuestOrders(tx, u);
+      return this.startSession(tx, u, meta, 'STOREFRONT');
     });
   }
 
   // ── Refresh (architecture.md §5.2) ───────────────────────────────────────
 
-  async refresh(refreshToken: string | undefined): Promise<RefreshOutcome> {
+  async refresh(refreshToken: string | undefined, audience: SessionAudience = 'STOREFRONT'): Promise<RefreshOutcome> {
+    const t = this.timings(audience);
     if (!refreshToken) return { ok: false, reason: 'UNKNOWN' };
     const revoked: string[] = [];
     const out = await this.prisma.$transaction(async (tx): Promise<RefreshOutcome> => {
@@ -155,7 +196,7 @@ export class AuthService {
                EXISTS (SELECT 1 FROM refresh_tokens c WHERE c.parent_id = rt.id AND c.status = 'ACTIVE') AS successor_active
           FROM refresh_tokens rt JOIN sessions s ON s.id = rt.session_id WHERE rt.id = ${rt.id}::uuid`;
       if (!s) return { ok: false, reason: 'UNKNOWN' };
-      if (s.audience !== 'STOREFRONT') return { ok: false, reason: 'WRONG_AUDIENCE' };
+      if (s.audience !== audience) return { ok: false, reason: 'WRONG_AUDIENCE' };
       if (!s.valid || rt.status === 'REVOKED') {
         await this.revokeSession(tx, rt.session_id, 'INVALID');
         revoked.push(rt.session_id);
@@ -168,15 +209,15 @@ export class AuthService {
         await tx.$executeRaw`UPDATE refresh_tokens SET status = 'ROTATED', rotated_at = now() WHERE id = ${rt.id}::uuid`;
         await tx.$executeRaw`
           WITH s AS (UPDATE sessions SET last_used_at = now(),
-                       idle_expires_at = least(now() + make_interval(secs => ${this.cfg.refreshIdleS}::int), absolute_expires_at)
+                       idle_expires_at = least(now() + make_interval(secs => ${t.idleS}::int), absolute_expires_at)
                      WHERE id = ${rt.session_id}::uuid RETURNING idle_expires_at)
           INSERT INTO refresh_tokens (session_id, token_hash, parent_id, expires_at)
           SELECT ${rt.session_id}::uuid, ${sha256(next)}, ${rt.id}::uuid, idle_expires_at FROM s`;
-        return { ok: true, accessToken: await this.access(user, rt.session_id, s.auth_version), refreshToken: next, user: userView(user) };
+        return { ok: true, accessToken: await this.access(user, rt.session_id, s.auth_version, audience), refreshToken: next, user: userView(user) };
       }
       // ROTATED: a second tab inside the grace window gets an access token but no new refresh token.
       if (s.in_grace && s.successor_active) {
-        return { ok: true, accessToken: await this.access(user, rt.session_id, s.auth_version), refreshToken: null, user: userView(user) };
+        return { ok: true, accessToken: await this.access(user, rt.session_id, s.auth_version, audience), refreshToken: null, user: userView(user) };
       }
       // Reuse of a rotated token outside the grace window: assume theft.
       await this.revokeSession(tx, rt.session_id, 'REUSE_DETECTED');
@@ -191,11 +232,11 @@ export class AuthService {
 
   // ── Logout ───────────────────────────────────────────────────────────────
 
-  async logout(refreshToken: string | undefined): Promise<void> {
+  async logout(refreshToken: string | undefined, audience: SessionAudience = 'STOREFRONT'): Promise<void> {
     if (!refreshToken) return;
     const sid = await this.prisma.$transaction(async (tx) => {
       const rt = await tx.refreshToken.findUnique({ where: { tokenHash: sha256(refreshToken) }, include: { session: true } });
-      if (!rt || rt.session.audience !== 'STOREFRONT') return null;
+      if (!rt || rt.session.audience !== audience) return null;
       await this.revokeSession(tx, rt.sessionId, 'LOGOUT');
       return rt.sessionId;
     }, TX);
@@ -265,7 +306,7 @@ export class AuthService {
         ? await tx.user.update({ where: { id: existing.id }, data: { passwordHash, status: 'ACTIVE', emailVerifiedAt: existing.emailVerifiedAt ?? new Date() } })
         : await tx.user.create({ data: { email, passwordHash, status: 'ACTIVE', emailVerifiedAt: new Date() } });
       await this.linkGuestOrders(tx, user);
-      return this.startSession(tx, user, meta);
+      return this.startSession(tx, user, meta, 'STOREFRONT');
     }, TX);
   }
 
@@ -292,20 +333,60 @@ export class AuthService {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('auth:' || ${email}))`;
   }
 
-  private access(user: User, sid: string, ver: number) {
-    return signAccessToken(this.cfg.jwt, { sub: String(user.id), sid, aud: 'storefront', ver }, this.cfg.accessTtlS);
+  private timings(audience: SessionAudience) {
+    return audience === 'ADMIN'
+      ? { accessTtlS: this.cfg.adminAccessTtlS, idleS: this.cfg.adminIdleS, absoluteS: this.cfg.adminAbsoluteS }
+      : { accessTtlS: this.cfg.accessTtlS, idleS: this.cfg.refreshIdleS, absoluteS: this.cfg.sessionAbsoluteS };
   }
 
-  private async startSession(tx: Tx, user: User, meta: ClientMeta): Promise<Issued> {
+  /** Lifetime in seconds of the refresh cookie for an audience (its idle expiry). */
+  refreshCookieMaxAge(audience: SessionAudience): number {
+    return this.timings(audience).idleS;
+  }
+
+  private access(user: User, sid: string, ver: number, audience: SessionAudience) {
+    return signAccessToken(this.cfg.jwt, { sub: String(user.id), sid, aud: audience === 'ADMIN' ? 'admin' : 'storefront', ver }, this.timings(audience).accessTtlS);
+  }
+
+  /** Verifies email + password with the shared lockout (5 failures → 15 min). Returns the live user; status is the caller's check. */
+  private async checkPassword(email: string, password: string): Promise<User> {
+    const user = await this.liveUser(this.prisma, email);
+    if (!user || !user.passwordHash) {
+      await verifyPassword(await this.dummy(), password);      // same cost whether or not the account exists
+      throw new AppError(401, 'INVALID_CREDENTIALS', 'Email or password is incorrect');
+    }
+    if (user.lockedUntil && user.lockedUntil > new Date()) throw this.locked(user.lockedUntil);
+    if (!(await verifyPassword(user.passwordHash, password))) {
+      const [u] = await this.prisma.$queryRaw<{ locked_until: Date | null }[]>`
+        UPDATE users SET
+          locked_until = CASE WHEN failed_login_count + 1 >= ${this.cfg.lockoutThreshold}::int THEN now() + make_interval(secs => ${this.cfg.lockoutS}::int) ELSE locked_until END,
+          failed_login_count = CASE WHEN failed_login_count + 1 >= ${this.cfg.lockoutThreshold}::int THEN 0 ELSE failed_login_count + 1 END
+        WHERE id = ${user.id} RETURNING locked_until`;
+      if (u?.locked_until && u.locked_until > new Date()) throw this.locked(u.locked_until);
+      throw new AppError(401, 'INVALID_CREDENTIALS', 'Email or password is incorrect');
+    }
+    return user;
+  }
+
+  private async startSession(tx: Tx, user: User, meta: ClientMeta, audience: SessionAudience): Promise<Issued> {
     const refreshToken = randomToken();
+    const t = this.timings(audience);
+    const version = audience === 'ADMIN' ? user.adminAuthVersion : user.storefrontAuthVersion;
     const [s] = await tx.$queryRaw<{ id: string; auth_version: number }[]>`
       WITH s AS (INSERT INTO sessions (user_id, audience, auth_version, ip, user_agent, idle_expires_at, absolute_expires_at)
-                 VALUES (${user.id}, 'STOREFRONT', ${user.storefrontAuthVersion}, ${meta.ip}::inet, ${meta.userAgent?.slice(0, 500) ?? null},
-                         now() + make_interval(secs => ${this.cfg.refreshIdleS}::int), now() + make_interval(secs => ${this.cfg.sessionAbsoluteS}::int))
+                 VALUES (${user.id}, ${audience}::"SessionAudience", ${version}, ${meta.ip}::inet, ${meta.userAgent?.slice(0, 500) ?? null},
+                         now() + make_interval(secs => ${t.idleS}::int), now() + make_interval(secs => ${t.absoluteS}::int))
                  RETURNING id, auth_version, idle_expires_at)
-      , t AS (INSERT INTO refresh_tokens (session_id, token_hash, expires_at) SELECT id, ${sha256(refreshToken)}, idle_expires_at FROM s)
+      , r AS (INSERT INTO refresh_tokens (session_id, token_hash, expires_at) SELECT id, ${sha256(refreshToken)}, idle_expires_at FROM s)
       SELECT id::text, auth_version FROM s`;
-    return { accessToken: await this.access(user, s!.id, s!.auth_version), refreshToken, user: userView(user) };
+    return { accessToken: await this.access(user, s!.id, s!.auth_version, audience), refreshToken, user: userView(user) };
+  }
+
+  /** Whether the admin session re-entered its password within the step-up window. */
+  async hasRecentStepUp(sessionId: string): Promise<boolean> {
+    const [r] = await this.prisma.$queryRaw<{ ok: boolean }[]>`
+      SELECT coalesce(mfa_verified_at > now() - make_interval(secs => ${this.cfg.stepUpWindowS}::int), false) AS ok FROM sessions WHERE id = ${sessionId}::uuid`;
+    return r?.ok ?? false;
   }
 
   private async revokeSession(tx: Tx, sid: string, reason: string) {
@@ -361,6 +442,7 @@ export class AuthService {
 
   /** Verified-email linking (architecture.md §5.6): guest orders with this contact email join the account. */
   private async linkGuestOrders(tx: Tx, user: User) {
+    if (!user.emailVerifiedAt) return;                       // only a proven mailbox may claim orders
     const linked = await tx.$queryRaw<{ id: number }[]>`
       UPDATE orders SET user_id = ${user.id}, contact_email_verified_at = coalesce(contact_email_verified_at, now())
        WHERE user_id IS NULL AND contact_email = ${user.email}::citext RETURNING id`;
