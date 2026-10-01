@@ -1,0 +1,17 @@
+circlename,regionname,divisionname,officename,pincode,officetype,delivery,district,statename,latitude,longitude
+Kerala Circle,Kochi Region,Ernakulam Division,ERNAKULAM H.O,682011,H.O,Delivery,ERNAKULAM,KERALA,NA,NA
+Kerala Circle,Kochi Region,Ernakulam Division,KADAVANTHRA S.O,682020,S.O,Delivery,ERNAKULAM,KERALA,NA,NA
+Kerala Circle,Kochi Region,Ernakulam Division,PANAMPILLY NAGAR S.O,682036,S.O,Delivery,ERNAKULAM,KERALA,NA,NA
+Kerala Circle,Trivandrum Region,Trivandrum North Division,THIRUVANANTHAPURAM G.P.O,695001,H.O,Delivery,THIRUVANANTHAPURAM,KERALA,NA,NA
+Karnataka Circle,Bangalore HQ Region,Bangalore GPO Division,BANGALORE G.P.O.,560001,H.O,Delivery,BENGALURU,KARNATAKA,NA,NA
+Tamilnadu Circle,Chennai City Region,Chennai GPO Division,CHENNAI G.P.O.,600001,H.O,Delivery,CHENNAI,TAMIL NADU,NA,NA
+Telangana Circle,Hyderabad City Region,Hyderabad GPO Division,HYDERABAD G.P.O.,500001,H.O,Delivery,HYDERABAD,TELANGANA,NA,NA
+Maharashtra Circle,Mumbai Region,Mumbai GPO Division,MUMBAI G.P.O.,400001,H.O,Delivery,MUMBAI,MAHARASHTRA,NA,NA
+Delhi Circle,Delhi Region,New Delhi GPO Division,NEW DELHI G.P.O.,110001,H.O,Delivery,NEW DELHI,DELHI,NA,NA
+Assam Circle,Assam Region,Guwahati Division,GUWAHATI G.P.O.,781001,H.O,Delivery,KAMRUP METROPOLITAN,ASSAM,NA,NA
+Jammu Kashmir Circle,Kashmir Region,Srinagar Division,SRINAGAR G.P.O.,190001,H.O,Delivery,SRINAGAR,JAMMU AND KASHMIR,NA,NA
+Jammu Kashmir Circle,Kashmir Region,Baramulla Division,LEH H.O,194101,H.O,Delivery,LEH,LADAKH,NA,NA
+West Bengal Circle,Andaman & Nicobar Region,Andaman & Nicobar Division,PORT BLAIR H.O,744101,H.O,Delivery,SOUTH ANDAMAN,ANDAMAN AND NICOBAR ISLANDS,NA,NA
+Kerala Circle,Kochi Region,Lakshadweep Division,KAVARATTI S.O,682555,S.O,Delivery,LAKSHADWEEP,LAKSHADWEEP,NA,NA
+Gujarat Circle,Vadodara Region,Valsad Division,SILVASSA S.O,396230,S.O,Delivery,DADRA AND NAGAR HAVELI,THE DADRA AND NAGAR HAVELI AND DAMAN AND DIU,NA,NA
+Puducherry Circle,Puducherry Region,Pondicherry Division,PONDICHERRY H.O,605001,H.O,Delivery,PUDUCHERRY,PONDICHERRY,NA,NA

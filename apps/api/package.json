@@ -15,6 +15,8 @@
     "db:from-docs": "node scripts/db-from-docs.mjs",
     "db:check": "node scripts/db-from-docs.mjs --check && node scripts/check-migrations.mjs",
     "migrate:deploy": "prisma migrate deploy",
+    "db:seed": "tsx src/seed/cli.ts",
+    "db:seed:dist": "node dist/seed/cli.js",
     "compat:smoke": "tsx scripts/compat-smoke.tsx",
     "test:compose": "COMPOSE_TESTS=1 vitest run test/compose",
     "test:compose:integration": "TEST_DATABASE_URL=postgresql://artq:artq@localhost:55432/artq TEST_REDIS_URL=redis://localhost:56379 vitest run test/integration"
