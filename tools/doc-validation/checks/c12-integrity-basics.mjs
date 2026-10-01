@@ -30,13 +30,19 @@ export default {
       const others = await Promise.all(Array.from({ length: 10 }, (_, i) => tx(db, (c) => order(c, { lines: [{ variantId: v, qty: 1 }], reserve: false }))));
       const cr = await Promise.allSettled(others.map((o, i) => tx(db, (c) => c.query(`SELECT aq_reserve_coupon($1,$2,NULL,$3,NULL,100)`, [o.orderId, cp, `u${i}@x.in`]))));
       eq(cr.filter((x) => x.status === 'fulfilled').length, 1, 'final coupon use once');
+      // per-customer limit for guests matches the citext email case-insensitively (citext = text would not)
+      const per = await val(db, `INSERT INTO coupons (code, title, type, value, usage_limit_per_customer, updated_at) VALUES ('ONCE1','x','FLAT',100,1,now()) RETURNING id`);
+      const [g1, g2] = await Promise.all([1, 2].map(() => tx(db, (c) => order(c, { lines: [{ variantId: v, qty: 1 }], reserve: false }))));
+      await tx(db, (c) => c.query(`SELECT aq_reserve_coupon($1,$2,NULL,'guest@x.in',NULL,100)`, [g1.orderId, per]));
+      await rejects(tx(db, (c) => c.query(`SELECT aq_reserve_coupon($1,$2,NULL,'GUEST@X.IN',NULL,100)`, [g2.orderId, per])),
+        /COUPON_USAGE_EXCEEDED:customer/, 'per-customer limit is case-insensitive');
 
       await db.query(`INSERT INTO invoices (order_id, kind, number, fy, seq, issued_at, seller_snapshot, buyer_snapshot, place_of_supply, lines,
                       taxable_total, cgst_total, sgst_total, igst_total, grand_total) VALUES ($1,'TAX_INVOICE','AQ/26-27/000001','26-27',1,now(),'{}','{}','32','[]',847,77,76,0,1000)`, [O.orderId]);
       await rejects(db.query(`UPDATE invoices SET grand_total=1`), /immutable/, 'invoice update');
       await rejects(db.query(`DELETE FROM invoices`), /immutable/, 'invoice delete');
       await rejects(db.query(`UPDATE order_items SET unit_price=1 WHERE order_id=$1`, [O.orderId]), /immutable/, 'snapshot');
-      return `gate: "${m1.slice(0, 90)}…" → after tax/weight/count "${m2}" → PROCESSING image rejected → READY image publishes; post-publish media failure visible in published_not_ready; 12 checkouts on 5 units → 5; coupon limit 1 under 10 → 1; invoice/order-item immutability enforced`;
+      return `gate: "${m1.slice(0, 90)}…" → after tax/weight/count "${m2}" → PROCESSING image rejected → READY image publishes; post-publish media failure visible in published_not_ready; 12 checkouts on 5 units → 5; coupon limit 1 under 10 → 1; per-customer limit case-insensitive; invoice/order-item immutability enforced`;
     } finally { await db.end(); }
   },
 };

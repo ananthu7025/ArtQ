@@ -1,4 +1,4 @@
-// COPIED VERBATIM from docs/database.md §5 (validated block). Task 1.1 makes this file the source of truth.
+// GENERATED from docs/database.md §5 by scripts/db-from-docs.mjs. Edit the doc, then regenerate.
 generator client {
   provider        = "prisma-client-js"
   previewFeatures = ["postgresqlExtensions"]

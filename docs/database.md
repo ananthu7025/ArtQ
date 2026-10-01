@@ -2902,7 +2902,7 @@ BEGIN
   END IF;
   SELECT count(*) INTO used FROM coupon_redemptions
    WHERE coupon_id = p_coupon AND status IN ('RESERVED','REDEEMED') AND NOT over_limit
-     AND ((p_user IS NOT NULL AND user_id = p_user) OR customer_email = p_email);
+     AND ((p_user IS NOT NULL AND user_id = p_user) OR customer_email = p_email::citext);   -- citext = text would compare case-sensitively
   IF c.usage_limit_per_customer IS NOT NULL AND used >= c.usage_limit_per_customer THEN
     RAISE EXCEPTION 'COUPON_USAGE_EXCEEDED:customer' USING ERRCODE = 'P0001';
   END IF;

@@ -12,8 +12,9 @@
     "test": "turbo run test",
     "compat:smoke": "pnpm --filter @artq/api compat:smoke",
     "validate:docs": "npm --prefix tools/doc-validation run validate",
-    "lint": "eslint . --max-warnings=0 && pnpm lint:boundaries",
+    "lint": "eslint . --max-warnings=0 && pnpm lint:boundaries && pnpm lint:db",
     "lint:boundaries": "node packages/config/check-web-boundaries.mjs apps/web",
+    "lint:db": "pnpm --filter @artq/api db:check",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },
