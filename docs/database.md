@@ -222,7 +222,7 @@ Other order rules:
 | `refund_attempts` | One per provider call series: **`provider_idempotency_key`** (`artq-refund-<id>-a<n>`, sent as `X-Refund-Idempotency`), `receipt` (`AQR_<id>_A<n>`, correlation only), immutable `request` JSON (payment id, amount, speed, receipt, notes). Retries of the same attempt reuse key + request byte-for-byte; a retry after `FAILED` creates attempt n+1 with a new key and receipt |
 | `refund_items` | Item allocation (quantity, amount, included tax) for credit notes and item capacity |
 | Capacity counters | `order_items.refund_reserved_qty/amount` (≤ quantity / net_amount), `orders.refund_reserved_total` (≤ captured_amount, or total for COD), `refund_reserved_shipping` (≤ shipping_fee), `refund_reserved_cod_fee` (≤ cod_fee), `payments.refund_reserved` (≤ amount). Changed only by `aq_refund_capacity(refund, ±1)` with conditional updates; `refunded_*` counters (processed) are always ≤ the reserved ones (DB checks) |
-| `payment_exceptions` | Durable queue of money/stock problems: `AMOUNT_MISMATCH`, `CURRENCY_MISMATCH`, `EXCESS_CAPTURE`, `LATE_CAPTURE_EXPIRED`, `LATE_CAPTURE_CANCELLED`, `UNLINKED_PAYMENT`, `CAPTURE_STUCK_AUTHORIZED`, `PROVIDER_ORDER_UNKNOWN`, `REFUND_FAILED`, `REFUND_UNKNOWN`, `REFUND_IDEMPOTENCY_MISMATCH`, `PAYMENT_IDENTITY_CONFLICT`, `REFUNDED_BEFORE_APPLY` (OPEN for partial, auto-RESOLVED for full), `WEBHOOK_DEAD`, `OUTBOX_DEAD`, `RECON_MISMATCH`, `COUPON_OVER_LIMIT`, `OVERSOLD`, `COD_REMITTANCE_MISMATCH`, `PUBLISHED_NOT_READY`. `dedupe_key` unique so repeated detection never duplicates |
+| `payment_exceptions` | Durable queue of money/stock problems: `AMOUNT_MISMATCH`, `CURRENCY_MISMATCH`, `EXCESS_CAPTURE`, `LATE_CAPTURE_EXPIRED`, `LATE_CAPTURE_CANCELLED`, `UNLINKED_PAYMENT`, `CAPTURE_STUCK_AUTHORIZED`, `PROVIDER_ORDER_UNKNOWN`, `REFUND_FAILED`, `REFUND_UNKNOWN`, `REFUND_IDEMPOTENCY_MISMATCH`, `PAYMENT_IDENTITY_CONFLICT`, `REFUNDED_BEFORE_APPLY` (OPEN for partial, auto-RESOLVED for full), `WEBHOOK_DEAD`, `OUTBOX_DEAD`, `RECON_MISMATCH`, `COUPON_OVER_LIMIT`, `OVERSOLD`, `COD_REMITTANCE_MISMATCH`, `PUBLISHED_NOT_READY`, `REFUNDED_OUTSIDE_ARTQ` (refunds made at the provider outside ArtQ, recorded by reconciliation; OPEN for staff to allocate for credit notes). `dedupe_key` unique so repeated detection never duplicates |
 
 ### 3.11 Reliability tables
 
@@ -317,9 +317,9 @@ Every transaction acquires row locks in this order and only in this order. Expli
 
 | From | To | Trigger |
 |------|----|---------|
-| `UNPAID` | `PROCESSING` | provider reports `authorized`, or verification could not reach the provider |
+| `UNPAID` | `PROCESSING` | an `AUTHORIZED`, not-yet-allocated payment is observed. `PROCESSING` is **derived**: it holds only while such a payment exists (a verify call that cannot reach the provider changes nothing on the order) |
 | `UNPAID`/`PROCESSING` | `PAID` | a payment with provider status `captured`, matching amount/currency/provider order, is applied |
-| `PROCESSING` | `UNPAID` | provider confirms failure and no other live payment |
+| `PROCESSING` | `UNPAID` | `aq_reassess_order_payment`, under the order lock, whenever a payment resolves without funding the order (`VOID`, `HELD`) and no other authorized, unallocated payment remains (e.g. an authorization the provider voided and refunded). The order then expires normally and releases stock and coupon once; `aq_release_unpaid_order` also refuses to expire while a live authorization exists |
 | `PAID` | `PARTIALLY_REFUNDED` / `REFUNDED` | refund `PROCESSED` (refunded < / = captured) |
 | `COD_PENDING` | `COD_COLLECTED` | fulfilment `DELIVERED` |
 | `COD_COLLECTED` | `COD_REMITTED` | order included in a recorded remittance |
@@ -331,6 +331,7 @@ Rounding: per order line, included tax = `net − round_half_up(net × 100 / (10
 ### 4.5 Refunds and returns
 - **Capacity is reserved at every level in one transaction** (`aq_refund_capacity`, §8.5): each item's `refund_reserved_qty/amount`, the order's shipping, COD-fee and total counters, and the payment's `refund_reserved`. Allocations in `REQUESTED`, `PENDING`, `UNKNOWN` and `PROCESSED` all count; `FAILED`/`CANCELLED` release (policy: a definitive provider failure frees the capacity; an `UNKNOWN` or idempotency-mismatch outcome keeps it reserved until resolved). Concurrent requests serialise on the order lock and conditional updates, so one item cannot be over-refunded even while the payment still has room.
 - **Retry of a FAILED refund** (`aq_retry_refund`) reacquires the same item/component/order/payment capacity atomically **before** creating attempt n+1. If a newer refund has consumed it, the retry fails with `REFUND_EXCEEDS_CAPACITY` and the refund stays `FAILED`.
+- **Provider-refund reconciliation gate.** If the provider reports more refunded on a payment than the ledger reserves (`provider_amount_refunded > refund_reserved`: refunds made outside ArtQ, e.g. in the Razorpay dashboard, after allocation), **no new refund and no retry** may reserve capacity on that payment (`REFUND_RECONCILIATION_REQUIRED`). Comparing against `refund_reserved` (which already includes ArtQ's own requested, pending and unknown refunds) means ArtQ's own refunds never trigger the gate. The reconciler then fetches the payment's refund list and calls `aq_reconcile_provider_refunds`: refunds matching ArtQ's own (provider refund id, attempt receipt or `notes.aq_refund_id`) are marked processed once and never counted as external; the rest are recorded once (cumulatively, idempotent) as `PROCESSED` `PROVIDER_INITIATED` refunds reducing payment capacity and, for an `APPLIED` payment, order capacity and `refunded_amount`. The gate clears and the `RECON_MISMATCH` exception is resolved only when the ledger explains the provider total.
 - **Manual COD refunds** use the same counters (order total instead of captured amount); there is no payment row or provider attempt.
 - Item amount refundable per unit = `net_amount / quantity` (last unit absorbs rounding). Shipping is refunded only for full pre-dispatch cancellation, or at admin discretion for merchant-fault returns. COD fee is refunded only for full pre-dispatch cancellation.
 - Return approval ≠ receipt ≠ inspection. Restock (`RETURN_RESTOCK`) only for `sellable_qty` after inspection. A return refund links `refunds.return_request_id`.
@@ -345,7 +346,8 @@ Rounding: per order line, included tax = `net − round_half_up(net × 100 / (10
 | Payment report whose provider order, amount or currency differs from the stored payment, or that maps to a different order | `CONFLICT`: nothing attached or changed; `PAYMENT_IDENTITY_CONFLICT` exception | "We're verifying your payment" |
 | **First** observation already **fully refunded** (`refunded`, or `amount_refunded = amount`) | `allocation = VOID`; order not funded (stays unpaid/expires); provider refund recorded once as `PROVIDER_INITIATED` (capacity exhausted, so no second refund); `REFUNDED_BEFORE_APPLY` auto-resolved | "Your payment was refunded; the order was not placed" (with the expiry notice) |
 | **First** observation **partially refunded** (`captured`, `0 < amount_refunded < amount`) | `allocation = HELD` (no funding policy); refunded part recorded as `PROVIDER_INITIATED`; `REFUNDED_BEFORE_APPLY` OPEN for staff; only the remainder can still be refunded | "We're verifying your payment" |
-| Captured and applied, later reported refunded | `DUPLICATE`; if the provider's refunded amount exceeds ArtQ's counted refunds ⇒ `RECON_MISMATCH` (order totals not auto-adjusted, no new refund) | per refund flow |
+| Captured and applied (or HELD), later reported (more) refunded | `DUPLICATE`; if the provider's refunded amount exceeds ArtQ's reserved refunds ⇒ `RECON_MISMATCH` and the **refund gate closes** for that payment; reconciliation records the outside refunds once (order totals updated for APPLIED payments), then the gate reopens | per refund flow |
+| **AUTHORIZED**, then voided/refunded by the provider before capture | `VOID`; order reassessed `PROCESSING → UNPAID` (unless another live authorization exists) and then expires normally, releasing stock and coupon once | "Payment not completed" |
 | Second **distinct** captured payment while another payment is `APPLIED` to the order, including after `PARTIALLY_REFUNDED`/`REFUNDED` | `allocation = EXCESS`; exception `EXCESS_CAPTURE`; automatic refund of that payment (`EXCESS_CAPTURE`, `unallocated_amount`) | "We received a duplicate payment; refunded in 5–7 working days" |
 | Capture for an `EXPIRED` order, stock reacquirable | `aq_reacquire_order` (all-or-nothing subtransaction) → `APPLIED`, new reservations, coupon re-redeemed or `over_limit`, `EXPIRED → PLACED`, `PAID` | normal order confirmation |
 | Capture for an `EXPIRED` order, stock not reacquirable | `allocation = LATE`, full automatic refund (`LATE_CAPTURE`), exception `LATE_CAPTURE_EXPIRED`, order stays `EXPIRED` | "Payment received after your order expired and the item sold out; full refund issued" |
@@ -622,6 +624,7 @@ enum ExceptionType {
   PUBLISHED_NOT_READY
   PAYMENT_IDENTITY_CONFLICT
   REFUNDED_BEFORE_APPLY
+  REFUNDED_OUTSIDE_ARTQ
 }
 enum ExceptionStatus {
   OPEN
@@ -2616,6 +2619,8 @@ critical is left to comments. Behaviour is exercised by checks C03–C13 (review
 | `aq_reserve_order`, `aq_reserve_coupon` | checkout TX1 | stock + coupon capacity |
 | `aq_release_unpaid_order` | expiry job, pre-payment cancellation | release stock/coupon, close attempts |
 | `aq_apply_provider_payment` | **verify, webhook worker, reconciler** | the only way a payment changes an order; also recovers UNLINKED payments and handles payments first seen refunded |
+| `aq_reassess_order_payment` | (internal) payment application | derived `PROCESSING ↔ UNPAID` for unpaid orders |
+| `aq_reconcile_provider_refunds` | reconciler (after `RECON_MISMATCH`, daily) | provider refund list → ledger; clears the refund gate |
 | `aq_reacquire_order` | (internal) late capture | all-or-nothing re-reservation |
 | `aq_request_refund`, `aq_retry_refund`, `aq_refund_attempt_result`, `aq_mark_refund_processed`, `aq_cancel_manual_refund`, `aq_refund_capacity` | refund API, `refund.send` consumer, webhook, reconciler | capacity + provider attempts |
 | `aq_adjust_on_hand`, `aq_edit_variants`, `aq_refresh_products` | Inventory page/import, catalogue editor | lock-ordered stock and catalogue writes |
@@ -2787,6 +2792,9 @@ BEGIN
   IF p_new_status NOT IN ('EXPIRED', 'CANCELLED') THEN RAISE EXCEPTION 'bad status %', p_new_status; END IF;
   SELECT id, order_number, status, payment_status INTO o FROM orders WHERE id = p_order FOR NO KEY UPDATE;
   IF o.status <> 'PENDING_PAYMENT' OR o.payment_status <> 'UNPAID' THEN RETURN 'SKIPPED'; END IF;
+  IF EXISTS (SELECT 1 FROM payments WHERE order_id = p_order AND allocation IS NULL AND status = 'AUTHORIZED') THEN
+    RETURN 'SKIPPED';                  -- a live authorization: apply/capture or reassess first
+  END IF;
   FOR r IN SELECT id, variant_id, quantity FROM inventory_reservations
             WHERE order_id = p_order AND status = 'ACTIVE' ORDER BY variant_id, id LOOP
     UPDATE product_variants SET reserved = reserved - r.quantity, version = version + 1 WHERE id = r.variant_id
@@ -2903,6 +2911,29 @@ BEGIN
   IF NOT FOUND THEN RAISE EXCEPTION 'COUPON_USAGE_EXCEEDED:total' USING ERRCODE = 'P0001'; END IF;
   INSERT INTO coupon_redemptions (coupon_id, order_id, user_id, customer_email, customer_phone, discount, status)
   VALUES (p_coupon, p_order, p_user, p_email, p_phone, p_discount, 'RESERVED');
+END $$ LANGUAGE plpgsql;
+
+-- ── Order payment-state reassessment ─────────────────────────────────────
+-- payment_status PROCESSING is DERIVED: an unpaid order is PROCESSING only while an authorized, not-yet-allocated
+-- payment exists. Whenever a payment for an unpaid order resolves without funding it (VOID, HELD), the order is
+-- reassessed under its lock and returns to UNPAID, so the normal expiry releases stock and coupon exactly once.
+-- Provider-unknown attempts never set PROCESSING; the expiry job's pre-expiry provider check covers them.
+CREATE OR REPLACE FUNCTION aq_reassess_order_payment(p_order INT, p_actor TEXT) RETURNS TEXT AS $$
+DECLARE o RECORD; n INT;
+BEGIN
+  SELECT id, status, payment_status INTO o FROM orders WHERE id = p_order FOR NO KEY UPDATE;
+  IF o.status <> 'PENDING_PAYMENT' OR o.payment_status <> 'PROCESSING' THEN RETURN 'UNCHANGED'; END IF;
+  IF EXISTS (SELECT 1 FROM payments WHERE order_id = p_order AND allocation = 'APPLIED') THEN
+    RAISE EXCEPTION 'INVARIANT: order % is PENDING_PAYMENT with an APPLIED payment', p_order;
+  END IF;
+  IF EXISTS (SELECT 1 FROM payments WHERE order_id = p_order AND allocation IS NULL AND status = 'AUTHORIZED') THEN
+    RETURN 'PROCESSING';
+  END IF;
+  UPDATE orders SET payment_status = 'UNPAID', version = version + 1
+   WHERE id = p_order AND status = 'PENDING_PAYMENT' AND payment_status = 'PROCESSING';
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n = 1 THEN PERFORM aq_history(p_order, 'PAYMENT', 'PROCESSING', 'UNPAID', p_actor, 'no live authorization remains'); END IF;
+  RETURN 'UNPAID';
 END $$ LANGUAGE plpgsql;
 
 -- ── Payment application (verify, webhook and reconciliation all call this) ─────
@@ -3139,7 +3170,8 @@ BEGIN
   END IF;
 
   IF v_alloc = 'VOID' THEN
-    RETURN 'VOID';                     -- no order, inventory, coupon, history or outbox effects
+    PERFORM aq_reassess_order_payment(o.id, p_actor);   -- AUTHORIZED → refunded must not leave the order PROCESSING
+    RETURN 'VOID';                     -- no inventory, coupon or outbox effects; at most PROCESSING → UNPAID
   END IF;
 
   -- HELD: amount/currency mismatch, partially refunded before apply, or unexpected order state.
@@ -3152,6 +3184,7 @@ BEGIN
                                jsonb_build_object('reason', 'unexpected order state', 'order_status', o.status,
                                                   'payment_method', o.payment_method));
   END IF;
+  PERFORM aq_reassess_order_payment(o.id, p_actor);
   RETURN 'HELD';
 END $$ LANGUAGE plpgsql;
 
@@ -3186,6 +3219,12 @@ BEGIN
        AND refund_reserved_cod_fee + p_sign * rf.cod_fee_amount BETWEEN 0 AND cod_fee;
     GET DIAGNOSTICS n = ROW_COUNT;
     IF n = 0 THEN RAISE EXCEPTION 'REFUND_EXCEEDS_CAPACITY:order' USING ERRCODE = 'P0001'; END IF;
+  END IF;
+  IF rf.payment_id IS NOT NULL AND p_sign > 0 THEN
+    -- Reconciliation gate: if the provider reports more refunded than the ledger accounts for (refunds made
+    -- outside ArtQ, not yet reconciled), no new refund or retry may reserve capacity on this payment.
+    PERFORM 1 FROM payments WHERE id = rf.payment_id AND provider_amount_refunded > refund_reserved;
+    IF FOUND THEN RAISE EXCEPTION 'REFUND_RECONCILIATION_REQUIRED:payment' USING ERRCODE = 'P0001'; END IF;
   END IF;
   IF rf.payment_id IS NOT NULL THEN
     UPDATE payments SET refund_reserved = refund_reserved + p_sign * rf.amount
@@ -3339,6 +3378,79 @@ BEGIN
   PERFORM aq_emit('refund', p_refund::TEXT, 'refund.processed', jsonb_build_object('refund_id', p_refund, 'order_id', o.id),
                   ARRAY['email.customer','invoice.credit_note']);
   RETURN 'PROCESSED';
+END $$ LANGUAGE plpgsql;
+
+-- Reconcile the provider's refund records for one payment into the ledger (reconciler; after RECON_MISMATCH).
+-- p_refunds = GET /payments/{id}/refunds items: [{"id","amount","status","receipt","notes":{"aq_refund_id"}}]
+-- ArtQ's own refunds are matched by provider refund id, attempt receipt or notes.aq_refund_id and are never
+-- counted as external; processed ones are marked PROCESSED once. Refunds made outside ArtQ are recorded once as
+-- PROCESSED PROVIDER_INITIATED refunds (cumulative, idempotent), reducing payment (and, for an APPLIED payment,
+-- order) capacity. The refund gate clears only when the ledger explains the provider's refunded total.
+CREATE OR REPLACE FUNCTION aq_reconcile_provider_refunds(p_payment INT, p_refunds JSONB) RETURNS TEXT AS $$
+DECLARE pay RECORD; o RECORD; r RECORD; ours INT; ours_status TEXT; n INT;
+        v_list_total INT := 0; v_external INT := 0; v_recorded INT; v_delta INT; v_ids TEXT := '';
+BEGIN
+  SELECT order_id INTO pay FROM payments WHERE id = p_payment;
+  IF pay.order_id IS NULL THEN RETURN 'UNBOUND'; END IF;              -- UNLINKED: recover first
+  SELECT * INTO o FROM orders WHERE id = pay.order_id FOR NO KEY UPDATE;
+  SELECT * INTO pay FROM payments WHERE id = p_payment FOR NO KEY UPDATE;
+  FOR r IN SELECT x->>'id' AS id, (x->>'amount')::INT AS amount, x->>'status' AS status, x->>'receipt' AS receipt,
+                  x->'notes'->>'aq_refund_id' AS aq_refund_id
+             FROM jsonb_array_elements(p_refunds) x ORDER BY x->>'id' LOOP
+    CONTINUE WHEN r.status = 'failed';
+    v_list_total := v_list_total + r.amount;
+    SELECT rf.id, rf.status INTO ours, ours_status FROM refunds rf
+      LEFT JOIN refund_attempts ra ON ra.refund_id = rf.id
+     WHERE rf.payment_id = p_payment AND rf.kind <> 'PROVIDER_INITIATED'
+       AND (rf.provider_refund_id = r.id OR ra.provider_refund_id = r.id OR ra.receipt = r.receipt OR rf.id::TEXT = r.aq_refund_id)
+     LIMIT 1;
+    IF FOUND THEN
+      IF r.status = 'processed' AND ours_status IN ('REQUESTED','PENDING','UNKNOWN') THEN
+        PERFORM aq_mark_refund_processed(ours, r.id);                  -- gated: once
+      ELSE
+        UPDATE refunds SET provider_refund_id = r.id WHERE id = ours AND provider_refund_id IS NULL;
+      END IF;
+    ELSE
+      v_external := v_external + r.amount;
+      v_ids := v_ids || r.id || ' ';
+    END IF;
+  END LOOP;
+  SELECT COALESCE(sum(amount), 0) INTO v_recorded FROM refunds WHERE payment_id = p_payment AND kind = 'PROVIDER_INITIATED';
+  v_delta := v_external - v_recorded;
+  IF v_delta < 0 THEN
+    PERFORM aq_raise_exception('RECON_MISMATCH', 'REFUND_RECON_NEGATIVE:' || pay.provider_payment_id || ':' || v_external,
+                               o.id, p_payment, NULL, -v_delta, jsonb_build_object('external', v_external, 'recorded', v_recorded));
+    RETURN 'INCONSISTENT';
+  ELSIF v_delta > 0 THEN
+    INSERT INTO refunds (order_id, payment_id, kind, method, status, amount, unallocated_amount, reason,
+                         idempotency_key, processed_at, updated_at)
+    VALUES (o.id, p_payment, 'PROVIDER_INITIATED', 'ORIGINAL_PAYMENT', 'PROCESSED', v_delta, v_delta,
+            'Refunded at the provider outside ArtQ: ' || btrim(v_ids),
+            'provider-refunds-' || pay.provider_payment_id || '-' || v_external, now(), now());
+    UPDATE payments SET refund_reserved = refund_reserved + v_delta, amount_refunded = amount_refunded + v_delta
+     WHERE id = p_payment AND refund_reserved + v_delta <= amount;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    IF n <> 1 THEN RAISE EXCEPTION 'INVARIANT: provider refunds exceed payment % capacity', p_payment; END IF;
+    IF pay.allocation = 'APPLIED' THEN                                 -- money left an order-funding payment
+      UPDATE orders SET refund_reserved_total = refund_reserved_total + v_delta, refunded_amount = refunded_amount + v_delta,
+             payment_status = (CASE WHEN refunded_amount + v_delta >= captured_amount THEN 'REFUNDED' ELSE 'PARTIALLY_REFUNDED' END)::"OrderPaymentStatus"
+       WHERE id = o.id AND refund_reserved_total + v_delta <= captured_amount;
+      GET DIAGNOSTICS n = ROW_COUNT;
+      IF n <> 1 THEN RAISE EXCEPTION 'INVARIANT: provider refunds exceed order % capacity', o.id; END IF;
+      PERFORM aq_history(o.id, 'PAYMENT', o.payment_status::TEXT, (SELECT payment_status::TEXT FROM orders WHERE id = o.id), 'SYSTEM',
+                         'refund made outside ArtQ recorded');
+    END IF;
+    PERFORM aq_raise_exception('REFUNDED_OUTSIDE_ARTQ', 'REFUNDED_OUTSIDE_ARTQ:' || pay.provider_payment_id || ':' || v_external,
+                               o.id, p_payment, NULL, v_delta, jsonb_build_object('provider_refund_ids', btrim(v_ids)));
+  END IF;
+  UPDATE payments SET provider_amount_refunded = GREATEST(provider_amount_refunded, v_list_total) WHERE id = p_payment;
+  SELECT * INTO pay FROM payments WHERE id = p_payment;
+  IF pay.provider_amount_refunded <= pay.refund_reserved THEN
+    UPDATE payment_exceptions SET status = 'RESOLVED', resolved_at = now(), resolution = 'Provider refunds reconciled into the ledger'
+     WHERE payment_id = p_payment AND type = 'RECON_MISMATCH' AND dedupe_key LIKE 'REFUND_RECON:%' AND status <> 'RESOLVED';
+    RETURN 'RECONCILED';
+  END IF;
+  RETURN 'STILL_UNEXPLAINED';                                          -- gate stays closed
 END $$ LANGUAGE plpgsql;
 
 -- Cancel a MANUAL_BANK (COD) refund that has not been processed. Online refunds cannot be cancelled once
@@ -3557,8 +3669,8 @@ recovered `UNLINKED_PAYMENT` exception → record pre-existing provider refunds 
 | `AUTHORIZED` | `UNPAID → PROCESSING` once + history |
 | `APPLIED` (incl. after UNLINKED recovery) | order PLACED/PAID, captured_amount, attempt PAID, sold counts, coupon redeemed, cart converted, 2 history rows, `order.placed` event (3 deliveries); recovered `UNLINKED_PAYMENT` resolved |
 | `EXCESS`, `LATE` | exception (deduped), refund REQUESTED + attempt + `refund.requested` delivery, customer notice |
-| `VOID` | `PROVIDER_INITIATED` refund (PROCESSED) + payment counters; `REFUNDED_BEFORE_APPLY` (resolved); **no order, inventory, coupon, history or outbox effects** |
-| `HELD` | exception only (partial pre-refund: also a `PROVIDER_INITIATED` refund for the refunded part) |
+| `VOID` | `PROVIDER_INITIATED` refund (PROCESSED) + payment counters; `REFUNDED_BEFORE_APPLY` (resolved); order reassessed (`PROCESSING → UNPAID` + history row if no live authorization remains); **no inventory, coupon or outbox effects** |
+| `HELD` | exception (partial pre-refund: also a `PROVIDER_INITIATED` refund for the refunded part); order reassessed as for `VOID` |
 | `UNLINKED` | payment row (no order) + `UNLINKED_PAYMENT` exception |
 | `CONFLICT` | `PAYMENT_IDENTITY_CONFLICT` exception only |
 
@@ -3603,6 +3715,10 @@ TX   aq_refund_attempt_result(attempt, outcome, http, response, provider_refund_
        stale attempt (refund already on a newer attempt or final) → STALE, no change
 TX   [webhook refund.processed / reconciler] aq_mark_refund_processed(refund, provider_refund_id)  -- gated: once
 TX   [admin retry of FAILED] aq_retry_refund(refund)   -- reacquire capacity, attempt n+1 with new key/receipt
+     (aq_request_refund and aq_retry_refund raise REFUND_RECONCILIATION_REQUIRED while provider refunds are unexplained)
+NET  [reconciler, when provider_amount_refunded > refund_reserved, and daily] GET /v1/payments/{id}/refunds
+TX   aq_reconcile_provider_refunds(payment, refunds)   -- own refunds matched + processed once; outside refunds recorded once;
+                                                     -- RECONCILED clears the gate · STILL_UNEXPLAINED keeps it · INCONSISTENT ⇒ exception
 ```
 
 ### 8.6 Webhook inbox

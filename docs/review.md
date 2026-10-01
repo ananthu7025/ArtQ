@@ -7,6 +7,7 @@ Two senior architecture/solution reviews of the planning documents, with the res
 | 1 | `fe85b89` (initial docs) | §1–§2 (matrix), §4 (historical validation) |
 | 2 | `ea660fa` (after review 1) | §5 (findings, verification, matrix), §6 (reproducible validation) |
 | 3 | `8fe33f4` (after review 2) | §9 (payment recovery, refunded-first payments, idempotency fencing) |
+| 4 | `b77df03` (after review 3) | §10 (stuck PROCESSING after AUTHORIZED → refunded; later provider refunds vs refund capacity) |
 | Both | | §3 scope & estimates, §7 limitations, §8 open decisions |
 
 Legend for every matrix: **Doc** = documentation correction; **Exec** = covered by an executable check in `tools/doc-validation` (database layer only); **App** = application behaviour that does not exist yet and is covered by a planned acceptance test.
@@ -120,7 +121,7 @@ Legend: A = architecture.md, D = database.md, P = product.md, API = api.md, DS =
 ## 3. Scope & estimates (current)
 - **MVP:** storefront, accounts (email), guest checkout, Razorpay + COD, reconciliation, refunds/returns/credit notes, inventory reservations, coupons, shipping rules, full admin including the screenshot modules and the operations views, CMS, SEO.
 - **Post-launch:** SMS/WhatsApp + phone login, courier API, reviews, abandoned carts, collections, advanced reports, split shipments, bundles, loyalty, PWA.
-- **Effort:** 114 dev-days of MVP scope + 17 contingency = **131 dev-days**; **17–20 calendar weeks** for two developers at 8 dev-days/week. The baseline stays **94** dev-days (tasklist.md explains the derivation); review 3 added +1 d (tasks 1.10 and 4.9).
+- **Effort:** 114.5 dev-days of MVP scope + 17 contingency = **131.5 dev-days**; **17–20 calendar weeks** for two developers at 8 dev-days/week. The baseline stays **94** dev-days (tasklist.md explains the derivation); review 3 added +1 d (tasks 1.10, 4.9), review 4 +0.5 d (task 5.4).
 
 ## 4. Review 1 validation (historical: PostgreSQL 18 only, ad-hoc scripts; superseded by §6)
 
@@ -214,7 +215,7 @@ Stability: C03, C05, C07 and C09 were re-run three more times on 16.14, all PASS
 **Iterations during this review (the checks found real defects in the first drafts):** C09 initially failed with 149 deadlocks (`FOR UPDATE` vs FK key-share), then intermittently with "stale" search vectors. The reproduced cause was **non-deterministic term order** (`string_agg` over variants without `ORDER BY`), not stale content; fixed with `ORDER BY id`. The search worker's lock-then-compute step, added first on the theory of snapshot reuse after a lock wait, is kept as a defensive measure, but no check demonstrates that race; C10 with a return-type mismatch; C13 with missing DB-side UUID defaults; C04/C03 failures were test-fixture mistakes. All were fixed in the documented SQL, not by weakening checks.
 
 ## 7. Limitations: what is still unverified or unimplemented
-- **No application exists.** Nothing here shows that future TypeScript services, HTTP middleware (cookies, CSRF/Origin, rate limits), the admin UI or the storefront behave as specified. Those are AT-01…AT-23 (tasklist.md), all **unimplemented**.
+- **No application exists.** Nothing here shows that future TypeScript services, HTTP middleware (cookies, CSRF/Origin, rate limits), the admin UI or the storefront behave as specified. Those are AT-01…AT-24 (tasklist.md), all **unimplemented**.
 - **Provider behaviour is simulated.** The checks pass provider results into the functions. Not verified against a Razorpay test account (task 4.0): order lookup by `receipt`; exact refund-idempotency status codes (409 vs 400) and error bodies; idempotency-key retention period; late authorization; webhook event-id header; capture "already captured" error shape.
 - **Email provider idempotency** support is assumed per provider choice (task 0.1); without it, duplicate emails are possible after a crash.
 - **Dispatch / invoice issue**, paid-order cancellation, RTO and return-receipt restocking are specified as service SQL but have **no executable check yet** (tasks 5.2–5.6).
@@ -229,8 +230,8 @@ Business inputs only; the full list with defaults and deadlines is in [product.m
 
 ### 9.1 Repository state
 `main` = `8fe33f4` = the reviewed baseline; clean tree; still **no application code**. The corrections are in the executable reference
-SQL in `docs/database.md` (the `aq_*` functions the API is specified to call), the validator and the dependent docs. They are uncommitted
-on `main`: not pushed, merged or deployed.
+SQL in `docs/database.md` (the `aq_*` functions the API is specified to call), the validator and the dependent docs. They were committed
+and pushed to `main` as `b77df03` (not deployed; there is nothing to deploy).
 
 ### 9.2 Findings: verification against the baseline
 Each finding was **reproduced before fixing** with a probe against the unmodified baseline SQL (PostgreSQL 16.14):
@@ -280,3 +281,44 @@ Stability: C03, C10, C14 and C15 together re-run 8 times on 16.14, 0 failures. A
 - If a version of `0003` had ever been applied, `aq_idempotency_begin` and `aq_apply_provider_payment` change signature/return type: `DROP FUNCTION` the old signatures first (`CREATE OR REPLACE` cannot change a return type), add the columns with defaults, and backfill `owner_token = gen_random_uuid()` for any `PROCESSING` idempotency rows before adding `idempotency_owner_ck`.
 - Deploy API and worker together: callers must pass `amount_refunded` and owner tokens in the same release as the new functions.
 - New business decision **D-17**: funding policy for payments first seen partially refunded (default: HELD for manual review; staff may refund the remainder).
+
+## 10. Review 4 (baseline `b77df03`)
+
+### 10.1 State
+`main` = `origin/main` = `b77df03` (review 3 committed and pushed), clean tree, still no application code. The changes below are in the
+working tree on `main`: not yet committed or pushed.
+
+### 10.2 Findings: verified against the baseline before fixing (probe on PostgreSQL 16.14)
+
+| # | Finding | Baseline behaviour observed | Status |
+|---|---------|-----------------------------|--------|
+| 1 | AUTHORIZED → fully REFUNDED leaves the order PROCESSING | `AUTHORIZED` → order `PROCESSING`; then `REFUNDED` → `VOID`, order still `PROCESSING`; `aq_release_unpaid_order` → `SKIPPED`; stock `reserved = 1` and coupon `reserved_count = 1` held indefinitely | **Confirmed** |
+| 2 | Later provider refunds do not reduce refund capacity | Payment ₹100 first seen with ₹30 refunded → `HELD` (₹30 recorded); provider later shows ₹100 refunded → `provider_amount_refunded = 100`, `refund_reserved = 30`; a new ₹70 refund request was **accepted** | **Confirmed** |
+| 3 | review.md §9.1 said "uncommitted / not pushed" | `b77df03` is on `origin/main` | **Confirmed**, corrected |
+
+### 10.3 Corrections
+
+| # | Correction | Where | Type |
+|---|------------|-------|------|
+| 1 | `payment_status = PROCESSING` is now **derived**: it holds only while an `AUTHORIZED`, unallocated payment exists. New `aq_reassess_order_payment(order)` runs under the order lock whenever a payment resolves without funding the order (`VOID`, `HELD`): with no live authorization left it moves `PROCESSING → UNPAID` (+ history), so the normal expiry releases stock and coupon exactly once. `aq_release_unpaid_order` additionally refuses to expire while a live authorization exists. Verify no longer sets `PROCESSING` when the provider is unreachable (response 202 only). Provider-unknown attempts never set `PROCESSING`; the pre-expiry provider check covers them | D §4.4, §4.6, §6b, §8.2; A §7.3 | Doc + Exec (C16) |
+| 2 | **Refund reconciliation gate** in `aq_refund_capacity`: while `provider_amount_refunded > refund_reserved` on a payment, new refund requests and retries raise `REFUND_RECONCILIATION_REQUIRED`. Comparing with `refund_reserved` (which includes ArtQ's own requested/pending/unknown refunds) means ArtQ's own refunds never trip it. New `aq_reconcile_provider_refunds(payment, provider refund list)`: matches ArtQ's refunds by provider refund id, attempt receipt or `notes.aq_refund_id` (marked processed once, never counted as external); records the remaining outside refunds once as cumulative, idempotent `PROCESSED` `PROVIDER_INITIATED` refunds (payment capacity; for an `APPLIED` payment also order capacity, `refunded_amount`, `payment_status`); raises `REFUNDED_OUTSIDE_ARTQ`; resolves `RECON_MISMATCH` and reopens the gate only when the ledger explains the provider total (`STILL_UNEXPLAINED` / `INCONSISTENT` otherwise). The `refunds.reconcile` job runs it for gated payments | D §3.10, §4.5, §4.6, §6b, §8.5; A §7.3, §7.4, §10.2, §13; API §1.1, §4.7; P §8.6; T 4.9, 5.4 | Doc + Exec (C16) |
+| 3 | §9.1 wording corrected | R §9.1 | Doc |
+
+Schema: enum value `ExceptionType.REFUNDED_OUTSIDE_ARTQ`. New functions: `aq_reassess_order_payment`, `aq_reconcile_provider_refunds`. No signature changes.
+
+### 10.4 Tests executed
+- **Full suite:** 17/17 PASS on PostgreSQL 16.14 and on 18.3, i.e. C00–C15 unchanged plus the new C16.
+- **New check C16:**
+  - AUTHORIZED: expiry is refused while the authorization is live.
+  - The provider then refunds it: `VOID`, and the order goes `PROCESSING → UNPAID`.
+  - 3 concurrent expiries: 1 `EXPIRED`, 2 `SKIPPED`. Stock reserved 0, coupon redemption `RELEASED` with counters (0, 0), exactly 1 `RELEASE` movement and 1 history row.
+  - A second live authorization keeps the order `PROCESSING`.
+  - HELD payment with ₹30 refunded, then the provider shows ₹100 refunded: an extra ₹70 refund is rejected with `REFUND_RECONCILIATION_REQUIRED`. Reconciliation is idempotent across 2 runs and records ₹70 once. Afterwards the payment has no capacity left, and `RECON_MISMATCH` is resolved.
+  - APPLIED payment with ArtQ's own ₹40 refund pending plus a ₹20 refund made outside ArtQ: retry and new refunds are blocked. 4 concurrent reconciliations leave ArtQ's refund PROCESSED once, the outside refund recorded once, and order refunded ₹60 with `PARTIALLY_REFUNDED`. The retry is then allowed.
+- **Stability:** C03, C14, C15 and C16 re-run 8 times on 16.14, 0 failures.
+
+### 10.5 Remaining limitations
+- Still **no application code**; AT-24 (and AT-01…AT-23) unimplemented.
+- **Razorpay assumptions not verified live:** an uncaptured authorization that the provider voids appears as `refunded` with `amount_refunded = amount` (it may instead appear as `failed` after authorization; a `failed` observation cannot lower the rank of an `AUTHORIZED` payment, so the reconciler must treat a provider-side void reported as `failed` by refetching and, if the authorization is gone, applying it as fully refunded, which needs confirmation in task 4.0). The refund list's `notes`/`receipt` echo is assumed for matching. Whether `amount_refunded` counts pending refunds is assumed (the gate is safe either way because it compares against reserved, not processed, amounts).
+- Outside refunds on an `APPLIED` payment are recorded at order level only; allocating them to items for credit notes is a staff action (`REFUNDED_OUTSIDE_ARTQ` stays OPEN).
+- Rollout: unchanged from §9.6 (initial migration; `0003` gains two functions; API and worker ship together).
