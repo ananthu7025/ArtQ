@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:qcraft-nine.vercel.app)",
+      "Bash(python3 -c ' *)",
+      "Bash(curl -sL https://qcraft-nine.vercel.app/ -o home.html)",
+      "Bash(curl -sL https://qcraft-nine.vercel.app/assets/index-Cc8yUrAK.js -o app.js)",
+      "Bash(curl -sL https://qcraft-nine.vercel.app/assets/index-E2YNMuv1.css -o app.css)",
+      "Bash(grep -oE 'path:\\\\s*\"[^\"]*\"|path:`[^`]*`' app.js)",
+      "Bash(grep -oE '`\\\\$\\\\{[A-Za-z_]+\\\\}/[a-zA-Z0-9/_${}.-]+`' app.js)",
+      "Bash(curl -s -m 15 https://qcraft.backend.zypplo.com/api/public/categories)",
+      "Bash(curl -s -m 15 https://qcraft.backend.zypplo.com/api/public/products)",
+      "Bash(git init *)",
+      "Bash(git add *)",
+      "Bash(git commit -m 'first commit *)",
+      "Bash(git branch *)",
+      "Bash(git remote *)",
+      "Bash(gh auth *)"
+    ]
+  }
+}
