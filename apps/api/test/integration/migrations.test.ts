@@ -31,10 +31,10 @@ describe('prisma migrate deploy on an empty database', () => {
   beforeAll(async () => { db = await createMigratedDatabase(pg.url); }, 120_000);
   afterAll(async () => { await db?.drop(); });
 
-  it('records exactly the three initial migrations as applied', async () => {
+  it('records the generated migrations 0001–0003 and the later ones (0004+) as applied', async () => {
     const rows = await db.prisma.$queryRaw<{ migration_name: string; finished_at: Date | null; rolled_back_at: Date | null }[]>`
       SELECT migration_name, finished_at, rolled_back_at FROM _prisma_migrations ORDER BY migration_name`;
-    expect(rows.map((r) => r.migration_name)).toEqual(['0001_init', '0002_constraints_search_integrity', '0003_money_stock_functions']);
+    expect(rows.map((r) => r.migration_name)).toEqual(['0001_init', '0002_constraints_search_integrity', '0003_money_stock_functions', '0004_import_initial_stock']);
     expect(rows.every((r) => r.finished_at !== null && r.rolled_back_at === null)).toBe(true);
   });
 
@@ -46,7 +46,8 @@ describe('prisma migrate deploy on an empty database', () => {
     expect(ext.map((e) => e.extname)).toEqual(expect.arrayContaining(['citext', 'pg_trgm', 'unaccent']));
     const fns = await db.prisma.$queryRaw<{ proname: string }[]>`
       SELECT proname FROM pg_proc WHERE pronamespace = 'public'::regnamespace AND proname LIKE 'aq\\_%' ORDER BY proname`;
-    expect(fns).toHaveLength(39);
+    expect(fns).toHaveLength(40);   // 39 from 0003 + aq_import_initial_stock (0004)
+    expect(fns.map((f) => f.proname)).toContain('aq_import_initial_stock');
   });
 
   it('re-running deploy is a no-op', () => {
@@ -75,7 +76,7 @@ describe('failure paths', () => {
     const dir = mkdtempSync(join(tmpdir(), 'artq-mig-'));
     try {
       cpSync(join(API_ROOT, 'prisma'), join(dir, 'prisma'), { recursive: true });
-      const bad = join(dir, 'prisma', 'migrations', '0004_broken');
+      const bad = join(dir, 'prisma', 'migrations', '0099_broken');
       cpSync(join(dir, 'prisma', 'migrations', '0003_money_stock_functions'), bad, { recursive: true });
       writeFileSync(join(bad, 'migration.sql'), 'ALTER TABLE no_such_table ADD COLUMN x INT;\n');
       expect(() => prisma(['migrate', 'deploy', '--schema', join(dir, 'prisma', 'schema.prisma')], empty.url)).toThrow(/no_such_table|P3018/);
@@ -83,7 +84,7 @@ describe('failure paths', () => {
       try {
         const rows = await c.$queryRaw<{ migration_name: string; finished_at: Date | null }[]>`SELECT migration_name, finished_at FROM _prisma_migrations ORDER BY 1`;
         expect(rows.map((r) => [r.migration_name, r.finished_at !== null])).toEqual([
-          ['0001_init', true], ['0002_constraints_search_integrity', true], ['0003_money_stock_functions', true], ['0004_broken', false],
+          ['0001_init', true], ['0002_constraints_search_integrity', true], ['0003_money_stock_functions', true], ['0004_import_initial_stock', true], ['0099_broken', false],
         ]);
         // a later deploy refuses to continue past the failed migration
         expect(() => prisma(['migrate', 'deploy', '--schema', join(dir, 'prisma', 'schema.prisma')], empty.url)).toThrow(/P3009|failed migrations/);

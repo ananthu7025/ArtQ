@@ -21,6 +21,9 @@ import { registerStaffRoutes } from './admin/staff-routes.js';
 import { registerCatalogRoutes } from './catalog/routes.js';
 import { CatalogService } from './catalog/service.js';
 import { registerTaxonomyRoutes } from './catalog/taxonomy-routes.js';
+import { importEnqueue } from './imports/queues.js';
+import { registerImportRoutes } from './imports/routes.js';
+import { ImportService } from './imports/service.js';
 import { razorpayProvider } from './webhooks/provider.js';
 import { WEBHOOK_QUEUE, webhookRouter } from './webhooks/inbox.js';
 
@@ -60,6 +63,10 @@ registerAuditRoutes(admin, prisma);
 registerStaffRoutes(admin, prisma, service);
 registerCatalogRoutes(admin, new CatalogService(prisma, (m) => media.view(m)));
 registerTaxonomyRoutes(admin, prisma, (m) => media.view(m));
+const importValidateQueue = new Queue(QUEUE.importValidate, { connection: webhookQueue.opts.connection });
+const importApplyQueue = new Queue(QUEUE.importApply, { connection: webhookQueue.opts.connection });
+for (const q of [importValidateQueue, importApplyQueue]) q.on('error', (err) => log.warn({ err: err.message, queue: q.name }, 'import queue connection error'));
+registerImportRoutes(admin, prisma, new ImportService({ prisma, readFile: (m) => media.read(m), enqueue: importEnqueue(importValidateQueue, importApplyQueue) }));
 
 const app = createApp({
   version: env.APP_VERSION,
@@ -81,6 +88,6 @@ const server = app.listen(env.PORT, () => log.info({ port: env.PORT }, 'api list
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {
   process.on(sig, () => {
     log.info({ sig }, 'shutting down');
-    server.close(async () => { await mediaQueue.close(); await webhookQueue.close(); await prisma.$disconnect(); redis.disconnect(); process.exit(0); });
+    server.close(async () => { await importValidateQueue.close(); await importApplyQueue.close(); await mediaQueue.close(); await webhookQueue.close(); await prisma.$disconnect(); redis.disconnect(); process.exit(0); });
   });
 }

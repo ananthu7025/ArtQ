@@ -8,6 +8,8 @@ import { ForgotPasswordPage, ResetPasswordPage } from './pages/PasswordPages';
 import { StaffPage } from './pages/StaffPage';
 import { ProductsPage } from './pages/products/ProductsPage';
 import { TaxonomyPage } from './pages/taxonomy/TaxonomyPage';
+import { ImportDetailPage } from './pages/imports/ImportDetailPage';
+import { ImportsPage } from './pages/imports/ImportsPage';
 import { ProductEditorPage } from './pages/products/editor/ProductEditorPage';
 import { DashboardPage, ForbiddenPage, FullPageSpinner, ModulePlaceholder, NotFoundPage } from './pages/simple';
 
@@ -33,8 +35,10 @@ const BUILT: Record<string, () => React.ReactNode> = {
   '/product-types': () => <TaxonomyPage key="type" kind="type" />,
   '/categories': () => <TaxonomyPage key="category" kind="category" />,
   '/techniques': () => <TaxonomyPage key="technique" kind="technique" />,
+  '/imports': () => <ImportsPage />,
 };
 const PRODUCTS = ALL_NAV_ITEMS.find((i) => i.path === '/products')!;
+const IMPORTS = ALL_NAV_ITEMS.find((i) => i.path === '/imports')!;
 
 export const routes: RouteObject[] = [
   { path: '/login', element: <LoginPage /> },
@@ -48,6 +52,7 @@ export const routes: RouteObject[] = [
         { index: true, element: <Navigate to="/dashboard" replace /> },
         ...ALL_NAV_ITEMS.map((item) => ({ path: item.path, element: <Guard item={item}>{BUILT[item.path]?.() ?? <ModulePlaceholder item={item} />}</Guard> })),
         { path: '/products/:id', element: <Guard item={PRODUCTS}><ProductEditorPage /></Guard> },
+        { path: '/imports/:id', element: <Guard item={IMPORTS}><ImportDetailPage /></Guard> },
         { path: '*', element: <NotFoundPage /> },
       ],
     }],

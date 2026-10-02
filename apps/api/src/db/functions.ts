@@ -142,6 +142,14 @@ export function adjustOnHand(db: Db, a: { rows: OnHandAdjustment[]; actorId: num
   return exec(db, Prisma.sql`SELECT aq_adjust_on_hand(${json(payload)}, ${a.actorId}::int, ${a.importId ?? null}::int)`);
 }
 
+/**
+ * Catalogue import (migration 0004): initial on_hand of a variant the import just created; IMPORT_INITIAL movement;
+ * stays uncounted. Raises STOCK_ALREADY_SET for a variant with stock or history. Caller refreshes aggregates.
+ */
+export function importInitialStock(db: Db, a: { variantId: number; quantity: number; importId: number; actorId: number | null }) {
+  return exec(db, Prisma.sql`SELECT aq_import_initial_stock(${a.variantId}::int, ${a.quantity}::int, ${a.importId}::int, ${a.actorId}::int)`);
+}
+
 export function editVariants(db: Db, productId: number, edits: { variantId: number; color?: string | null; isActive?: boolean | null }[]) {
   const payload = edits.map((e) => ({ variant_id: e.variantId, color: e.color ?? null, is_active: e.isActive ?? null }));
   return exec(db, Prisma.sql`SELECT aq_edit_variants(${productId}::int, ${json(payload)})`);

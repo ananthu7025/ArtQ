@@ -24,3 +24,23 @@ export async function axeClean(page: Page) {
   const r = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze();
   expect(r.violations.map((v) => `${v.id} (${v.impact}): ${v.nodes.map((n) => `${n.target.join(' ')} ${n.failureSummary ?? ''}`).join(' | ')}`)).toEqual([]);
 }
+
+const MAILPIT = `http://localhost:${process.env.ARTQ_MAIL_UI_PORT ?? '8025'}/api/v1`;
+
+/**
+ * The link in the newest email to `to` received after `since`, read from Mailpit (the e2e worker really sends it).
+ * Waits up to 20 s for delivery.
+ */
+export async function emailLink(to: string, since: Date, linkPath: string): Promise<URL> {
+  for (let i = 0; i < 80; i++) {
+    const list = (await (await fetch(`${MAILPIT}/search?query=${encodeURIComponent(`to:"${to}"`)}&limit=5`)).json()) as { messages: { ID: string; Created: string }[] };
+    const fresh = list.messages.find((m) => new Date(m.Created) >= since);
+    if (fresh) {
+      const msg = (await (await fetch(`${MAILPIT}/message/${fresh.ID}`)).json()) as { Text: string };
+      const m = new RegExp(`https?://[^\\s"']*${linkPath.replace(/[/?]/g, '\\$&')}\\?token=[\\w.-]+`).exec(msg.Text);
+      if (m) return new URL(m[0]);
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  throw new Error(`no email with a ${linkPath} link to ${to} since ${since.toISOString()}`);
+}

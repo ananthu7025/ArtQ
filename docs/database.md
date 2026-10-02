@@ -2624,6 +2624,7 @@ critical is left to comments. Behaviour is exercised by checks C03–C13 (review
 | `aq_reacquire_order` | (internal) late capture | all-or-nothing re-reservation |
 | `aq_request_refund`, `aq_retry_refund`, `aq_refund_attempt_result`, `aq_mark_refund_processed`, `aq_cancel_manual_refund`, `aq_refund_capacity` | refund API, `refund.send` consumer, webhook, reconciler | capacity + provider attempts |
 | `aq_adjust_on_hand`, `aq_edit_variants`, `aq_refresh_products` | Inventory page/import, catalogue editor | lock-ordered stock and catalogue writes |
+| `aq_import_initial_stock` (migration `0004`) | catalogue import | initial `on_hand` of a variant the import just created (`IMPORT_INITIAL`, stays uncounted); refuses a variant with stock or history (`STOCK_ALREADY_SET`), so retried batches never double stock; caller refreshes aggregates after locking the batch's variants |
 | `aq_process_search_queue` | search worker | deferred search rebuild |
 | `aq_webhook_claim/begin/renew/complete/fail` | webhook worker + sweeper | fenced inbox leases |
 | `aq_emit`, `aq_outbox_claim`, `aq_outbox_mark_published`, `aq_outbox_publish_failed`, `aq_outbox_begin_consume`, `aq_outbox_complete` | domain functions, dispatcher, consumers | outbox deliveries |
@@ -3609,6 +3610,17 @@ END $$ LANGUAGE plpgsql;
 
 ---
 
+### 6c. Later migrations (hand-written, additive)
+
+`0001`–`0003` are generated from the validated blocks above. Later changes are numbered migrations in
+`apps/api/prisma/migrations/` (expand → migrate → contract, architecture.md §12) and are listed here:
+
+| Migration | Task | Adds |
+|-----------|------|------|
+| `0004_import_initial_stock` | 2.7 | `aq_import_initial_stock(p_variant, p_quantity, p_import, p_actor)`: locks the variant, refuses stock already set or any movement (`STOCK_ALREADY_SET`), sets `on_hand` (never `inventory_counted_at`), inserts the `IMPORT_INITIAL` movement. Wrapper `importInitialStock` |
+
+---
+
 ## 7. Denormalised aggregates
 
 | Field | Maintained by | When | Drift check |
@@ -3758,11 +3770,13 @@ Two separate import kinds (`product_imports.kind`):
 
 **Lifecycle:** `UPLOADED` → `VALIDATING` → `VALIDATED` (every row stored in `product_import_rows` with `payload`, messages and `base_version` = current `products.version`/`variants.version`) → admin confirms → `IMPORTING` → `COMPLETED` / `COMPLETED_WITH_ERRORS` / `FAILED` / `CANCELLED`.
 
-**Row outcomes:** `CREATED`, `UPDATED`, `UNCHANGED`, `SKIPPED` (blank/ignored), `NEEDS_REVIEW` (data flag or concurrent edit), `FAILED` (validation/DB error, message stored).
+**Row outcomes:** `CREATED`, `UPDATED`, `UNCHANGED`, `SKIPPED` (blank/ignored/cancelled), `NEEDS_REVIEW` (the product/variant changed in the admin after validation, or the change would make a live product fail a publication check; not applied until resolved: apply over the current data, or skip), `FAILED` (validation/DB error, message stored). Rows with **data flags are applied**: the draft carries the flags (they block publication) and the row lists them; flags never stop a draft from being created.
 
-**Resume & retries:** the job processes `PENDING` rows in batches of 25, one transaction per batch, holding a Postgres advisory lock per import (one active import at a time). A crash resumes from remaining `PENDING` rows; a row is retried up to 3 times before `FAILED`.
+**Resume & retries:** the job processes `PENDING` rows in batches of 25, one transaction per batch, holding a Postgres advisory lock (one batch of any import at a time) and re-checking under it that the rows are still `PENDING` (`FOR UPDATE`), so two workers never apply a row twice. A crash (the worker killed mid-batch) rolls the batch back; the next run (BullMQ retry, or the `import-sweep` job re-queuing an `IMPORTING` import idle for 2 minutes) resumes from the remaining `PENDING` rows. Attempts are counted before each batch; a row in a batch that crashed 3 times is `FAILED` (`GAVE_UP`). New variants get stock through `aq_import_initial_stock` (§6c), which refuses a second time, so stock is never doubled.
 
 **Concurrent edits:** at apply time, if the target product/variant `version` differs from the row's `base_version`, the row becomes `NEEDS_REVIEW` (no overwrite). Catalogue batches lock variants ascending then products (§4.1). Inventory imports call `aq_adjust_on_hand` per batch (variants ascending, `on_hand` only), so active reservations are never overwritten (C09 runs imports concurrently with checkouts).
+
+**Layouts.** `Sheet1` (the client's list; forward-filled; cleaned by `apps/api/src/imports/sheet1-profile.ts`, which is catalog.md §1/§2/§4/§6 as data) and the template below (also the **result file**: template columns + `Product Key`, `Flags`, `Outcome`, `Messages`, with generated SKUs written back). On re-import, flags = those recomputed from the data ∪ those still listed in the `Flags` column (the client deletes a flag once fixed); `WEIGHT_ESTIMATED` always follows the stored weight source; a weight missing from the file never clears a stored one.
 
 **Spreadsheet → database mapping (catalogue template "2. Products & Variants")**
 

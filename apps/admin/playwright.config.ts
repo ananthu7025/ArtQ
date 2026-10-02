@@ -25,7 +25,8 @@ export default defineConfig({
   webServer: [
     {
       // Fresh database (migrations + seed) every run, then the built API.
-      command: 'pnpm --dir ../api exec tsx scripts/e2e-setup.ts && node ../api/dist/server.js',
+      // The worker runs alongside (imports, media processing); its process ends with the API's when Playwright stops the group.
+      command: 'pnpm --dir ../api exec tsx scripts/e2e-setup.ts && (node ../api/dist/worker.js & exec node ../api/dist/server.js)',
       url: 'http://localhost:4001/health/ready',
       env: apiEnv,
       reuseExistingServer: false,

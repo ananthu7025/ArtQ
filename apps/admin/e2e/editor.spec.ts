@@ -1,4 +1,5 @@
 // ✅ Task 2.5: recreate "Teak Wood Frame" (14 variants, catalog.md P4) in the real editor against the real API in < 5 min.
+// Its own name and SKU prefix, so the import spec (which imports the real catalogue in the same e2e database) never collides.
 import { expect, test } from '@playwright/test';
 import { axeClean, resetRateLimitsBeforeAll } from './helpers';
 
@@ -22,9 +23,9 @@ test('Teak Wood Frame with 14 variants, prices, description and an image, in und
   await page.getByRole('link', { name: 'Products', exact: true }).click();
 
   await page.getByRole('button', { name: 'Add product' }).click();
-  await page.getByRole('dialog', { name: 'Add product' }).getByLabel('Name').fill('Teak Wood Frame with Plywood Base');
+  await page.getByRole('dialog', { name: 'Add product' }).getByLabel('Name').fill('Editor Demo Teak Frame');
   await page.getByRole('dialog', { name: 'Add product' }).getByRole('button', { name: 'Create draft' }).click();
-  await expect(page.getByRole('heading', { level: 1, name: 'Teak Wood Frame with Plywood Base' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Editor Demo Teak Frame' })).toBeVisible();
 
   // Content: rich-text description (real ProseMirror typing), details, care.
   const description = page.getByRole('textbox', { name: 'Description', exact: true });
@@ -41,7 +42,7 @@ test('Teak Wood Frame with 14 variants, prices, description and an image, in und
   for (const [sizes, depth] of [[ONE_INCH, '1 inch'], [HALF_INCH, '0.5 inch']] as const) {
     await page.getByRole('button', { name: 'Generate variants' }).click();
     const dlg = page.getByRole('dialog', { name: 'Generate variants' });
-    await dlg.getByLabel('SKU prefix').fill('TWF');
+    await dlg.getByLabel('SKU prefix').fill('EDT');
     await dlg.getByLabel('Sizes (comma-separated)').fill(sizes.join(', '));
     await dlg.getByLabel('Option values (comma-separated)').fill(depth);
     await dlg.getByRole('button', { name: `Add ${sizes.length} rows` }).click();
@@ -66,8 +67,8 @@ test('Teak Wood Frame with 14 variants, prices, description and an image, in und
 
   // What was saved, read back from the server: SKUs in the catalogue format, generated labels, prices in paise.
   await page.reload();
-  await expect(page.getByLabel('SKU, row 1', { exact: true })).toHaveValue('TWF-1IN-4X6');
-  await expect(page.getByLabel('SKU, row 12', { exact: true })).toHaveValue('TWF-05IN-8X10');
+  await expect(page.getByLabel('SKU, row 1', { exact: true })).toHaveValue('EDT-1IN-4X6');
+  await expect(page.getByLabel('SKU, row 12', { exact: true })).toHaveValue('EDT-05IN-8X10');
   await expect(page.getByLabel('Label, row 1', { exact: true })).toHaveValue('4×6 in / 1 inch');
   await expect(page.getByLabel('Price (₹), row 9', { exact: true })).toHaveValue('190');
   await expect(page.getByRole('textbox', { name: 'Description', exact: true }).locator('strong')).toHaveText('Natural teak finish.');
@@ -75,7 +76,7 @@ test('Teak Wood Frame with 14 variants, prices, description and an image, in und
   await axeClean(page);
 
   await page.getByRole('link', { name: 'All products' }).click();
-  const row = page.getByRole('row').filter({ hasText: 'Teak Wood Frame with Plywood Base' });
+  const row = page.getByRole('row').filter({ hasText: 'Editor Demo Teak Frame' });
   await expect(row).toContainText('₹190–₹680');
   await expect(row.getByRole('cell').nth(8)).toHaveText('14');   // cells: select, #, image, name, type, price, available, status, variants
 });

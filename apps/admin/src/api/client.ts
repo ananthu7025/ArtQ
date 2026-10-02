@@ -111,6 +111,15 @@ export class AdminApi {
     throw err;
   }
 
+  /** A file from an authenticated endpoint (e.g. an import result workbook), with the same refresh-and-retry as request(). */
+  async download(path: string, retried = false): Promise<Blob> {
+    const res = await this.raw('GET', path);
+    if (res.ok) return res.blob();
+    const err = await AdminApi.error(res);
+    if (res.status === 401 && !retried && (err.code === 'UNAUTHENTICATED' || err.code === 'SESSION_INVALID') && (await this.refresh())) return this.download(path, true);
+    throw err;
+  }
+
   async login(email: string, password: string): Promise<AdminUser> {
     const res = await this.raw('POST', '/admin/auth/login', { email, password }, false);
     if (!res.ok) throw await AdminApi.error(res);

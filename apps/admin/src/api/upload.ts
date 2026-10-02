@@ -22,3 +22,27 @@ export async function uploadImage(api: AdminApi, file: File): Promise<number> {
   await api.request('POST', `/admin/media/${p.media.id}/complete`, { body: {} });
   return p.media.id;
 }
+
+export const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+/** A catalogue workbook: presign (purpose catalog-import, private) → PUT → complete. Returns the media id. */
+export async function uploadWorkbook(api: AdminApi, file: File): Promise<number> {
+  if (!/\.xlsx$/i.test(file.name)) throw new Error(`${file.name}: choose an Excel .xlsx file`);
+  if (file.size > 5 * 1024 * 1024) throw new Error(`${file.name}: workbooks can be at most 5 MB`);
+  const p = await api.request<{ media: { id: number }; upload: { url: string; headers: Record<string, string> } }>('POST', '/admin/media/presign', {
+    body: { filename: file.name, contentType: XLSX_TYPE, size: file.size, purpose: 'catalog-import' },
+  });
+  const put = await fetch(p.upload.url, { method: 'PUT', body: file, headers: { 'Content-Type': XLSX_TYPE } });
+  if (!put.ok) throw new Error(`Upload of ${file.name} failed (${put.status})`);
+  await api.request('POST', `/admin/media/${p.media.id}/complete`, { body: {} });
+  return p.media.id;
+}
+
+/** Saves a Blob as a file in the browser. */
+export function saveBlob(blob: Blob, name: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = name;
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}

@@ -12,3 +12,4 @@ export * from './staff-schemas.js';
 export * from './catalog-schemas.js';
 export * from './readiness.js';
 export * from './taxonomy-schemas.js';
+export * from './import-schemas.js';

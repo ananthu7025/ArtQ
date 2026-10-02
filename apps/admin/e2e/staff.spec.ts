@@ -1,15 +1,12 @@
 // Staff & Permissions end to end: the owner invites a person (password re-check), the person follows the emailed link,
 // chooses a password and logs in with the role they were given; the owner blocks them and they are refused.
-import { execFileSync } from 'node:child_process';
-import { join } from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
-import { axeClean, resetRateLimitsBeforeAll } from './helpers';
+import { axeClean, emailLink, resetRateLimitsBeforeAll } from './helpers';
 
 resetRateLimitsBeforeAll();
 
 const OWNER = { email: 'owner@e2e.artq.in', password: 'e2e-owner-passphrase' };
 const STAFF = { email: 'staff@e2e.artq.in' };
-const E2E_DATABASE_URL = `postgresql://artq:artq@localhost:${process.env.ARTQ_PG_PORT ?? '55432'}/artq_e2e`;
 
 async function login(page: Page, who: { email: string; password: string }) {
   await page.goto('/login');
@@ -18,14 +15,10 @@ async function login(page: Page, who: { email: string; password: string }) {
   await page.getByRole('button', { name: 'Log in' }).click();
 }
 
-/** The link in the latest email of `template` to `email`, read from the e2e database outbox. */
-function lastLink(email: string, template = 'staff_invite'): string {
-  const api = join(import.meta.dirname, '..', '..', 'api');
-  return execFileSync('pnpm', ['--dir', api, 'exec', 'tsx', 'scripts/e2e-last-link.ts', email, template], { env: { ...process.env, E2E_DATABASE_URL }, encoding: 'utf8' }).trim();
-}
 
 test('invite → choose password → log in as STAFF → blocked by the owner', async ({ page, browser }) => {
   const email = `devika.${Date.now()}@e2e.artq.in`;
+  const started = new Date(Date.now() - 1000);
   await login(page, OWNER);
   await page.getByRole('link', { name: 'Staff & Permissions' }).click();
   await expect(page.getByRole('table', { name: 'Staff members' })).toContainText('owner@e2e.artq.in');
@@ -47,7 +40,7 @@ test('invite → choose password → log in as STAFF → blocked by the owner', 
   // the invited person, in a separate browser context
   const theirs = await browser.newContext();
   const them = await theirs.newPage();
-  const link = new URL(lastLink(email));
+  const link = await emailLink(email, started, '/reset-password');   // the invite, as delivered
   expect(link.pathname).toBe('/reset-password');
   await them.goto(link.pathname + link.search);
   await them.getByLabel('New password').fill('devika-chooses-this');
@@ -86,8 +79,9 @@ test('"Forgot password" from the login page emails a link to the admin reset pag
   await expect(page.locator('#email-error')).toHaveText('Enter your email address');
   await expect(page.locator('#email-error')).toHaveCSS('color', 'rgb(185, 28, 28)');
   await page.getByLabel('Email').fill(STAFF.email);
+  const sent = new Date(Date.now() - 1000);
   await page.getByRole('button', { name: 'Send link' }).click();
   await expect(page.getByRole('heading', { name: 'Check your email' })).toBeVisible();
-  expect(new URL(lastLink(STAFF.email, 'password_reset')).pathname).toBe('/reset-password');
+  expect((await emailLink(STAFF.email, sent, '/reset-password')).pathname).toBe('/reset-password');
   await axeClean(page);
 });
