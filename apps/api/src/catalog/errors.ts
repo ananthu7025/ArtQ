@@ -9,6 +9,8 @@ const CHECKS: Record<string, [number, string, string]> = {
   variants_dims_ck: [422, 'DIMENSIONS_INCOMPLETE', 'Give length, width and height together (all positive), or none'],
   variants_hex_ck: [422, 'VALIDATION_ERROR', 'Colour must be a hex code like #d4af37'],
   variants_weight_ck: [422, 'VALIDATION_ERROR', 'Weight must be positive'],
+  // A live product must keep type, category, tax and publication data (database backstop of the edit-guard).
+  products_active_gate_ck: [409, 'UNPUBLISH_FIRST', 'A live product needs its type, category and approved tax. Unpublish it first.'],
 };
 
 /** Returns an AppError for a known constraint violation, or undefined. */

@@ -78,12 +78,21 @@ export const pricingBody = z.strictObject({
   version: z.number().int().positive(),
 }).refine((b) => b.mrp === null || b.mrp >= b.price, { message: 'MRP must be at least the price', path: ['mrp'] });
 
-/** Bulk content actions (catalog:write). Publish / unpublish / archive arrive with the publication gate (task 2.3). */
+/** Bulk actions: content (catalog:write) and publication (catalog:publish), each with a per-item result. */
+export const BULK_PUBLISH_ACTIONS = ['publish', 'unpublish', 'archive'] as const;
 export const bulkBody = z.discriminatedUnion('action', [
   z.strictObject({ action: z.enum(['markNew', 'unmarkNew', 'markTrending', 'unmarkTrending']), ids: z.array(id).min(1).max(100) }),
+  z.strictObject({ action: z.enum(BULK_PUBLISH_ACTIONS), ids: z.array(id).min(1).max(100) }),
   z.strictObject({ action: z.literal('setType'), ids: z.array(id).min(1).max(100), typeId: id }),
   z.strictObject({ action: z.literal('setCategory'), ids: z.array(id).min(1).max(100), categoryId: id }),
 ]);
+
+/** Tax approval (catalog:publish). HSN: 4, 6 or 8 digits. GST %: the accountant's rate (D-1); the database allows 0–40. */
+export const taxApprovalBody = z.strictObject({
+  hsnCode: z.string().trim().regex(/^(\d{4}|\d{6}|\d{8})$/, 'Enter an HSN code of 4, 6 or 8 digits'),
+  gstRate: z.number({ error: 'Enter the GST rate' }).min(0, 'GST rate cannot be negative').max(40, 'GST rate cannot be more than 40 %')
+    .refine((r) => Math.abs(r * 100 - Math.round(r * 100)) < 1e-9, 'Use at most two decimals'),
+});
 
 export const idParam = z.strictObject({ id: z.coerce.number().int().positive() });
 
@@ -93,3 +102,4 @@ export type CreateVariant = z.infer<typeof createVariantBody>;
 export type UpdateVariant = z.infer<typeof updateVariantBody>;
 export type Pricing = z.infer<typeof pricingBody>;
 export type Bulk = z.infer<typeof bulkBody>;
+export type TaxApproval = z.infer<typeof taxApprovalBody>;

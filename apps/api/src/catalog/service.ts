@@ -4,14 +4,14 @@
 // Locking (database.md §4.1): a variant change locks ALL the product's variants in ascending id order (FOR NO KEY UPDATE),
 // writes, then aq_refresh_products locks the product and recomputes the aggregates in the same transaction.
 // Optimistic concurrency: every update carries `version`; a mismatch is 409 VERSION_CONFLICT with the current data.
-import { normaliseSize, uniqueSlug } from '@artq/shared';
+import { describeReadiness, normaliseSize, uniqueSlug } from '@artq/shared';
 import type { Media, Prisma, PrismaClient, Product, ProductVariant } from '@prisma/client';
 import type { AuditEntry } from '../admin/router.js';
 import * as fn from '../db/functions.js';
 import type { Db } from '../db/functions.js';
 import { AppError } from '../lib/errors.js';
 import { rethrowCatalog } from './errors.js';
-import type { Bulk, CreateProduct, CreateVariant, Pricing, UpdateProduct, UpdateVariant } from '@artq/shared';
+import type { Bulk, CreateProduct, CreateVariant, Pricing, TaxApproval, UpdateProduct, UpdateVariant } from '@artq/shared';
 
 export type CatalogActor = {
   userId: number;
@@ -83,7 +83,7 @@ export class CatalogService {
       },
     });
     if (!p || p.deletedAt) return null;
-    const [r] = await db.$queryRaw<{ f: string[] }[]>`SELECT product_readiness_failures(p) AS f FROM products p WHERE p.id = ${id}`;
+    const failures = await this.failures(db, id);
     return {
       id: p.id, status: p.status, publishedAt: p.publishedAt, name: p.name, slug: p.slug, shortDescription: p.shortDescription,
       description: p.description, productDetails: p.productDetails, specificationsCare: p.specificationsCare, howToUse: p.howToUse,
@@ -95,7 +95,7 @@ export class CatalogService {
       aggregates: { minPrice: p.minPrice, maxPrice: p.maxPrice, maxMrp: p.maxMrp, available: p.availableQty, activeVariants: p.activeVariantCount },
       variants: p.variants.map((v) => variantView(v, seeCost)),
       images: p.images.map((i) => ({ id: i.id, mediaId: i.mediaId, alt: i.alt, sortOrder: i.sortOrder, isCover: i.isCover, media: this.renderMedia(i.media) })),
-      readiness: { ready: (r?.f ?? []).length === 0, failures: r?.f ?? [] },
+      readiness: { ready: failures.length === 0, failures: describeReadiness(failures) },
       version: p.version, createdAt: p.createdAt, updatedAt: p.updatedAt,
     };
   }
@@ -122,6 +122,7 @@ export class CatalogService {
       if (techniqueIds?.length) await tx.productTechnique.createMany({ data: [...new Set(techniqueIds)].map((t) => ({ productId: p.id, techniqueId: t })) }).catch(rethrowCatalog);
       for (const [i, v] of variants.entries()) await this.insertVariant(tx, p.id, v, i + 1);
       if (variants.length) await fn.refreshProducts(tx, [p.id]);
+      await this.afterChange(tx, p.id);
       await actor.audit(tx, { action: 'product.create', entity: 'product', entityId: p.id, after: { ...content, slug, techniqueIds, variants: variants.length } });
       return p.id;
     }, TX);
@@ -145,6 +146,7 @@ export class CatalogService {
         await tx.productTechnique.deleteMany({ where: { productId: id } });
         if (techniqueIds.length) await tx.productTechnique.createMany({ data: [...new Set(techniqueIds)].map((t) => ({ productId: id, techniqueId: t })) }).catch(rethrowCatalog);
       }
+      await this.afterChange(tx, id);
       const before = Object.fromEntries(Object.keys(data).map((k) => [k, current[k as keyof Product]]));
       await actor.audit(tx, { action: 'product.update', entity: 'product', entityId: id, before, after: { ...data, ...(techniqueIds ? { techniqueIds } : {}) } });
     }, TX);
@@ -182,9 +184,9 @@ export class CatalogService {
     }, TX);
   }
 
-  /** Content bulk actions (catalog:write) with a per-item result (api.md §4.3). */
+  /** Bulk actions with a per-item result (api.md §4.3): content (catalog:write) or publication (catalog:publish). */
   async bulk(body: Bulk, actor: CatalogActor) {
-    const results: { id: number; ok: boolean; error?: { code: string; message: string } }[] = [];
+    const results: { id: number; ok: boolean; error?: { code: string; message: string; details?: unknown } }[] = [];
     let target: { typeId: number; categoryId?: number } | undefined;
     if (body.action === 'setCategory') {
       const c = await this.prisma.category.findUnique({ where: { id: body.categoryId } });
@@ -196,13 +198,19 @@ export class CatalogService {
     }
     for (const id of [...new Set(body.ids)].sort((a, b) => a - b)) {
       try {
+        if (body.action === 'publish' || body.action === 'unpublish' || body.action === 'archive') {
+          await this.setStatus(id, body.action, actor, { audit: false });
+          results.push({ id, ok: true });
+          continue;
+        }
+        const action = body.action;
         await this.prisma.$transaction(async (tx) => {
           const [p] = await tx.$queryRaw<{ status: string; categoryId: number | null; categoryTypeId: number | null }[]>`
             SELECT p.status, p.category_id AS "categoryId", c.type_id AS "categoryTypeId"
               FROM products p LEFT JOIN categories c ON c.id = p.category_id WHERE p.id = ${id} AND p.deleted_at IS NULL FOR NO KEY UPDATE OF p`;
           if (!p) throw notFound('Product');
           let data: Prisma.ProductUncheckedUpdateInput;
-          switch (body.action) {
+          switch (action) {
             case 'markNew': data = { isNewArrival: true }; break;
             case 'unmarkNew': data = { isNewArrival: false, newArrivalRank: null }; break;
             case 'markTrending': data = { isTrending: true }; break;
@@ -217,11 +225,12 @@ export class CatalogService {
             }
           }
           await tx.product.update({ where: { id }, data: { ...data, updatedBy: actor.userId, version: { increment: 1 } } }).catch(rethrowCatalog);
+          await this.afterChange(tx, id);
         }, TX);
         results.push({ id, ok: true });
       } catch (e) {
         if (!(e instanceof AppError)) throw e;
-        results.push({ id, ok: false, error: { code: e.code, message: e.message } });
+        results.push({ id, ok: false, error: { code: e.code, message: e.message, ...(e.details === undefined ? {} : { details: e.details }) } });
       }
     }
     await actor.audit(this.prisma, { action: `product.bulk_${body.action}`, entity: 'product', after: { ...body, results: results.map((r) => ({ id: r.id, ok: r.ok })) } });
@@ -235,10 +244,13 @@ export class CatalogService {
       // Variants, then the product row (the global order). The product lock also serialises adds to a product that has no
       // variants yet; the SKU sequence is read in a later statement so it sees every add committed before the lock.
       await this.lockVariants(tx, productId);
-      const [p] = await tx.$queryRaw<{ id: number }[]>`SELECT id FROM products WHERE id = ${productId} AND deleted_at IS NULL FOR NO KEY UPDATE`;
+      const [p] = await tx.$queryRaw<{ status: string }[]>`SELECT status::text FROM products WHERE id = ${productId} AND deleted_at IS NULL FOR NO KEY UPDATE`;
       if (!p) throw notFound('Product');
-      const v = await this.insertVariant(tx, productId, body, await this.nextSkuNumber(tx, productId));
+      // On a live product a new variant starts inactive: price it, count it, then turn it on (each step passes the gate).
+      const data = p.status === 'ACTIVE' && body.isActive === undefined ? { ...body, isActive: false } : body;
+      const v = await this.insertVariant(tx, productId, data, await this.nextSkuNumber(tx, productId));
       await fn.refreshProducts(tx, [productId]);
+      await this.afterChange(tx, productId);
       await actor.audit(tx, { action: 'variant.create', entity: 'variant', entityId: v.id, after: { productId, ...body, sku: v.sku } });
       return v.id;
     }, TX);
@@ -253,6 +265,7 @@ export class CatalogService {
       applySize(content, current);
       const updated = await tx.productVariant.update({ where: { id }, data: { ...defined(content), version: { increment: 1 } } }).catch(rethrowCatalog);
       await fn.refreshProducts(tx, [current.productId]);
+      await this.afterChange(tx, current.productId);
       const before = Object.fromEntries(Object.keys(content).map((k) => [k, current[k as keyof ProductVariant]]));
       await actor.audit(tx, { action: 'variant.update', entity: 'variant', entityId: id, before, after: content });
       return updated;
@@ -270,6 +283,7 @@ export class CatalogService {
         data: { price: pricing.price, mrp: pricing.mrp, ...(pricing.costPrice !== undefined ? { costPrice: pricing.costPrice } : {}), priceApprovedAt: new Date(), version: { increment: 1 } },
       }).catch(rethrowCatalog);
       await fn.refreshProducts(tx, [current.productId]);
+      await this.afterChange(tx, current.productId);
       await actor.audit(tx, {
         action: 'variant.price_update', entity: 'variant', entityId: id,
         before: { price: current.price, mrp: current.mrp, costPrice: current.costPrice }, after: { costPrice: current.costPrice, ...pricing },
@@ -279,7 +293,91 @@ export class CatalogService {
     return variantView(v, true);
   }
 
+  // ── Publication (task 2.3, product.md §8.7) ───────────────────────────────
+
+  /** Live gate checklist (GET /products/:id/readiness). */
+  async getReadiness(id: number) {
+    if (!(await this.prisma.product.findFirst({ where: { id, deletedAt: null }, select: { id: true } }))) throw notFound('Product');
+    const failures = await this.failures(this.prisma, id);
+    return { ready: failures.length === 0, failures: describeReadiness(failures) };
+  }
+
+  /**
+   * publish: DRAFT/ARCHIVED → ACTIVE only when every check passes (else 422 NOT_PUBLISHABLE with the failures, and the
+   * evaluation is stored). unpublish: → DRAFT. archive: → ARCHIVED (hidden, kept for history). Already there = no change.
+   * `published_at` keeps the first publication date.
+   */
+  async setStatus(id: number, action: 'publish' | 'unpublish' | 'archive', actor: CatalogActor, opts: { audit?: boolean } = {}) {
+    const target = ({ publish: 'ACTIVE', unpublish: 'DRAFT', archive: 'ARCHIVED' } as const)[action];
+    const out = await this.prisma.$transaction(async (tx): Promise<{ failures: string[] } | { changed: boolean }> => {
+      await this.lockVariants(tx, id);
+      const [p] = await tx.$queryRaw<{ status: string }[]>`SELECT status::text FROM products WHERE id = ${id} AND deleted_at IS NULL FOR NO KEY UPDATE`;
+      if (!p) throw notFound('Product');
+      if (p.status === target) {
+        if (opts.audit !== false) await actor.audit(tx, { action: `product.${action}`, entity: 'product', entityId: id, after: { status: target, unchanged: true } });
+        return { changed: false };
+      }
+      if (action === 'publish') {
+        const failures = await this.failures(tx, id);
+        await this.storeReadiness(tx, id, failures);
+        if (failures.length) return { failures };   // committed: the stored evaluation shows what blocked it
+        await tx.$executeRaw`UPDATE products SET status = 'ACTIVE', is_publishable = true, published_at = coalesce(published_at, now()),
+                               version = version + 1, updated_by = ${actor.userId}, updated_at = now() WHERE id = ${id}`;
+      } else {
+        await tx.$executeRaw`UPDATE products SET status = ${target}::"ProductStatus", version = version + 1, updated_by = ${actor.userId}, updated_at = now() WHERE id = ${id}`;
+      }
+      if (opts.audit !== false) await actor.audit(tx, { action: `product.${action}`, entity: 'product', entityId: id, before: { status: p.status }, after: { status: target } });
+      return { changed: true };
+    }, TX);
+    if ('failures' in out) {
+      throw new AppError(422, 'NOT_PUBLISHABLE', 'This product is not ready to publish', { failures: describeReadiness(out.failures) });
+    }
+    return out;
+  }
+
+  /** catalog:publish: sets and approves the HSN code and GST rate (decision D-1: values come from the accountant). */
+  async approveTax(id: number, body: TaxApproval, actor: CatalogActor) {
+    await this.prisma.$transaction(async (tx) => {
+      const [p] = await tx.$queryRaw<{ hsnCode: string | null; gstRate: Prisma.Decimal | null; taxApprovedAt: Date | null }[]>`
+        SELECT hsn_code AS "hsnCode", gst_rate AS "gstRate", tax_approved_at AS "taxApprovedAt" FROM products WHERE id = ${id} AND deleted_at IS NULL FOR NO KEY UPDATE`;
+      if (!p) throw notFound('Product');
+      await tx.product.update({ where: { id }, data: { hsnCode: body.hsnCode, gstRate: body.gstRate, taxApprovedAt: new Date(), taxApprovedBy: actor.userId, updatedBy: actor.userId, version: { increment: 1 } } });
+      await this.afterChange(tx, id);
+      await actor.audit(tx, {
+        action: 'product.tax_approve', entity: 'product', entityId: id,
+        before: { hsnCode: p.hsnCode, gstRate: p.gstRate === null ? null : Number(p.gstRate), approved: p.taxApprovedAt !== null }, after: body,
+      });
+    }, TX);
+    return (await this.getProduct(id, actor.seeCost))!;
+  }
+
   // ── Internals ────────────────────────────────────────────────────────────
+
+  /** The gate, evaluated by the database (`product_readiness_failures`, the trigger's own definition). */
+  private async failures(db: Db, id: number): Promise<string[]> {
+    const [r] = await db.$queryRaw<{ f: string[] }[]>`SELECT product_readiness_failures(p) AS f FROM products p WHERE p.id = ${id}`;
+    return r?.f ?? [];
+  }
+
+  private async storeReadiness(tx: Db, id: number, failures: string[]): Promise<void> {
+    await tx.$executeRaw`UPDATE products SET readiness = ${JSON.stringify({ failures, evaluatedAt: new Date().toISOString() })}::jsonb,
+                           is_publishable = ${failures.length === 0} WHERE id = ${id}`;
+  }
+
+  /**
+   * End of every catalogue change, in its transaction (product.md §8.7 "breaking a check on a published product is
+   * blocked; unpublish first"): a live product must still pass every check, else the whole change rolls back.
+   * Drafts just get their stored evaluation refreshed.
+   */
+  private async afterChange(tx: Db, id: number): Promise<void> {
+    const [p] = await tx.$queryRaw<{ status: string }[]>`SELECT status::text FROM products WHERE id = ${id}`;
+    const failures = await this.failures(tx, id);
+    if (p?.status === 'ACTIVE' && failures.length) {
+      throw new AppError(409, 'UNPUBLISH_FIRST', 'This change would make a live product fail a publication check. Unpublish it first, or fix the check.', { failures: describeReadiness(failures) });
+    }
+    await this.storeReadiness(tx, id, failures);
+  }
+
 
   /** Locks every variant of the product in ascending id order (the global lock order: variants before products). */
   private lockVariants(tx: Db, productId: number) {

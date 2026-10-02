@@ -109,7 +109,7 @@ describe('create product (POST /products)', () => {
     expect(p.variants.map((v) => [v.sku, (v as unknown as { size: string }).size])).toEqual([[`P${p.id}-V1`, '500 gm'], ['ER-1KG', '1 kg']]);
     expect(p.variants[0]).toMatchObject({ netQuantity: 500, netUnit: 'G', label: '500 gm', price: null, available: 0 });
     expect((p as unknown as { aggregates: object }).aggregates).toEqual({ minPrice: null, maxPrice: null, maxMrp: null, available: 0, activeVariants: 2 });
-    expect((p as unknown as { readiness: { failures: string[] } }).readiness.failures).toEqual(expect.arrayContaining(['no_tax', 'no_image', 'no_price_or_size', 'stock_uncounted']));
+    expect((p as unknown as { readiness: { failures: { code: string }[] } }).readiness.failures.map((f) => f.code)).toEqual(expect.arrayContaining(['no_tax', 'no_image', 'no_price_or_size', 'stock_uncounted']));
     const audit = await prisma.auditLog.findFirstOrThrow({ where: { action: 'product.create', entityId: String(p.id) } });
     expect(audit.actorId).toBe(ADMIN.id);
     // a second product with the same name gets the next free slug
@@ -517,7 +517,7 @@ describe('bulk content actions (POST /products/bulk)', () => {
   it.each([
     ['no ids', { action: 'markNew', ids: [] }],
     ['101 ids', { action: 'markNew', ids: Array.from({ length: 101 }, (_, i) => i + 1) }],
-    ['unknown action', { action: 'publish', ids: [1] }],
+    ['unknown action', { action: 'delete', ids: [1] }],
     ['setType without typeId', { action: 'setType', ids: [1] }],
     ['extra field', { action: 'markNew', ids: [1], price: 1 }],
   ])('400 for %s', async (_l, body) => {

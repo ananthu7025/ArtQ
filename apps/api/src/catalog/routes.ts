@@ -1,6 +1,6 @@
 // /v1/admin catalogue routes (api.md §4.3). Each endpoint accepts only the fields its permission covers (AT-10):
 // content endpoints are catalog:write with no commercial fields; pricing is pricing:write; bulk content is catalog:write.
-import { bulkBody, can, createProductBody, createVariantBody, idParam, pricingBody, updateProductBody, updateVariantBody, type Permission } from '@artq/shared';
+import { BULK_PUBLISH_ACTIONS, bulkBody, can, createProductBody, createVariantBody, emptyBody, idParam, pricingBody, taxApprovalBody, updateProductBody, updateVariantBody, type Bulk, type Permission } from '@artq/shared';
 import type { Request, RequestHandler, Response, Router } from 'express';
 import { recordAudit } from '../admin/router.js';
 import { AppError } from '../lib/errors.js';
@@ -23,8 +23,28 @@ export function registerCatalogRoutes(admin: AdminRoutes, catalog: CatalogServic
   r.post('/products', admin.can('catalog:write'), validate({ body: createProductBody }), async (req, res) => {
     noStore(res).status(201).json(await catalog.createProduct(req.body, actor(req, res)));
   });
-  r.post('/products/bulk', admin.can('catalog:write'), validate({ body: bulkBody }), async (req, res) => {
+  // Content actions need catalog:write, publication actions catalog:publish. A caller with neither is refused before the
+  // body is read (403, as in AT-10); otherwise the action decides.
+  const eitherBulkPermission: RequestHandler = (req, _res, next) =>
+    next(req.auth && (can(req.auth.role, 'catalog:write') || can(req.auth.role, 'catalog:publish')) ? undefined
+      : new AppError(403, 'FORBIDDEN', 'You do not have permission to do this', { permission: 'catalog:write' }));
+  const bulkPermission: RequestHandler = (req, res, next) =>
+    admin.can((BULK_PUBLISH_ACTIONS as readonly string[]).includes((req.body as Bulk).action) ? 'catalog:publish' : 'catalog:write')(req, res, next);
+  r.post('/products/bulk', eitherBulkPermission, validate({ body: bulkBody }), bulkPermission, async (req, res) => {
     noStore(res).json(await catalog.bulk(req.body, actor(req, res)));
+  });
+  r.get('/products/:id/readiness', admin.can('catalog:read'), validate({ params: idParam }), async (req, res) => {
+    noStore(res).json(await catalog.getReadiness(id(req)));
+  });
+  for (const action of BULK_PUBLISH_ACTIONS) {
+    r.post(`/products/:id/${action}`, admin.can('catalog:publish'), validate({ params: idParam, body: emptyBody }), async (req, res) => {
+      const a = actor(req, res);
+      await catalog.setStatus(id(req), action, a);
+      noStore(res).json(await catalog.getProduct(id(req), a.seeCost));
+    });
+  }
+  r.post('/products/:id/tax-approval', admin.can('catalog:publish'), validate({ params: idParam, body: taxApprovalBody }), async (req, res) => {
+    noStore(res).json(await catalog.approveTax(id(req), req.body, actor(req, res)));
   });
   r.get('/products/:id', admin.can('catalog:read'), validate({ params: idParam }), async (req, res) => {
     const p = await catalog.getProduct(id(req), can(req.auth!.role, 'pricing:write'));

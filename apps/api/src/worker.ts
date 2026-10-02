@@ -7,6 +7,7 @@ import { processEmailDelivery, type EmailConsumer } from './email/consumer.js';
 import { ResendTransport, SmtpTransport, type EmailTransport } from './email/transport.js';
 import { processSearchQueue } from './db/functions.js';
 import { QUEUE } from './jobs/registry.js';
+import { runCatalogChecks } from './jobs/catalog-check.js';
 import { runRetention } from './jobs/retention.js';
 import { dispatchOnce, OUTBOX_CONSUMERS, type OutboxJobData } from './outbox/dispatcher.js';
 import { processWebhook, sweepWebhooks, WEBHOOK_QUEUE } from './webhooks/inbox.js';
@@ -42,6 +43,11 @@ const runtime = createWorkerRuntime({
       if (job.name === 'retention') return runRetention(prisma);
       if (job.name === 'webhook-sweep') return sweepWebhooks(prisma, runtime.queues.get(WEBHOOK_QUEUE)!);
       if (job.name === 'media-purge') return media.purgeStale();
+      if (job.name === 'catalog-check') {
+        const r = await runCatalogChecks(prisma);
+        if (r.driftRepaired.length) log.error({ products: r.driftRepaired }, 'product aggregate drift repaired; investigate the write path');
+        return r;
+      }
       await redis.set('worker:heartbeat', new Date().toISOString(), 'EX', 300);
       return 'ok';
     } },
@@ -63,6 +69,7 @@ const runtime = createWorkerRuntime({
     { queue: QUEUE.maintenance, id: 'retention', everyMs: 3_600_000, jobName: 'retention' },
     { queue: QUEUE.maintenance, id: 'webhook-sweep', everyMs: 60_000, jobName: 'webhook-sweep' },
     { queue: QUEUE.maintenance, id: 'media-purge', everyMs: 3_600_000, jobName: 'media-purge' },
+    { queue: QUEUE.maintenance, id: 'catalog-check', everyMs: 86_400_000, jobName: 'catalog-check' },
     { queue: QUEUE.outboxDispatch, id: 'outbox-dispatch', everyMs: 1000, jobName: 'dispatch' },
     { queue: QUEUE.searchReindex, id: 'search-reindex', everyMs: 2000, jobName: 'reindex' },
   ],
