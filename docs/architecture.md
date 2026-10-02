@@ -491,7 +491,7 @@ sequenceDiagram
 `POST /v1/webhooks/razorpay`:
 1. Read the raw body and verify `X-Razorpay-Signature` = HMAC-SHA256(rawBody, `RAZORPAY_WEBHOOK_SECRET`) with a constant-time compare. Invalid → 400 (not stored).
 2. `INSERT … ON CONFLICT (provider, event_id) DO NOTHING` with `event_id` from the `x-razorpay-event-id` header, then **commit**.
-3. Best-effort `queue.add('webhook.process', {id}, {jobId: 'wh-' + id})`. (BullMQ rejects custom ids containing `:`; verified on 5.81.5 and 6.3.11.)
+3. Best-effort `queue.add('webhook.process', {id}, {jobId: 'wh-' + id, removeOnComplete: true})`. (BullMQ rejects custom ids containing `:`; verified on 5.81.5 and 6.3.11.) The job is removed when it completes: BullMQ ignores an `add` whose id still exists, so a retained `wh-<id>` would silently swallow the sweeper's re-enqueue of a FAILED event. Domain failures are recorded by `aq_webhook_fail`, so the job itself completes.
 4. Respond **200 only after step 2 committed**. If the DB is unavailable, respond 503 so Razorpay retries.
 5. Duplicate delivery: if the row is `PROCESSED`/`IGNORED`, respond 200. If `RECEIVED`/`FAILED`, or `PROCESSING` with an expired lock, re-enqueue and respond 200.
 

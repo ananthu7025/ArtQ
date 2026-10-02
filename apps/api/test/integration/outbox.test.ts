@@ -37,6 +37,7 @@ beforeEach(async () => {
   for (const q of queues?.values() ?? []) await q.close();
   prefix = `t${randomBytes(4).toString('hex')}`;                        // isolated BullMQ keyspace per test
   queues = new Map(Object.values(OUTBOX_CONSUMERS).map((n) => [n, new Queue(n, { connection, prefix })]));
+  await Promise.all([...queues.values()].map((q) => q.waitUntilReady()));   // never close a queue that is still connecting
   transport = new MemoryTransport();
   await prisma.$executeRaw`UPDATE outbox_deliveries SET status = 'COMPLETED', completed_at = now() WHERE status <> 'COMPLETED'`;   // start each test with an empty backlog
 });

@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import { Queue } from 'bullmq';
 import { Redis } from 'ioredis';
 import { pino } from 'pino';
 import { createApp } from './app.js';
@@ -10,6 +11,8 @@ import { RedisSessionCache } from './auth/session-cache.js';
 import { ConfigError, loadEnv } from './config/env.js';
 import { makeReadinessChecks } from './lib/readiness.js';
 import { RedisRateLimiter } from './middleware/rateLimit.js';
+import { razorpayProvider } from './webhooks/provider.js';
+import { WEBHOOK_QUEUE, webhookRouter } from './webhooks/inbox.js';
 
 let env;
 try { env = loadEnv(); }
@@ -35,6 +38,10 @@ const onRateLimitError = (err: unknown) => log.warn({ err: String(err) }, 'rate 
 // Admin feature modules (Phase 2+) register on admin.routes; auth, rate limit and audit are wired by the factory.
 const admin = createAdminRouter({ prisma, cache, jwt, limiter, onRateLimitError, log, hasRecentStepUp: (sid) => service.hasRecentStepUp(sid) });
 
+const ru = new URL(env.REDIS_URL);
+const webhookQueue = new Queue(WEBHOOK_QUEUE, { connection: { host: ru.hostname, port: Number(ru.port || 6379), ...(ru.password ? { password: decodeURIComponent(ru.password) } : {}), maxRetriesPerRequest: 1, enableOfflineQueue: false } });
+webhookQueue.on('error', (err) => log.warn({ err: err.message }, 'webhook queue connection error'));
+
 const app = createApp({
   version: env.APP_VERSION,
   origins: { storefront: env.STOREFRONT_ORIGINS, admin: env.ADMIN_ORIGINS },
@@ -45,6 +52,7 @@ const app = createApp({
   routes: [
     authRouter({ prisma, cache, jwt, service, env: env.NODE_ENV, refreshMaxAgeS: DEFAULT_AUTH_TIMINGS.refreshIdleS, limiter, onRateLimitError }),
     adminAuthRouter({ prisma, cache, jwt, service, env: env.NODE_ENV, limiter, onRateLimitError }),
+    webhookRouter({ prisma, queue: webhookQueue, providers: [razorpayProvider(env.RAZORPAY_WEBHOOK_SECRET || undefined)], log }),
     admin.router,
   ],
 });
@@ -53,6 +61,6 @@ const server = app.listen(env.PORT, () => log.info({ port: env.PORT }, 'api list
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {
   process.on(sig, () => {
     log.info({ sig }, 'shutting down');
-    server.close(async () => { await prisma.$disconnect(); redis.disconnect(); process.exit(0); });
+    server.close(async () => { await webhookQueue.close(); await prisma.$disconnect(); redis.disconnect(); process.exit(0); });
   });
 }

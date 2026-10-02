@@ -20,13 +20,18 @@ export async function startRedis(): Promise<Service & { port: number }> {
   const port = await freePort();
   const proc = spawn(process.env.REDIS_SERVER ?? 'redis-server', ['--port', String(port), '--save', '', '--appendonly', 'no'], { stdio: 'ignore' });
   const url = `redis://127.0.0.1:${port}`;
-  const probe = new Redis(url, { lazyConnect: true, maxRetriesPerRequest: 0, retryStrategy: () => null });
-  probe.on('error', () => {});
+  // Wait up to 30 s: under the full turbo run (every package testing at once) redis-server took longer than the old
+  // ~5 s window, and the readiness tests were skipped. A fresh probe client per attempt keeps each try independent.
   for (let i = 0; ; i++) {
-    try { await probe.connect(); await probe.ping(); break; }
-    catch (e) { if (i > 50) { proc.kill('SIGKILL'); throw new Error(`redis-server did not start: ${String(e)}. Install Redis or set TEST_REDIS_URL.`, { cause: e }); } await new Promise((r) => setTimeout(r, 100)); }
+    const probe = new Redis(url, { lazyConnect: true, maxRetriesPerRequest: 0, retryStrategy: () => null });
+    probe.on('error', () => {});
+    try { await probe.connect(); await probe.ping(); probe.disconnect(); break; }
+    catch (e) {
+      probe.disconnect();
+      if (i > 300) { proc.kill('SIGKILL'); throw new Error(`redis-server did not start within 30 s: ${String(e)}. Install Redis or set TEST_REDIS_URL.`, { cause: e }); }
+      await new Promise((r) => setTimeout(r, 100));
+    }
   }
-  probe.disconnect();
   return { url, port, stop: async () => { proc.kill('SIGKILL'); } };
 }
 

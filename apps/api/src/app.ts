@@ -48,7 +48,8 @@ export function createApp(deps: AppDeps): Express {
     app.use((req, res, next) => (req.path.startsWith('/health') ? next() : byIp(req, res, next)));
   }
   app.use(jsonOnly);
-  app.use(express.json({ limit: '1mb', type: 'application/json' }));
+  // The raw bytes are kept for webhook signature checks (HMAC over exactly what the provider sent).
+  app.use(express.json({ limit: '1mb', type: 'application/json', verify: (req, _res, buf) => { (req as express.Request).rawBody = buf; } }));
   app.use(healthRouter(deps.version, deps.readiness, deps.readinessTimeoutMs));
   for (const r of deps.routes ?? []) app.use('/v1', r);
   app.use(notFound);

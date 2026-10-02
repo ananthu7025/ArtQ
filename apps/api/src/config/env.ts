@@ -31,6 +31,8 @@ export const envSchema = z.object({
   SMTP_HOST: z.string().min(1).default('localhost'),
   SMTP_PORT: z.coerce.number().int().min(1).max(65535).default(1025),
   RESEND_API_KEY: z.string().optional(),
+  /** Razorpay webhook secret; without it POST /v1/webhooks/razorpay answers 503 (Razorpay retries). Required from Phase 4. */
+  RAZORPAY_WEBHOOK_SECRET: z.string().optional(),
 });
 export type Env = z.infer<typeof envSchema> & { AUTH_JWT_ISSUER: string };
 
