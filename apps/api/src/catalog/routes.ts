@@ -1,6 +1,6 @@
 // /v1/admin catalogue routes (api.md §4.3). Each endpoint accepts only the fields its permission covers (AT-10):
 // content endpoints are catalog:write with no commercial fields; pricing is pricing:write; bulk content is catalog:write.
-import { BULK_PUBLISH_ACTIONS, bulkBody, can, createProductBody, createVariantBody, emptyBody, idParam, pricingBody, productListQuery, taxApprovalBody, updateProductBody, updateVariantBody, type Bulk, type Permission, type ProductListQuery } from '@artq/shared';
+import { BULK_PUBLISH_ACTIONS, bulkBody, can, createProductBody, createVariantBody, emptyBody, idParam, pricingBody, productImagesBody, productListQuery, taxApprovalBody, updateProductBody, updateVariantBody, type Bulk, type Permission, type ProductListQuery } from '@artq/shared';
 import type { Request, RequestHandler, Response, Router } from 'express';
 import { recordAudit } from '../admin/router.js';
 import { AppError } from '../lib/errors.js';
@@ -60,6 +60,9 @@ export function registerCatalogRoutes(admin: AdminRoutes, catalog: CatalogServic
   r.delete('/products/:id', admin.can('catalog:write'), validate({ params: idParam }), async (req, res) => {
     await catalog.deleteProduct(id(req), actor(req, res));
     res.status(204).end();
+  });
+  r.put('/products/:id/images', admin.can('catalog:write'), admin.can('media:write'), validate({ params: idParam, body: productImagesBody }), async (req, res) => {
+    noStore(res).json(await catalog.setImages(id(req), req.body, actor(req, res)));
   });
   r.post('/products/:id/variants', admin.can('catalog:write'), validate({ params: idParam, body: createVariantBody }), async (req, res) => {
     noStore(res).status(201).json(await catalog.addVariant(id(req), req.body, actor(req, res)));

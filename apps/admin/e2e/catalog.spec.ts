@@ -35,7 +35,7 @@ test('owner: brand fonts, add a product, gate refusal on the toggle, then Audit 
   await expect(page.getByText('Type & category:')).toBeVisible();
 
   // Back on the list: Unassigned (never "Unknown"), the missing image state, and the gate on the toggle.
-  await page.getByRole('link', { name: 'Back to products' }).click();
+  await page.getByRole('link', { name: 'All products' }).click();
   const row = page.getByRole('row').filter({ hasText: 'E2E Resin Starter Kit' });
   await expect(row).toContainText('Unassigned');
   await expect(page.locator('main')).not.toContainText(/unknown/i);

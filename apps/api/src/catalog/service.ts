@@ -11,7 +11,8 @@ import * as fn from '../db/functions.js';
 import type { Db } from '../db/functions.js';
 import { AppError } from '../lib/errors.js';
 import { rethrowCatalog } from './errors.js';
-import type { Bulk, CreateProduct, CreateVariant, Pricing, ProductListQuery, TaxApproval, UpdateProduct, UpdateVariant } from '@artq/shared';
+import type { Bulk, CreateProduct, CreateVariant, Pricing, ProductImages, ProductListQuery, TaxApproval, UpdateProduct, UpdateVariant } from '@artq/shared';
+import { sanitizeDescription } from './rich-text.js';
 import { listProducts } from './list.js';
 
 export type CatalogActor = {
@@ -81,10 +82,12 @@ export class CatalogService {
         techniques: { select: { techniqueId: true }, orderBy: { techniqueId: 'asc' } },
         variants: { where: { deletedAt: null }, orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }] },
         images: { orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }], include: { media: true } },
+        relations: { orderBy: [{ kind: 'asc' }, { sortOrder: 'asc' }], include: { related: { select: { id: true, name: true, slug: true, status: true } } } },
       },
     });
     if (!p || p.deletedAt) return null;
     const failures = await this.failures(db, id);
+    const updatedBy = p.updatedBy === null ? null : await db.user.findUnique({ where: { id: p.updatedBy }, select: { id: true, name: true, email: true } });
     return {
       id: p.id, status: p.status, publishedAt: p.publishedAt, name: p.name, slug: p.slug, shortDescription: p.shortDescription,
       description: p.description, productDetails: p.productDetails, specificationsCare: p.specificationsCare, howToUse: p.howToUse,
@@ -96,8 +99,9 @@ export class CatalogService {
       aggregates: { minPrice: p.minPrice, maxPrice: p.maxPrice, maxMrp: p.maxMrp, available: p.availableQty, activeVariants: p.activeVariantCount },
       variants: p.variants.map((v) => variantView(v, seeCost)),
       images: p.images.map((i) => ({ id: i.id, mediaId: i.mediaId, alt: i.alt, sortOrder: i.sortOrder, isCover: i.isCover, media: this.renderMedia(i.media) })),
+      relations: p.relations.map((r) => ({ productId: r.relatedProductId, kind: r.kind, name: r.related.name, slug: r.related.slug, status: r.related.status })),
       readiness: { ready: failures.length === 0, failures: describeReadiness(failures) },
-      version: p.version, createdAt: p.createdAt, updatedAt: p.updatedAt,
+      version: p.version, createdAt: p.createdAt, updatedAt: p.updatedAt, updatedBy,
     };
   }
 
@@ -117,7 +121,8 @@ export class CatalogService {
   // ── Products ─────────────────────────────────────────────────────────────
 
   async createProduct(body: CreateProduct, actor: CatalogActor) {
-    const { variants = [], techniqueIds, ...content } = body;
+    const { variants = [], techniqueIds, relations, ...content } = body;
+    if (content.description !== undefined) content.description = sanitizeDescription(content.description);
     const id = await this.prisma.$transaction(async (tx) => {
       const taxonomy = await this.resolveTaxonomy(tx, body.typeId, body.categoryId, null);
       const slug = content.slug ?? (await this.freeSlug(tx, content.name));
@@ -126,6 +131,7 @@ export class CatalogService {
         data: { ...defined(content), name: content.name, ...taxonomy, slug, specifications: content.specifications ?? {}, status: 'DRAFT', createdBy: actor.userId, updatedBy: actor.userId },
       }).catch(rethrowCatalog);
       if (techniqueIds?.length) await tx.productTechnique.createMany({ data: [...new Set(techniqueIds)].map((t) => ({ productId: p.id, techniqueId: t })) }).catch(rethrowCatalog);
+      if (relations?.length) await this.setRelations(tx, p.id, relations);
       for (const [i, v] of variants.entries()) await this.insertVariant(tx, p.id, v, i + 1);
       if (variants.length) await fn.refreshProducts(tx, [p.id]);
       await this.afterChange(tx, p.id);
@@ -136,7 +142,8 @@ export class CatalogService {
   }
 
   async updateProduct(id: number, body: UpdateProduct, actor: CatalogActor) {
-    const { version, techniqueIds, ...content } = body;
+    const { version, techniqueIds, relations, ...content } = body;
+    if (content.description !== undefined) content.description = sanitizeDescription(content.description);
     await this.prisma.$transaction(async (tx) => {
       const current = await this.lockProductVersion(tx, id, version, actor.seeCost);
       assertFlagsResolvedOnly(content.dataFlags, current.dataFlags);
@@ -152,9 +159,10 @@ export class CatalogService {
         await tx.productTechnique.deleteMany({ where: { productId: id } });
         if (techniqueIds.length) await tx.productTechnique.createMany({ data: [...new Set(techniqueIds)].map((t) => ({ productId: id, techniqueId: t })) }).catch(rethrowCatalog);
       }
+      if (relations !== undefined) await this.setRelations(tx, id, relations);
       await this.afterChange(tx, id);
       const before = Object.fromEntries(Object.keys(data).map((k) => [k, current[k as keyof Product]]));
-      await actor.audit(tx, { action: 'product.update', entity: 'product', entityId: id, before, after: { ...data, ...(techniqueIds ? { techniqueIds } : {}) } });
+      await actor.audit(tx, { action: 'product.update', entity: 'product', entityId: id, before, after: { ...data, ...(techniqueIds ? { techniqueIds } : {}), ...(relations ? { relations } : {}) } });
     }, TX);
     return (await this.getProduct(id, actor.seeCost))!;
   }
@@ -299,6 +307,35 @@ export class CatalogService {
     return variantView(v, true);
   }
 
+  /**
+   * PUT /products/:id/images: replaces the ordered image list. Only this admin pipeline's PUBLIC images that are uploaded,
+   * processing or ready may be attached (api.md §4.3); exactly one cover. A live product must keep a ready cover.
+   */
+  async setImages(id: number, body: ProductImages, actor: CatalogActor) {
+    await this.prisma.$transaction(async (tx) => {
+      const [p] = await tx.$queryRaw<{ id: number }[]>`SELECT id FROM products WHERE id = ${id} AND deleted_at IS NULL FOR NO KEY UPDATE`;
+      if (!p) throw notFound('Product');
+      const ids = body.images.map((i) => i.mediaId);
+      const ok = await tx.media.findMany({
+        where: { id: { in: ids }, kind: 'IMAGE', visibility: 'PUBLIC', ownerScope: 'admin', deletedAt: null, status: { in: ['UPLOADED', 'PROCESSING', 'READY'] } },
+        select: { id: true },
+      });
+      const missing = ids.filter((m) => !ok.some((o) => o.id === m));
+      if (missing.length) throw new AppError(422, 'MEDIA_NOT_USABLE', 'Some images are missing, failed or are not product images', { mediaIds: missing });
+      const before = await tx.productImage.findMany({ where: { productId: id }, orderBy: { sortOrder: 'asc' }, select: { mediaId: true, isCover: true, alt: true } });
+      await tx.productImage.deleteMany({ where: { productId: id } });
+      if (body.images.length) {
+        await tx.productImage.createMany({ data: body.images.map((i, n) => ({ productId: id, mediaId: i.mediaId, alt: i.alt ?? null, isCover: i.isCover, sortOrder: n })) });
+        await tx.media.updateMany({ where: { id: { in: ids }, claimedAt: null }, data: { claimedAt: new Date() } });
+      }
+      // `version` guards the content fields only (the editor form); images save on their own and do not bump it.
+      await tx.product.update({ where: { id }, data: { updatedBy: actor.userId } });
+      await this.afterChange(tx, id);
+      await actor.audit(tx, { action: 'product.images', entity: 'product', entityId: id, before, after: body.images });
+    }, TX);
+    return (await this.getProduct(id, actor.seeCost))!;
+  }
+
   // ── Publication (task 2.3, product.md §8.7) ───────────────────────────────
 
   /** Live gate checklist (GET /products/:id/readiness). */
@@ -311,7 +348,7 @@ export class CatalogService {
   /**
    * publish: DRAFT/ARCHIVED → ACTIVE only when every check passes (else 422 NOT_PUBLISHABLE with the failures, and the
    * evaluation is stored). unpublish: → DRAFT. archive: → ARCHIVED (hidden, kept for history). Already there = no change.
-   * `published_at` keeps the first publication date.
+   * `published_at` keeps the first publication date. Status is not content: `version` (the editor's guard) is unchanged.
    */
   async setStatus(id: number, action: 'publish' | 'unpublish' | 'archive', actor: CatalogActor, opts: { audit?: boolean } = {}) {
     const target = ({ publish: 'ACTIVE', unpublish: 'DRAFT', archive: 'ARCHIVED' } as const)[action];
@@ -328,9 +365,9 @@ export class CatalogService {
         await this.storeReadiness(tx, id, failures);
         if (failures.length) return { failures };   // committed: the stored evaluation shows what blocked it
         await tx.$executeRaw`UPDATE products SET status = 'ACTIVE', is_publishable = true, published_at = coalesce(published_at, now()),
-                               version = version + 1, updated_by = ${actor.userId}, updated_at = now() WHERE id = ${id}`;
+                               updated_by = ${actor.userId}, updated_at = now() WHERE id = ${id}`;
       } else {
-        await tx.$executeRaw`UPDATE products SET status = ${target}::"ProductStatus", version = version + 1, updated_by = ${actor.userId}, updated_at = now() WHERE id = ${id}`;
+        await tx.$executeRaw`UPDATE products SET status = ${target}::"ProductStatus", updated_by = ${actor.userId}, updated_at = now() WHERE id = ${id}`;
       }
       if (opts.audit !== false) await actor.audit(tx, { action: `product.${action}`, entity: 'product', entityId: id, before: { status: p.status }, after: { status: target } });
       return { changed: true };
@@ -347,7 +384,7 @@ export class CatalogService {
       const [p] = await tx.$queryRaw<{ hsnCode: string | null; gstRate: Prisma.Decimal | null; taxApprovedAt: Date | null }[]>`
         SELECT hsn_code AS "hsnCode", gst_rate AS "gstRate", tax_approved_at AS "taxApprovedAt" FROM products WHERE id = ${id} AND deleted_at IS NULL FOR NO KEY UPDATE`;
       if (!p) throw notFound('Product');
-      await tx.product.update({ where: { id }, data: { hsnCode: body.hsnCode, gstRate: body.gstRate, taxApprovedAt: new Date(), taxApprovedBy: actor.userId, updatedBy: actor.userId, version: { increment: 1 } } });
+      await tx.product.update({ where: { id }, data: { hsnCode: body.hsnCode, gstRate: body.gstRate, taxApprovedAt: new Date(), taxApprovedBy: actor.userId, updatedBy: actor.userId } });
       await this.afterChange(tx, id);
       await actor.audit(tx, {
         action: 'product.tax_approve', entity: 'product', entityId: id,
@@ -384,6 +421,22 @@ export class CatalogService {
     await this.storeReadiness(tx, id, failures);
   }
 
+
+  /** Replaces the product's relations; a product cannot relate to itself; order = list order per kind. */
+  private async setRelations(tx: Db, id: number, relations: { productId: number; kind: 'FREQUENTLY_BOUGHT_TOGETHER' | 'SIMILAR' }[]) {
+    if (relations.some((r) => r.productId === id)) throw new AppError(422, 'RELATION_SELF', 'A product cannot be related to itself');
+    const unique = [...new Map(relations.map((r) => [`${r.kind}:${r.productId}`, r])).values()];
+    await tx.productRelation.deleteMany({ where: { productId: id } });
+    if (unique.length) {
+      const order = new Map<string, number>();
+      await tx.productRelation.createMany({
+        data: unique.map((r) => { const n = order.get(r.kind) ?? 0; order.set(r.kind, n + 1); return { productId: id, relatedProductId: r.productId, kind: r.kind, sortOrder: n }; }),
+      }).catch((e: unknown) => {
+        if ((e as { code?: string }).code === 'P2003') throw new AppError(422, 'RELATION_NOT_FOUND', 'A related product does not exist');
+        throw e;
+      });
+    }
+  }
 
   /** Locks every variant of the product in ascending id order (the global lock order: variants before products). */
   private lockVariants(tx: Db, productId: number) {

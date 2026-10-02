@@ -7,13 +7,14 @@ const text = (max: number) => z.string().trim().max(max, `Use at most ${max} cha
 const optText = (max: number) => text(max).nullable().optional();
 const list = (items: number, len: number) => z.array(text(len).min(1, 'Remove empty lines')).max(items, `At most ${items} items`);
 export const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+export const RELATION_KINDS = ['FREQUENTLY_BOUGHT_TOGETHER', 'SIMILAR'] as const;
 const id = z.number().int().positive();
 const flags = z.array(z.string().regex(/^[A-Z_]{3,40}$/)).max(20);
 const dim = z.number({ error: 'Enter a number' }).positive('Must be more than 0').max(9999.9, 'At most 9999.9 cm').multipleOf(0.1, 'Use at most one decimal').nullable().optional();
 
 export const productContent = z.strictObject({
   name: text(200).min(1, 'Enter a product name'),
-  slug: z.string().trim().max(220).regex(SLUG, 'lowercase letters, digits and single hyphens'),
+  slug: z.string().trim().max(220, 'Use at most 220 characters').regex(SLUG, 'Use lowercase letters, digits and single hyphens, e.g. teak-wood-frame'),
   shortDescription: optText(300),
   description: optText(20_000),
   productDetails: list(30, 300),
@@ -34,6 +35,8 @@ export const productContent = z.strictObject({
   metaDescription: optText(320),
   /** Import flags the admin has resolved (the list that remains). */
   dataFlags: flags,
+  /** Replaces the product's relations (storefront "Frequently bought together" / "Similar"). */
+  relations: z.array(z.strictObject({ productId: id, kind: z.enum(RELATION_KINDS) })).max(40, 'At most 40 related products'),
 });
 
 export const variantContent = z.strictObject({
@@ -87,6 +90,14 @@ export const bulkBody = z.discriminatedUnion('action', [
   z.strictObject({ action: z.literal('setType'), ids: z.array(id).min(1).max(100), typeId: id }),
   z.strictObject({ action: z.literal('setCategory'), ids: z.array(id).min(1).max(100), categoryId: id }),
 ]);
+
+/** PUT /products/:id/images: the ordered image list; exactly one cover when there are images. */
+export const productImagesBody = z.strictObject({
+  images: z.array(z.strictObject({ mediaId: id, alt: text(200).nullable().optional(), isCover: z.boolean() })).max(20, 'At most 20 images')
+    .refine((l) => l.length === 0 || l.filter((i) => i.isCover).length === 1, 'Choose exactly one cover image')
+    .refine((l) => new Set(l.map((i) => i.mediaId)).size === l.length, 'An image is listed twice'),
+});
+export type ProductImages = z.infer<typeof productImagesBody>;
 
 /** Tax approval (catalog:publish). HSN: 4, 6 or 8 digits. GST %: the accountant's rate (D-1); the database allows 0–40. */
 export const taxApprovalBody = z.strictObject({

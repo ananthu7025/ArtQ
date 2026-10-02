@@ -84,7 +84,7 @@ export function ReadinessBadge({ row }: { row: ProductListRow }) {
  * Activation toggle = publish / unpublish (catalog:publish). Turning it on runs the gate; on refusal the switch stays
  * off and a popover lists what is missing. Without the permission it is shown read-only.
  */
-export function PublishToggle({ row, canPublish, onToggle }: { row: ProductListRow; canPublish: boolean; onToggle: (on: boolean) => Promise<void> }) {
+export function PublishToggle({ row, canPublish, onToggle }: { row: Pick<ProductListRow, 'id' | 'name' | 'status'>; canPublish: boolean; onToggle: (on: boolean) => Promise<void> }) {
   const on = row.status === 'ACTIVE';
   const [busy, setBusy] = useState(false);
   const [refused, setRefused] = useState<string[] | null>(null);

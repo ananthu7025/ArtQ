@@ -9,6 +9,7 @@ import { AdminApi } from '../src/api/client';
 import { App } from '../src/App';
 import { expectFieldError } from './field';
 import { err, fakeServer, type Handler } from './fake-server';
+import { TECHNIQUES, teakFrame } from './product-fixture';
 
 type Role = 'STAFF' | 'ADMIN' | 'SUPER_ADMIN';
 const row = (o: Partial<ProductListRow> & { id: number; name: string }): ProductListRow => ({
@@ -25,9 +26,9 @@ const ROWS: ProductListRow[] = [
 ];
 const TYPES = { data: [1, 2, 3, 4, 5, 6, 7].map((i) => ({ id: i, name: ['Resin', 'Frames', 'Pigments', 'Moulds', 'Tools', 'Kits', 'Glitter'][i - 1]!, slug: `t${i}`, sortOrder: i, isActive: true, productCount: i })), unassigned: 1, total: 29 };
 const DETAIL = {
-  id: 1, name: 'Ocean Pour Kit', status: 'ACTIVE', type: { name: 'Resin' }, category: { name: 'Epoxy' },
-  aggregates: { minPrice: 89_900, maxPrice: 89_900, available: 20, activeVariants: 1 }, readiness: { ready: true, failures: [] },
-  variants: [{ id: 11, sku: 'OCEAN-1KG', label: '1 kg', size: '1 kg', color: null, weightG: 1100, weightSource: 'MEASURED', price: 89_900, mrp: 99_900, onHand: 25, reserved: 5, available: 20, isActive: true, version: 4 }],
+  ...teakFrame(), id: 1, name: 'Ocean Pour Kit', status: 'ACTIVE' as const,
+  aggregates: { minPrice: 89_900, maxPrice: 89_900, maxMrp: 99_900, available: 20, activeVariants: 1 }, readiness: { ready: true, failures: [] },
+  variants: [{ ...teakFrame().variants[0]!, thickness: null, id: 11, sku: 'OCEAN-1KG', label: '1 kg', size: '1 kg', color: null, weightG: 1100, weightSource: 'MEASURED', price: 89_900, mrp: 99_900, onHand: 25, reserved: 5, available: 20, isActive: true, version: 4 }],
 };
 
 function setup(o: { path?: string; role: Role; extra?: Record<string, Handler> }) {
@@ -38,6 +39,7 @@ function setup(o: { path?: string; role: Role; extra?: Record<string, Handler> }
     'GET /admin/product-types': () => [200, TYPES],
     'GET /admin/categories': () => [200, { data: [{ id: 10, name: 'Epoxy', typeId: 1 }, { id: 20, name: 'Teak', typeId: 2 }] }],
     'GET /admin/products/1': () => [200, DETAIL],
+    'GET /admin/techniques': () => [200, TECHNIQUES],
     ...o.extra,
   });
   window.history.replaceState({}, '', o.path ?? '/products');

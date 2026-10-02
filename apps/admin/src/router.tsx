@@ -7,7 +7,7 @@ import { LoginPage } from './pages/LoginPage';
 import { ForgotPasswordPage, ResetPasswordPage } from './pages/PasswordPages';
 import { StaffPage } from './pages/StaffPage';
 import { ProductsPage } from './pages/products/ProductsPage';
-import { ProductSummaryPage } from './pages/products/ProductSummaryPage';
+import { ProductEditorPage } from './pages/products/editor/ProductEditorPage';
 import { DashboardPage, ForbiddenPage, FullPageSpinner, ModulePlaceholder, NotFoundPage } from './pages/simple';
 
 function RequireSession() {
@@ -43,7 +43,7 @@ export const routes: RouteObject[] = [
       children: [
         { index: true, element: <Navigate to="/dashboard" replace /> },
         ...ALL_NAV_ITEMS.map((item) => ({ path: item.path, element: <Guard item={item}>{BUILT[item.path]?.() ?? <ModulePlaceholder item={item} />}</Guard> })),
-        { path: '/products/:id', element: <Guard item={PRODUCTS}><ProductSummaryPage /></Guard> },
+        { path: '/products/:id', element: <Guard item={PRODUCTS}><ProductEditorPage /></Guard> },
         { path: '*', element: <NotFoundPage /> },
       ],
     }],

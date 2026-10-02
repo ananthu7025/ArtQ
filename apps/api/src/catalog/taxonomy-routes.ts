@@ -1,4 +1,4 @@
-// Product types and categories, read side (api.md §4.4) for the Products page tabs, filters and bulk "Set type/category".
+// Product types, categories and techniques, read side (api.md §4.4) for the Products page tabs, filters and bulk "Set type/category".
 // Create/update/delete arrive with task 2.6.
 import { categoriesQuery, productTypesQuery, type Permission } from '@artq/shared';
 import type { PrismaClient } from '@prisma/client';
@@ -24,6 +24,11 @@ export function registerTaxonomyRoutes(admin: AdminRoutes, prisma: PrismaClient)
       unassigned: byType.get(null) ?? 0,
       total: counts.reduce((n, c) => n + c._count._all, 0),
     });
+  });
+
+  r.get('/techniques', admin.can('catalog:read'), async (_req, res) => {
+    const data = await prisma.technique.findMany({ orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }], select: { id: true, name: true, slug: true, isActive: true } });
+    res.set('Cache-Control', 'private, no-store').json({ data });
   });
 
   r.get('/categories', admin.can('catalog:read'), validate({ query: categoriesQuery }), async (req, res) => {

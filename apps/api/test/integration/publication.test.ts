@@ -104,7 +104,7 @@ async function live() {
 }
 
 describe('✅ each product.md §8.7 check individually blocks publish', () => {
-  it('a product passing every check publishes: ACTIVE, publishable, first-publication date, version bump, audit', async () => {
+  it('a product passing every check publishes: ACTIVE, publishable, first-publication date, audit', async () => {
     const p = await readyDraft();
     const before = await product(p.id);
     expect((await call('get', `/products/${p.id}/readiness`, STAFF)).body).toEqual({ ready: true, failures: [] });
@@ -112,7 +112,7 @@ describe('✅ each product.md §8.7 check individually blocks publish', () => {
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ status: 'ACTIVE', readiness: { ready: true, failures: [] } });
     const after = await product(p.id);
-    expect(after).toMatchObject({ status: 'ACTIVE', isPublishable: true, version: before.version + 1 });
+    expect(after).toMatchObject({ status: 'ACTIVE', isPublishable: true, version: before.version });   // status is not content: no version bump
     expect(after.publishedAt).not.toBeNull();
     expect((await prisma.auditLog.findFirstOrThrow({ where: { action: 'product.publish', entityId: String(p.id) } }))).toMatchObject({ actorId: ADMIN.id, before: { status: 'DRAFT' }, after: { status: 'ACTIVE' } });
   });
@@ -171,7 +171,7 @@ describe('status transitions', () => {
     const p = await live();
     const { publishedAt: first, version } = await product(p.id);
     expect((await publish(p.id)).status).toBe(200);
-    expect((await product(p.id)).version).toBe(version);   // no change, no version bump
+    expect((await product(p.id)).version).toBe(version);
     expect(await prisma.auditLog.count({ where: { action: 'product.publish', entityId: String(p.id), after: { path: ['unchanged'], equals: true } } })).toBe(1);
 
     expect((await call('post', `/products/${p.id}/unpublish`, ADMIN, {})).body.status).toBe('DRAFT');
