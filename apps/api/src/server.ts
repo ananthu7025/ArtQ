@@ -17,6 +17,7 @@ import { QUEUE } from './jobs/registry.js';
 import { mediaServiceFromEnv } from './media/factory.js';
 import { customerMediaRouter, registerAdminMediaRoutes } from './media/routes.js';
 import { registerAuditRoutes } from './admin/audit-routes.js';
+import { registerStaffRoutes } from './admin/staff-routes.js';
 import { registerCatalogRoutes } from './catalog/routes.js';
 import { CatalogService } from './catalog/service.js';
 import { razorpayProvider } from './webhooks/provider.js';
@@ -38,6 +39,7 @@ const jwt = { secret: new TextEncoder().encode(env.AUTH_JWT_SECRET), issuer: env
 const cache = new RedisSessionCache(redis, 60, (op, err) => log.warn({ op, err: String(err) }, 'session cache unavailable'));
 const service = new AuthService(prisma, cache, {
   ...DEFAULT_AUTH_TIMINGS, jwt, otpPepper: env.AUTH_OTP_PEPPER, linkSecret: env.AUTH_LINK_SECRET, webUrl: env.WEB_URL,
+  adminUrl: env.ADMIN_ORIGINS[0]!,   // the first admin origin is where staff links point
 });
 
 const limiter = new RedisRateLimiter(redis);
@@ -54,6 +56,7 @@ mediaQueue.on('error', (err) => log.warn({ err: err.message }, 'media queue conn
 const media = mediaServiceFromEnv(env, prisma, async (id) => { await mediaQueue.add('media.process', { id }, { jobId: jobId('media', id, Date.now()), attempts: 3, backoff: { type: 'exponential', delay: 10_000 }, removeOnComplete: true }); });
 registerAdminMediaRoutes(admin, media, prisma);
 registerAuditRoutes(admin, prisma);
+registerStaffRoutes(admin, prisma, service);
 registerCatalogRoutes(admin, new CatalogService(prisma, (m) => media.view(m)));
 
 const app = createApp({

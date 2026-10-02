@@ -4,7 +4,7 @@ import { permissionsFor } from '@artq/shared';
 import { Router, type Request, type RequestHandler, type Response } from 'express';
 import { z } from 'zod';
 import { AppError } from '../lib/errors.js';
-import { PASSWORD_MAX } from '../lib/password.js';
+import { PASSWORD_MAX, STAFF_PASSWORD_MIN } from '../lib/password.js';
 import { clientKey, RATE_LIMITS, rateLimit, type Limit, type RateLimiter } from '../middleware/rateLimit.js';
 import { validate } from '../middleware/validate.js';
 import { clearCookie, cookieSpec, parseCookies, setCookie, type DeployEnv } from './cookies.js';
@@ -16,6 +16,8 @@ const schemas = {
   login: z.strictObject({ email: z.email().max(160), password: z.string().min(1).max(PASSWORD_MAX) }),
   stepUp: z.strictObject({ password: z.string().min(1).max(PASSWORD_MAX) }),
   empty: z.strictObject({}),
+  forgot: z.strictObject({ email: z.email().max(160) }),
+  reset: z.strictObject({ token: z.string().min(16).max(200), password: z.string().min(STAFF_PASSWORD_MIN).max(PASSWORD_MAX) }),
 };
 
 export type AdminAuthRouterDeps = AuthDeps & { service: AuthService; env: DeployEnv; limiter: RateLimiter; onRateLimitError?: (e: unknown) => void };
@@ -70,6 +72,14 @@ export function adminAuthRouter(d: AdminAuthRouterDeps): Router {
   });
   r.post('/admin/auth/step-up', auth, limit('admin-step-up', RATE_LIMITS.mfa), validate({ body: schemas.stepUp }), async (req, res) => {
     res.set('Cache-Control', 'no-store').json(await d.service.adminStepUp(req.auth!.sessionId, req.auth!.userId, req.body.password));
+  });
+  // Always { ok: true } (no account enumeration); a link is emailed only to an ACTIVE staff account.
+  r.post('/admin/auth/password/forgot', limit('admin-forgot', RATE_LIMITS.emailSend), validate({ body: schemas.forgot }), async (req, res) => {
+    res.set('Cache-Control', 'no-store').json(await d.service.adminForgotPassword(req.body));
+  });
+  // Invite and reset links both land here; success ends every session of the account.
+  r.post('/admin/auth/password/reset', limit('admin-reset', RATE_LIMITS.verify), validate({ body: schemas.reset }), async (req, res) => {
+    res.set('Cache-Control', 'no-store').json(await d.service.resetPassword(req.body));
   });
   r.get('/admin/me', auth, perUser, async (req, res) => {
     // permissions[] only drives what the SPA shows; every endpoint enforces its own permission server-side.

@@ -5,6 +5,7 @@ import { EmailSendError, MemoryTransport, ResendTransport } from '../src/email/t
 const DATA: Record<string, Record<string, unknown>> = {
   otp: { code: '482913', purpose: 'LOGIN', expiresInMinutes: 10 },
   password_reset: { link: 'https://artq.in/reset-password?token=abc' },
+  staff_invite: { link: 'https://admin.artq.in/reset-password?token=abc', role: 'ADMIN', name: 'Sanju' },
   password_changed: {},
   signup_attempt_existing: {},
   new_signin_activity: {},
@@ -27,6 +28,14 @@ describe('email templates', () => {
     expect(otp.text).toContain('log in');
     expect(render('otp', { ...DATA.otp, purpose: 'SIGNUP_VERIFY' }).text).toContain('verify your email');
     expect(render('password_reset', DATA.password_reset!).html).toContain('href="https://artq.in/reset-password?token=abc"');
+  });
+
+  it('staff invite names the role and links to the admin app; an unknown role reads as Staff; a missing link throws', () => {
+    const r = render('staff_invite', DATA.staff_invite!);
+    expect(r.text).toContain('Admin access');
+    expect(r.html).toContain('href="https://admin.artq.in/reset-password?token=abc"');
+    expect(render('staff_invite', { ...DATA.staff_invite, role: 'CUSTOMER' }).text).toContain('Staff access');
+    expect(() => render('staff_invite', { role: 'ADMIN' })).toThrow(/link/);
   });
 
   it('escapes interpolated values', () => {

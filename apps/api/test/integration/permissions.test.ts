@@ -41,7 +41,7 @@ beforeAll(async () => {
   prisma = db.prisma;
   redis = new Redis(rd.url);
   const cache = new RedisSessionCache(redis);
-  service = new AuthService(prisma, cache, { ...DEFAULT_AUTH_TIMINGS, jwt: JWT, otpPepper: 'test-otp-pepper-0123', linkSecret: 'test-link-secret-0123456789abcdef0123', webUrl: WEB });
+  service = new AuthService(prisma, cache, { ...DEFAULT_AUTH_TIMINGS, jwt: JWT, otpPepper: 'test-otp-pepper-0123', linkSecret: 'test-link-secret-0123456789abcdef0123', webUrl: WEB, adminUrl: 'http://localhost:5173' });
   const deps = { prisma, cache, jwt: JWT };
   const admin = createAdminRouter({ ...deps, limiter: NO_LIMIT, log: pino({ level: 'silent' }), hasRecentStepUp: (sid) => service.hasRecentStepUp(sid), onMissingAudit: (req: Request) => missingAudit.push(`${req.method} ${req.originalUrl}`) });
   const r = admin.routes;

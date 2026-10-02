@@ -1,7 +1,7 @@
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useState } from 'react';
 import { useForm } from 'react-hook-form';
-import { Navigate, useLocation, useNavigate } from 'react-router';
+import { Link, Navigate, useLocation, useNavigate } from 'react-router';
 import { z } from 'zod';
 import { ApiError } from '../api/client';
 import { useAuth } from '../auth/AuthProvider';
@@ -60,6 +60,7 @@ export function LoginPage() {
           <button type="submit" disabled={isSubmitting} aria-busy={isSubmitting || undefined} className="h-11 w-full rounded-md bg-brand-700 font-semibold text-white disabled:opacity-80">
             {isSubmitting ? 'Logging in…' : 'Log in'}
           </button>
+          <Link to="/forgot-password" className="block text-center text-sm font-medium text-brand-700 underline">Forgot your password?</Link>
         </form>
       </div>
     </main>

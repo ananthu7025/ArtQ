@@ -29,7 +29,7 @@ afterAll(async () => { redis?.disconnect(); await db?.drop(); await Promise.all(
 
 function build(limiter: RateLimiter, onError?: (e: unknown) => void): Express {
   const cache = new MemorySessionCache();
-  const service = new AuthService(prisma, cache, { ...DEFAULT_AUTH_TIMINGS, jwt: JWT, otpPepper: 'test-otp-pepper-0123', linkSecret: 'test-link-secret-0123456789abcdef0123', webUrl: ORIGIN });
+  const service = new AuthService(prisma, cache, { ...DEFAULT_AUTH_TIMINGS, jwt: JWT, otpPepper: 'test-otp-pepper-0123', linkSecret: 'test-link-secret-0123456789abcdef0123', webUrl: ORIGIN, adminUrl: 'http://localhost:5173' });
   return createApp({
     version: 't', origins: { storefront: [ORIGIN], admin: ['http://localhost:5173'] }, readiness: { database: async () => {}, redis: async () => {} },
     rateLimiter: limiter, ...(onError ? { onRateLimitError: onError } : {}),

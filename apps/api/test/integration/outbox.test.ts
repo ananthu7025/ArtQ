@@ -29,7 +29,7 @@ beforeAll(async () => {
   prisma = db.prisma;
   const u = new URL(rd.url);
   connection = { host: u.hostname, port: Number(u.port), maxRetriesPerRequest: null };
-  auth = new AuthService(prisma, new MemorySessionCache(), { ...DEFAULT_AUTH_TIMINGS, jwt: { secret: new TextEncoder().encode('x'.repeat(40)), issuer: 't' }, otpPepper: 'test-otp-pepper-0123', linkSecret: 'l'.repeat(40), webUrl: 'http://localhost:3000' });
+  auth = new AuthService(prisma, new MemorySessionCache(), { ...DEFAULT_AUTH_TIMINGS, jwt: { secret: new TextEncoder().encode('x'.repeat(40)), issuer: 't' }, otpPepper: 'test-otp-pepper-0123', linkSecret: 'l'.repeat(40), webUrl: 'http://localhost:3000', adminUrl: 'http://localhost:5173' });
 }, 180_000);
 afterAll(async () => { await db?.drop(); await Promise.all([pg?.stop(), rd?.stop()]); });
 

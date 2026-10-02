@@ -4,6 +4,8 @@ import { Shell } from './layout/Shell';
 import { ALL_NAV_ITEMS, canSee, type NavItem } from './nav';
 import { AuditLogsPage } from './pages/AuditLogsPage';
 import { LoginPage } from './pages/LoginPage';
+import { ForgotPasswordPage, ResetPasswordPage } from './pages/PasswordPages';
+import { StaffPage } from './pages/StaffPage';
 import { DashboardPage, ForbiddenPage, FullPageSpinner, ModulePlaceholder, NotFoundPage } from './pages/simple';
 
 function RequireSession() {
@@ -23,10 +25,13 @@ function Guard({ item, children }: { item: NavItem; children: React.ReactNode })
 const BUILT: Record<string, () => React.ReactNode> = {
   '/dashboard': () => <DashboardPage />,
   '/audit-logs': () => <AuditLogsPage />,
+  '/staff': () => <StaffPage />,
 };
 
 export const routes: RouteObject[] = [
   { path: '/login', element: <LoginPage /> },
+  { path: '/forgot-password', element: <ForgotPasswordPage /> },
+  { path: '/reset-password', element: <ResetPasswordPage /> },
   {
     element: <RequireSession />,
     children: [{

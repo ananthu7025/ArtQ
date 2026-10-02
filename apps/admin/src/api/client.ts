@@ -121,6 +121,18 @@ export class AdminApi {
     return b.user;
   }
 
+  /** Always resolves for a well-formed email (the API never reveals whether an account exists). */
+  async forgotPassword(email: string): Promise<void> {
+    const res = await this.raw('POST', '/admin/auth/password/forgot', { email }, false);
+    if (!res.ok) throw await AdminApi.error(res);
+  }
+
+  /** Sets a password from an invite or reset link; every session of the account ends. */
+  async resetPassword(token: string, password: string): Promise<void> {
+    const res = await this.raw('POST', '/admin/auth/password/reset', { token, password }, false);
+    if (!res.ok) throw await AdminApi.error(res);
+  }
+
   stepUp(password: string): Promise<{ stepUpUntil: string }> {
     return this.request('POST', '/admin/auth/step-up', { body: { password } });
   }

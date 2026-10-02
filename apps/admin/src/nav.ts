@@ -40,7 +40,7 @@ export const NAV: NavGroup[] = [
     { label: 'CMS & Messages', path: '/cms', perms: ['content:write'], task: '6.1' },
   ] },
   { title: 'Admin', items: [
-    { label: 'Staff & Permissions', path: '/staff', perms: ['staff:manage'], task: '6.5' },
+    { label: 'Staff & Permissions', path: '/staff', perms: ['staff:manage'], task: '1.12' },
     { label: 'Settings', path: '/settings', perms: ['settings:write'], task: '6.5' },
     { label: 'Audit Logs', path: '/audit-logs', perms: ['audit:read'], task: '6.5' },
   ] },

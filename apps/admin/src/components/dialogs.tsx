@@ -5,9 +5,9 @@ import * as Dialog from '@radix-ui/react-dialog';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ApiError, type AdminApi } from '../api/client';
 
-const panel = 'fixed left-1/2 top-1/2 z-50 w-[min(92vw,440px)] -translate-x-1/2 -translate-y-1/2 rounded-lg bg-white p-6 shadow-xl outline-none';
-const overlay = 'fixed inset-0 z-40 bg-black/50';
-const btn = 'inline-flex h-11 items-center justify-center rounded-md px-4 font-medium';
+export const panel = 'fixed left-1/2 top-1/2 z-50 w-[min(92vw,440px)] -translate-x-1/2 -translate-y-1/2 rounded-lg bg-white p-6 shadow-xl outline-none';
+export const overlay = 'fixed inset-0 z-40 bg-black/50';
+export const btn = 'inline-flex h-11 items-center justify-center rounded-md px-4 font-medium';
 
 export function ConfirmDialog(p: { open: boolean; onOpenChange: (o: boolean) => void; title: string; description: ReactNode; confirmLabel: string; danger?: boolean; busy?: boolean; onConfirm: () => void }) {
   return (
@@ -94,6 +94,22 @@ export function StepUpDialog({ api }: { api: AdminApi }) {
               <button type="submit" aria-busy={busy || undefined} disabled={busy || !password} className={`${btn} bg-brand-700 text-white disabled:opacity-80`}>Confirm</button>
             </div>
           </form>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
+/** A dialog holding a form or a set of actions (Add staff, Manage staff, …). */
+export function FormDialog(p: { open: boolean; onOpenChange: (o: boolean) => void; title: string; description?: ReactNode; children: ReactNode }) {
+  return (
+    <Dialog.Root open={p.open} onOpenChange={p.onOpenChange}>
+      <Dialog.Portal>
+        <Dialog.Overlay className={overlay} />
+        <Dialog.Content className={panel} {...(p.description ? {} : { 'aria-describedby': undefined })}>
+          <Dialog.Title className="text-lg font-semibold text-ink-900">{p.title}</Dialog.Title>
+          {p.description && <Dialog.Description className="mt-2 text-sm text-ink-700">{p.description}</Dialog.Description>}
+          <div className="mt-4">{p.children}</div>
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
