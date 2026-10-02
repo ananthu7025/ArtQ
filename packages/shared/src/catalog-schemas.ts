@@ -155,4 +155,5 @@ export type ProductListRow = {
 };
 
 export const productTypesQuery = z.strictObject({ withCounts: z.enum(['0', '1']).optional() });
-export const categoriesQuery = z.strictObject({ typeId: z.coerce.number().int().positive().optional() });
+export const categoriesQuery = z.strictObject({ typeId: z.coerce.number().int().positive().optional(), withCounts: z.enum(['0', '1']).optional() });
+export const techniquesQuery = z.strictObject({ withCounts: z.enum(['0', '1']).optional() });

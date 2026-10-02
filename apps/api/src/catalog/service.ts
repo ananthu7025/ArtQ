@@ -12,6 +12,7 @@ import type { Db } from '../db/functions.js';
 import { AppError } from '../lib/errors.js';
 import { rethrowCatalog } from './errors.js';
 import type { Bulk, CreateProduct, CreateVariant, Pricing, ProductImages, ProductListQuery, TaxApproval, UpdateProduct, UpdateVariant } from '@artq/shared';
+import { assertUsableImages } from './media-check.js';
 import { sanitizeDescription } from './rich-text.js';
 import { listProducts } from './list.js';
 
@@ -315,18 +316,11 @@ export class CatalogService {
     await this.prisma.$transaction(async (tx) => {
       const [p] = await tx.$queryRaw<{ id: number }[]>`SELECT id FROM products WHERE id = ${id} AND deleted_at IS NULL FOR NO KEY UPDATE`;
       if (!p) throw notFound('Product');
-      const ids = body.images.map((i) => i.mediaId);
-      const ok = await tx.media.findMany({
-        where: { id: { in: ids }, kind: 'IMAGE', visibility: 'PUBLIC', ownerScope: 'admin', deletedAt: null, status: { in: ['UPLOADED', 'PROCESSING', 'READY'] } },
-        select: { id: true },
-      });
-      const missing = ids.filter((m) => !ok.some((o) => o.id === m));
-      if (missing.length) throw new AppError(422, 'MEDIA_NOT_USABLE', 'Some images are missing, failed or are not product images', { mediaIds: missing });
+      await assertUsableImages(tx, body.images.map((i) => i.mediaId));
       const before = await tx.productImage.findMany({ where: { productId: id }, orderBy: { sortOrder: 'asc' }, select: { mediaId: true, isCover: true, alt: true } });
       await tx.productImage.deleteMany({ where: { productId: id } });
       if (body.images.length) {
         await tx.productImage.createMany({ data: body.images.map((i, n) => ({ productId: id, mediaId: i.mediaId, alt: i.alt ?? null, isCover: i.isCover, sortOrder: n })) });
-        await tx.media.updateMany({ where: { id: { in: ids }, claimedAt: null }, data: { claimedAt: new Date() } });
       }
       // `version` guards the content fields only (the editor form); images save on their own and do not bump it.
       await tx.product.update({ where: { id }, data: { updatedBy: actor.userId } });

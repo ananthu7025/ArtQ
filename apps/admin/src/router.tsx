@@ -7,6 +7,7 @@ import { LoginPage } from './pages/LoginPage';
 import { ForgotPasswordPage, ResetPasswordPage } from './pages/PasswordPages';
 import { StaffPage } from './pages/StaffPage';
 import { ProductsPage } from './pages/products/ProductsPage';
+import { TaxonomyPage } from './pages/taxonomy/TaxonomyPage';
 import { ProductEditorPage } from './pages/products/editor/ProductEditorPage';
 import { DashboardPage, ForbiddenPage, FullPageSpinner, ModulePlaceholder, NotFoundPage } from './pages/simple';
 
@@ -29,6 +30,9 @@ const BUILT: Record<string, () => React.ReactNode> = {
   '/audit-logs': () => <AuditLogsPage />,
   '/staff': () => <StaffPage />,
   '/products': () => <ProductsPage />,
+  '/product-types': () => <TaxonomyPage key="type" kind="type" />,
+  '/categories': () => <TaxonomyPage key="category" kind="category" />,
+  '/techniques': () => <TaxonomyPage key="technique" kind="technique" />,
 };
 const PRODUCTS = ALL_NAV_ITEMS.find((i) => i.path === '/products')!;
 

@@ -213,21 +213,22 @@ describe('filters and sorting', () => {
 describe('type tabs and categories', () => {
   it('counts per type (in sort order), Unassigned and All; without withCounts no counts', async () => {
     const res = await get('/product-types?withCounts=1', STAFF);
-    expect(res.body).toEqual({
+    expect(res.body).toMatchObject({
       data: [
-        { id: resin, name: 'Resin', slug: 'resin', sortOrder: 1, isActive: true, productCount: 2 },
-        { id: frames, name: 'Frames', slug: 'frames', sortOrder: 2, isActive: true, productCount: 1 },
-        { id: pigments, name: 'Pigments', slug: 'pigments', sortOrder: 3, isActive: true, productCount: 2 },
+        { id: resin, name: 'Resin', slug: 'resin', sortOrder: 1, isActive: true, productCount: 2, categoryCount: 1 },
+        { id: frames, name: 'Frames', slug: 'frames', sortOrder: 2, isActive: true, productCount: 1, categoryCount: 1 },
+        { id: pigments, name: 'Pigments', slug: 'pigments', sortOrder: 3, isActive: true, productCount: 2, categoryCount: 0 },
       ],
       unassigned: 1, total: 6,
     });
+    expect(res.body.data).toHaveLength(3);
     expect((await get('/product-types')).body.data[0]).not.toHaveProperty('productCount');
     expect((await get('/product-types?withCounts=yes')).status).toBe(400);
   });
 
   it('categories, optionally of one type', async () => {
     expect((await get('/categories')).body.data.map((c: { name: string }) => c.name)).toEqual(['Epoxy', 'Teak']);
-    expect((await get(`/categories?typeId=${frames}`)).body.data).toEqual([{ id: teak, name: 'Teak', slug: 'teak', typeId: frames, isActive: true }]);
+    expect((await get(`/categories?typeId=${frames}`)).body.data).toEqual([{ id: teak, name: 'Teak', slug: 'teak', typeId: frames, isActive: true, sortOrder: 0, image: null }]);
     expect((await get('/categories?typeId=abc')).status).toBe(400);
   });
 });

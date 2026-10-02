@@ -4,6 +4,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { ArrowDown, ArrowUp, Loader2, Trash2, XCircle } from 'lucide-react';
 import { useRef, useState } from 'react';
 import { toast } from 'sonner';
+import { IMAGE_TYPES, imageProblem, uploadImage } from '../../../api/upload';
 import { useAuth } from '../../../auth/AuthProvider';
 import { errorMessage } from '../../../components/feedback';
 import { FormAlert } from '../../../components/form';
@@ -11,8 +12,6 @@ import type { ProductPayload } from './schema';
 
 type Image = ProductPayload['images'][number];
 type Item = { mediaId: number; alt: string | null; isCover: boolean };
-const ACCEPT = ['image/jpeg', 'image/png', 'image/webp', 'image/avif'];
-const MAX_BYTES = 15 * 1024 * 1024;
 
 function StateBadge({ status, reason }: { status: string; reason?: string | null | undefined }) {
   if (status === 'READY') return <span className="rounded-full bg-[#dcfce7] px-2 py-0.5 text-xs font-semibold text-success-700">Ready</span>;
@@ -42,16 +41,11 @@ export function MediaSection({ product, canEdit }: { product: ProductPayload; ca
     setError(null);
     const added: Item[] = [];
     for (const file of Array.from(files)) {
-      if (!ACCEPT.includes(file.type)) { setError(`${file.name}: use a JPEG, PNG, WebP or AVIF image`); continue; }
-      if (file.size > MAX_BYTES) { setError(`${file.name}: images can be at most 15 MB`); continue; }
+      const problem = imageProblem(file);
+      if (problem) { setError(problem); continue; }
       setUploading((u) => [...u, file.name]);
       try {
-        const p = await api.request<{ media: { id: number }; upload: { url: string; headers: Record<string, string> } }>('POST', '/admin/media/presign', { body: { filename: file.name, contentType: file.type, size: file.size, purpose: 'product-image' } });
-        // Content-Length is set by the browser itself (it is a forbidden header); the signature covers the same value.
-        const put = await fetch(p.upload.url, { method: 'PUT', body: file, headers: { 'Content-Type': p.upload.headers['Content-Type'] ?? file.type } });
-        if (!put.ok) throw new Error(`Upload of ${file.name} failed (${put.status})`);
-        await api.request('POST', `/admin/media/${p.media.id}/complete`, { body: {} });
-        added.push({ mediaId: p.media.id, alt: null, isCover: false });
+        added.push({ mediaId: await uploadImage(api, file), alt: null, isCover: false });
       } catch (e) { setError(`${file.name}: ${errorMessage(e)}`); }
       finally { setUploading((u) => u.filter((n) => n !== file.name)); }
     }
@@ -78,7 +72,7 @@ export function MediaSection({ product, canEdit }: { product: ProductPayload; ca
         <div className="flex flex-wrap items-center gap-3">
           <label className="inline-flex h-11 cursor-pointer items-center rounded-md bg-brand-700 px-4 font-medium text-white focus-within:outline-2 focus-within:outline-brand-700">
             Upload images
-            <input ref={input} type="file" accept={ACCEPT.join(',')} multiple className="sr-only" onChange={(e) => { if (e.target.files?.length) void upload(e.target.files); }} />
+            <input ref={input} type="file" accept={IMAGE_TYPES.join(',')} multiple className="sr-only" onChange={(e) => { if (e.target.files?.length) void upload(e.target.files); }} />
           </label>
           <span className="text-sm text-ink-700">JPEG, PNG, WebP or AVIF, up to 15 MB. The first ready cover is shown in listings.</span>
         </div>

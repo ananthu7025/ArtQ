@@ -59,7 +59,7 @@ registerAdminMediaRoutes(admin, media, prisma);
 registerAuditRoutes(admin, prisma);
 registerStaffRoutes(admin, prisma, service);
 registerCatalogRoutes(admin, new CatalogService(prisma, (m) => media.view(m)));
-registerTaxonomyRoutes(admin, prisma);
+registerTaxonomyRoutes(admin, prisma, (m) => media.view(m));
 
 const app = createApp({
   version: env.APP_VERSION,
