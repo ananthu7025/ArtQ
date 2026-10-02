@@ -2,8 +2,12 @@
 // sensitive actions (401 STEP_UP_REQUIRED; MFA is deferred, so step-up is a password). All are Radix dialogs:
 // focus is trapped, Esc closes, focus returns to the trigger.
 import * as Dialog from '@radix-ui/react-dialog';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { stepUpBody } from '@artq/shared';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { useEffect, useState, type ReactNode } from 'react';
+import { useForm } from 'react-hook-form';
 import { ApiError, type AdminApi } from '../api/client';
+import { applyServerErrors, FormAlert, TextField } from './form';
 
 export const panel = 'fixed left-1/2 top-1/2 z-50 w-[min(92vw,440px)] -translate-x-1/2 -translate-y-1/2 rounded-lg bg-white p-6 shadow-xl outline-none';
 export const overlay = 'fixed inset-0 z-40 bg-black/50';
@@ -48,33 +52,31 @@ export function VersionConflictDialog(p: { open: boolean; entity: string; onRelo
   );
 }
 
-/** Installs the step-up handler on the API client: a 401 STEP_UP_REQUIRED opens this dialog; success retries the request. */
+/**
+ * Installs the step-up handler on the API client: a 401 STEP_UP_REQUIRED opens this dialog; success retries the request.
+ * Validated with the API's own step-up schema (CLAUDE.md "Validation rule"); a wrong password shows under the field.
+ */
 export function StepUpDialog({ api }: { api: AdminApi }) {
   const [pending, setPending] = useState<((ok: boolean) => void) | null>(null);
-  const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const input = useRef<HTMLInputElement>(null);
+  const { register, handleSubmit, reset, setError: setFieldError, formState: { errors, isSubmitting } } = useForm({ resolver: zodResolver(stepUpBody), defaultValues: { password: '' } });
 
   useEffect(() => {
-    api.setStepUpHandler(() => new Promise<boolean>((resolve) => { setPassword(''); setError(null); setPending(() => resolve); }));
+    api.setStepUpHandler(() => new Promise<boolean>((resolve) => { reset(); setError(null); setPending(() => resolve); }));
     return () => { api.setStepUpHandler(null); };
-  }, [api]);
+  }, [api, reset]);
 
-  const finish = (ok: boolean) => { pending?.(ok); setPending(null); setPassword(''); };
-  const submit = async () => {
-    setBusy(true);
+  const finish = (ok: boolean) => { pending?.(ok); setPending(null); reset(); };
+  const submit = handleSubmit(async ({ password }) => {
     setError(null);
     try {
       await api.stepUp(password);
       finish(true);
     } catch (e) {
-      setError(e instanceof ApiError && e.code === 'INVALID_CREDENTIALS' ? 'That password is not correct.' : e instanceof Error ? e.message : 'Something went wrong');
-      input.current?.focus();
-    } finally {
-      setBusy(false);
+      if (e instanceof ApiError && e.code === 'INVALID_CREDENTIALS') setFieldError('password', { type: 'server', message: 'That password is not correct.' }, { shouldFocus: true });
+      else if (!applyServerErrors(e, setFieldError, ['password'])) setError(e instanceof Error ? e.message : 'Something went wrong');
     }
-  };
+  });
 
   return (
     <Dialog.Root open={pending !== null} onOpenChange={(o) => { if (!o) finish(false); }}>
@@ -83,15 +85,12 @@ export function StepUpDialog({ api }: { api: AdminApi }) {
         <Dialog.Content className={panel}>
           <Dialog.Title className="text-lg font-semibold text-ink-900">Confirm it&apos;s you</Dialog.Title>
           <Dialog.Description className="mt-2 text-sm text-ink-700">This action needs your password again.</Dialog.Description>
-          <form className="mt-4" onSubmit={(e) => { e.preventDefault(); void submit(); }}>
-            <label htmlFor="stepup-password" className="block text-sm font-medium text-ink-900">Password</label>
-            <input id="stepup-password" ref={input} type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)}
-              aria-invalid={error ? true : undefined} aria-describedby={error ? 'stepup-error' : undefined}
-              className="mt-1 h-11 w-full rounded-md border border-border-input px-3 text-ink-900" />
-            {error && <p id="stepup-error" role="alert" className="mt-2 text-sm text-danger-700">{error}</p>}
+          <form className="mt-4 space-y-4" noValidate onSubmit={(e) => { void submit(e); }}>
+            <TextField id="stepup-password" label="Password" type="password" autoComplete="current-password" {...register('password')} error={errors.password?.message} />
+            {error && <FormAlert>{error}</FormAlert>}
             <div className="mt-6 flex justify-end gap-3">
               <Dialog.Close className={`${btn} text-ink-900 hover:bg-surface-100`} type="button">Cancel</Dialog.Close>
-              <button type="submit" aria-busy={busy || undefined} disabled={busy || !password} className={`${btn} bg-brand-700 text-white disabled:opacity-80`}>Confirm</button>
+              <button type="submit" aria-busy={isSubmitting || undefined} disabled={isSubmitting} className={`${btn} bg-brand-700 text-white disabled:opacity-80`}>Confirm</button>
             </div>
           </form>
         </Dialog.Content>

@@ -12,6 +12,7 @@ import { AdminApi, type Page } from '../src/api/client';
 import { App } from '../src/App';
 import { DataTable, useTableParams } from '../src/components/DataTable';
 import { StepUpDialog, VersionConflictDialog } from '../src/components/dialogs';
+import { expectFieldError } from './field';
 import { err, fakeServer, type Handler } from './fake-server';
 
 type Role = 'STAFF' | 'ADMIN' | 'SUPER_ADMIN';
@@ -49,8 +50,13 @@ describe('login and session', () => {
     setup({ path: '/audit-logs', session: null });
     expect(await screen.findByRole('heading', { name: 'ArtQ Admin' })).toBeTruthy();
     await u.click(screen.getByRole('button', { name: 'Log in' }));
-    expect(await screen.findByText('Enter a valid email address')).toBeTruthy();
-    expect(screen.getByText('Enter your password')).toBeTruthy();
+    await screen.findByText('Enter your email address');
+    expectFieldError('Email', 'Enter your email address');
+    expectFieldError('Password', 'Enter your password');
+    await u.type(screen.getByLabelText('Email'), 'not-an-email');
+    await u.click(screen.getByRole('button', { name: 'Log in' }));
+    await waitFor(() => expectFieldError('Email', 'Enter a valid email address'));
+    await u.clear(screen.getByLabelText('Email'));
     await u.type(screen.getByLabelText('Email'), 'asha@artq.in');
     await u.type(screen.getByLabelText('Password'), 'wrong');
     await u.click(screen.getByRole('button', { name: 'Log in' }));
@@ -241,7 +247,7 @@ describe('dialogs', () => {
     const pw = await screen.findByLabelText('Password');
     await u.type(pw, 'bad');
     await u.click(screen.getByRole('button', { name: 'Confirm' }));
-    expect((await screen.findByRole('alert')).textContent).toBe('That password is not correct.');
+    await waitFor(() => expectFieldError('Password', 'That password is not correct.'));
     await u.clear(pw);
     await u.type(pw, 'pw-ok');
     await u.click(screen.getByRole('button', { name: 'Confirm' }));

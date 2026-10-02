@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { AdminApi } from '../src/api/client';
 import { App } from '../src/App';
 import type { StaffRow } from '../src/pages/StaffPage';
+import { expectFieldError, expectFieldValid } from './field';
 import { err, fakeServer, type Handler } from './fake-server';
 
 type Role = 'STAFF' | 'ADMIN' | 'SUPER_ADMIN';
@@ -90,8 +91,10 @@ describe('Add staff', () => {
     await u.click(screen.getByRole('button', { name: 'Add staff' }));
     const dialog = await screen.findByRole('dialog', { name: 'Add staff' });
     await u.click(within(dialog).getByRole('button', { name: 'Send invite' }));
-    expect(within(dialog).getByText('Enter their name')).toBeTruthy();
-    expect(within(dialog).getByText('Enter a valid email address')).toBeTruthy();
+    await within(dialog).findByText('Enter a name');
+    expectFieldError('Name', 'Enter a name', within(dialog));
+    expectFieldError('Email', 'Enter your email address', within(dialog));
+    expectFieldValid('Role', within(dialog));
     expect(within(dialog).getByText(/Cannot change prices/)).toBeTruthy();
     await u.selectOptions(within(dialog).getByLabelText('Role'), 'ADMIN');
     expect(within(dialog).getByText(/products, prices, refunds/)).toBeTruthy();
@@ -103,6 +106,43 @@ describe('Add staff', () => {
     expect(await screen.findByText('Invite sent to devika@artq.in')).toBeTruthy();
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add staff' })).toBeNull());
     expect(server.calls.filter((c) => c.method === 'POST' && c.path === '/admin/staff').at(-1)!.body).toEqual({ name: 'Devika', email: 'devika@artq.in', role: 'ADMIN' });
+  });
+
+  it('limits match the API exactly: 120-character name and 160-character email pass, one more fails', async () => {
+    const u = userEvent.setup();
+    const { server } = setup({ path: '/staff', session: 'SUPER_ADMIN', extra: { 'GET /admin/staff': () => page(ROWS), 'POST /admin/staff': (c) => [201, row({ id: 12, ...(c.body as object) })] } });
+    await screen.findByText('Sanju');
+    await u.click(screen.getByRole('button', { name: 'Add staff' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Add staff' });
+    const email160 = `${'a'.repeat(160 - '@artq.in'.length)}@artq.in`;
+    await u.type(within(dialog).getByLabelText('Name'), 'n'.repeat(121));
+    await u.type(within(dialog).getByLabelText('Email'), `b${email160}`);
+    await u.click(within(dialog).getByRole('button', { name: 'Send invite' }));
+    await within(dialog).findByText('Use at most 120 characters');
+    expectFieldError('Name', 'Use at most 120 characters', within(dialog));
+    expectFieldError('Email', 'Use at most 160 characters', within(dialog));
+    await u.clear(within(dialog).getByLabelText('Name'));
+    await u.type(within(dialog).getByLabelText('Name'), 'n'.repeat(120));
+    await u.clear(within(dialog).getByLabelText('Email'));
+    await u.type(within(dialog).getByLabelText('Email'), email160);
+    await u.click(within(dialog).getByRole('button', { name: 'Send invite' }));
+    await waitFor(() => expect(server.calls.some((c) => c.method === 'POST' && c.path === '/admin/staff')).toBe(true));
+  });
+
+  it('a server VALIDATION_ERROR lands on its field (red border + message), not in the form alert', async () => {
+    const u = userEvent.setup();
+    setup({ path: '/staff', session: 'SUPER_ADMIN', extra: {
+      'GET /admin/staff': () => page(ROWS),
+      'POST /admin/staff': () => err(400, 'VALIDATION_ERROR', 'Request validation failed', [{ location: 'body', path: 'email', message: 'Enter a valid email address' }]),
+    } });
+    await screen.findByText('Sanju');
+    await u.click(screen.getByRole('button', { name: 'Add staff' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Add staff' });
+    await u.type(within(dialog).getByLabelText('Name'), 'Devika');
+    await u.type(within(dialog).getByLabelText('Email'), 'devika@artq.in');
+    await u.click(within(dialog).getByRole('button', { name: 'Send invite' }));
+    await waitFor(() => expectFieldError('Email', 'Enter a valid email address', within(dialog)));
+    expect(within(dialog).queryByRole('alert')).toBeNull();
   });
 
   it('a server refusal is shown inside the dialog, which stays open', async () => {
@@ -194,7 +234,7 @@ describe('password pages (no session needed)', () => {
     const { server } = setup({ path: '/login', session: null, extra: { 'POST /admin/auth/password/forgot': () => [200, { ok: true }] } });
     await u.click(await screen.findByRole('link', { name: 'Forgot your password?' }));
     await u.click(await screen.findByRole('button', { name: 'Send link' }));
-    expect(screen.getByText('Enter a valid email address')).toBeTruthy();
+    expectFieldError('Email', 'Enter your email address');
     await u.type(screen.getByLabelText('Email'), 'sanju@artq.in');
     await u.click(screen.getByRole('button', { name: 'Send link' }));
     expect(await screen.findByRole('heading', { name: 'Check your email' })).toBeTruthy();
@@ -220,8 +260,8 @@ describe('password pages (no session needed)', () => {
     await u.type(pw, 'short');
     await u.type(again, 'different');
     await u.click(submit);
-    expect(screen.getByText('Use at least 12 characters')).toBeTruthy();
-    expect(screen.getByText('The passwords do not match')).toBeTruthy();
+    expectFieldError('New password', 'Use at least 12 characters');
+    expectFieldError('Repeat the password', 'The passwords do not match');
     await u.clear(pw); await u.type(pw, 'a-long-password');
     await u.clear(again); await u.type(again, 'a-long-password');
     await u.click(submit);

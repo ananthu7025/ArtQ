@@ -1,9 +1,8 @@
 // /v1/auth/* (api.md §3.4) and GET /v1/me. Origin policy and the JSON-only rule are app-wide (createApp); the
 // per-endpoint rate limits of api.md §6 are applied here.
 import { Router, type Request, type Response } from 'express';
-import { z } from 'zod';
+import { emptyBody, forgotPasswordBody, loginBody, otpRequestBody, otpVerifyBody, resetPasswordBody, signupBody, signupVerifyBody } from '@artq/shared';
 import { AppError } from '../lib/errors.js';
-import { PASSWORD_MAX } from '../lib/password.js';
 import { clientKey, RATE_LIMITS, rateLimit, type Limit, type RateLimiter } from '../middleware/rateLimit.js';
 import { validate } from '../middleware/validate.js';
 import { clearCookie, cookieSpec, parseCookies, setCookie, type DeployEnv } from './cookies.js';
@@ -11,25 +10,12 @@ import { sha256 } from './tokens.js';
 import { requireCustomer, type AuthDeps } from './middleware.js';
 import type { AuthService, ClientMeta, Issued } from './service.js';
 
-export const CUSTOMER_PASSWORD_MIN = 8;
+export { CUSTOMER_PASSWORD_MIN } from '@artq/shared';
 
-const email = z.email().max(160);
-const password = z.string().min(CUSTOMER_PASSWORD_MIN).max(PASSWORD_MAX);
-const code = z.string().regex(/^\d{6}$/, 'must be 6 digits');
-const token = z.string().min(10).max(1000);
-
+/** The shared request schemas (CLAUDE.md "Validation rule": the storefront forms import the same ones). */
 export const schemas = {
-  signup: z.strictObject({
-    name: z.string().trim().min(1).max(120), email, password, marketingOptIn: z.boolean().default(false),
-    phone: z.string().regex(/^\+?\d{10,14}$/, 'must be a phone number').optional(),
-  }),
-  verify: z.strictObject({ email, code }),
-  login: z.strictObject({ email, password: z.string().min(1).max(PASSWORD_MAX) }),
-  otpRequest: z.strictObject({ email, purpose: z.literal('LOGIN') }),
-  otpVerify: z.strictObject({ email, purpose: z.literal('LOGIN'), code }),
-  empty: z.strictObject({}),
-  forgot: z.strictObject({ email }),
-  reset: z.strictObject({ token, password }),
+  signup: signupBody, verify: signupVerifyBody, login: loginBody, otpRequest: otpRequestBody, otpVerify: otpVerifyBody,
+  empty: emptyBody, forgot: forgotPasswordBody, reset: resetPasswordBody,
 };
 
 export type AuthRouterDeps = AuthDeps & { service: AuthService; env: DeployEnv; refreshMaxAgeS: number; limiter: RateLimiter; onRateLimitError?: (e: unknown) => void };

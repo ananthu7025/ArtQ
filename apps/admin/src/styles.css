@@ -4,3 +4,6 @@
 
 html, body { background: var(--color-surface-50); color: var(--color-ink-900); font-family: var(--font-body); }
 :focus-visible { outline: 2px solid var(--color-brand-700); outline-offset: 2px; }
+
+/* Validation rule (CLAUDE.md): every invalid field gets a red border. Unlayered, so it wins over Tailwind's border utilities. */
+:is(input, select, textarea)[aria-invalid="true"] { border-color: var(--color-danger-700); box-shadow: 0 0 0 1px var(--color-danger-700); }

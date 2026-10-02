@@ -7,3 +7,6 @@ export * from './slug.js';
 export * from './tax.js';
 export * from './settings.js';
 export * from './permissions.js';
+export * from './auth-schemas.js';
+export * from './staff-schemas.js';
+export * from './catalog-schemas.js';

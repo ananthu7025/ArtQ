@@ -81,6 +81,13 @@ test('"Forgot password" from the login page emails a link to the admin reset pag
   await page.goto('/login');
   await page.getByRole('link', { name: 'Forgot your password?' }).click();
   await expect(page.getByRole('heading', { name: 'Forgot your password?' })).toBeVisible();   // client-side navigation done
+  // Validation rule: an invalid field renders a red border and its message directly under it.
+  await page.getByRole('button', { name: 'Send link' }).click();
+  const email = page.getByLabel('Email');
+  await expect(email).toHaveAttribute('aria-invalid', 'true');
+  await expect(email).toHaveCSS('border-top-color', 'rgb(185, 28, 28)');   // --color-danger-700
+  await expect(page.locator('#email-error')).toHaveText('Enter your email address');
+  await expect(page.locator('#email-error')).toHaveCSS('color', 'rgb(185, 28, 28)');
   await page.getByLabel('Email').fill(STAFF.email);
   await page.getByRole('button', { name: 'Send link' }).click();
   await expect(page.getByRole('heading', { name: 'Check your email' })).toBeVisible();

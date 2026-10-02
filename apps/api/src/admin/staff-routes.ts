@@ -4,7 +4,7 @@
 // Guards: nobody changes their own access here, and the last active SUPER_ADMIN cannot be demoted or blocked.
 import type { Prisma, PrismaClient, User } from '@prisma/client';
 import type { Request, RequestHandler, Response, Router } from 'express';
-import type { Permission } from '@artq/shared';
+import { staffCreateBody, staffListQuery, staffUpdateBody, type Permission } from '@artq/shared';
 import { z } from 'zod';
 import { normaliseEmail, type AuthService } from '../auth/service.js';
 import * as fn from '../db/functions.js';
@@ -15,18 +15,9 @@ import { recordAudit } from './router.js';
 type Tx = Prisma.TransactionClient;
 type AdminRoutes = { routes: Router; can: (p: Permission, o?: { stepUp?: boolean }) => RequestHandler };
 
-const STAFF_ROLE = z.enum(['STAFF', 'ADMIN', 'SUPER_ADMIN']);
+/** The shared request schemas: the Staff page forms import the same ones (CLAUDE.md "Validation rule"). */
 export const staffSchemas = {
-  list: z.strictObject({
-    page: z.coerce.number().int().min(1).default(1),
-    limit: z.coerce.number().int().min(1).max(100).default(50),
-    q: z.string().trim().min(1).max(160).optional(),
-    role: STAFF_ROLE.optional(),
-    status: z.enum(['ACTIVE', 'BLOCKED']).optional(),
-  }),
-  create: z.strictObject({ email: z.email().max(160), name: z.string().trim().min(1).max(120), role: STAFF_ROLE }),
-  update: z.strictObject({ name: z.string().trim().min(1).max(120).optional(), role: z.enum(['CUSTOMER', 'STAFF', 'ADMIN', 'SUPER_ADMIN']).optional() })
-    .refine((b) => b.name !== undefined || b.role !== undefined, 'nothing to update'),
+  list: staffListQuery, create: staffCreateBody, update: staffUpdateBody,
   id: z.strictObject({ id: z.coerce.number().int().positive() }),
 };
 

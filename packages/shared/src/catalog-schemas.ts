@@ -1,5 +1,5 @@
-// Request schemas, one per permission (architecture.md §5.9: each endpoint accepts only the fields its permission
-// covers). Content schemas have NO price, cost or stock fields: those are refused as unknown keys (AT-10).
+// Catalogue request schemas (api.md §4.3), one per permission (architecture.md §5.9: each endpoint accepts only the
+// fields its permission covers). Shared by the API and the admin editor forms (CLAUDE.md "Validation rule"). Content schemas have NO price, cost or stock fields: those are refused as unknown keys (AT-10).
 import { z } from 'zod';
 
 const text = (max: number) => z.string().trim().max(max);

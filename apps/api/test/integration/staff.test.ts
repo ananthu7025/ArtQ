@@ -167,6 +167,17 @@ describe('add staff (POST /staff)', () => {
     expect(await prisma.user.count()).toBe(before);
   });
 
+  it('the same limits as the form: 120-character name / 160-character email pass, one more → 400 on that field with the form\'s message', async () => {
+    const email160 = (p: string) => `${p}${'a'.repeat(160 - '@artq.in'.length - p.length)}@artq.in`;
+    expect((await call('post', '/staff', OWNER, { email: email160('b'), name: 'n'.repeat(120), role: 'STAFF' })).status).toBe(201);
+    const over = await call('post', '/staff', OWNER, { email: `x${email160('c')}`, name: 'n'.repeat(121), role: 'STAFF' });
+    expect(over.status).toBe(400);
+    expect(over.body.error.details).toEqual([
+      { location: 'body', path: 'email', message: 'Use at most 160 characters' },
+      { location: 'body', path: 'name', message: 'Use at most 120 characters' },
+    ]);
+  });
+
   it('ADMIN cannot add staff (403, audited); two concurrent adds of one email create one account', async () => {
     const admin = await as('ADMIN');
     expect((await call('post', '/staff', admin, { email: `x${uniq()}@artq.in`, name: 'X', role: 'SUPER_ADMIN' })).status).toBe(403);

@@ -1,10 +1,8 @@
 // /v1/admin/auth/* and GET /v1/admin/me (api.md §4.1). Email + password; MFA is deferred (owner decision 2026-10-02),
 // so step-up for sensitive actions is a password re-check. Only ADMIN_ORIGINS may call /v1/admin/* (createApp).
-import { permissionsFor } from '@artq/shared';
+import { adminForgotPasswordBody, adminLoginBody, adminResetPasswordBody, emptyBody, permissionsFor, stepUpBody } from '@artq/shared';
 import { Router, type Request, type RequestHandler, type Response } from 'express';
-import { z } from 'zod';
 import { AppError } from '../lib/errors.js';
-import { PASSWORD_MAX, STAFF_PASSWORD_MIN } from '../lib/password.js';
 import { clientKey, RATE_LIMITS, rateLimit, type Limit, type RateLimiter } from '../middleware/rateLimit.js';
 import { validate } from '../middleware/validate.js';
 import { clearCookie, cookieSpec, parseCookies, setCookie, type DeployEnv } from './cookies.js';
@@ -12,13 +10,9 @@ import { requireAdmin, type AuthDeps } from './middleware.js';
 import type { AuthService, ClientMeta, Issued } from './service.js';
 import { sha256 } from './tokens.js';
 
-const schemas = {
-  login: z.strictObject({ email: z.email().max(160), password: z.string().min(1).max(PASSWORD_MAX) }),
-  stepUp: z.strictObject({ password: z.string().min(1).max(PASSWORD_MAX) }),
-  empty: z.strictObject({}),
-  forgot: z.strictObject({ email: z.email().max(160) }),
-  reset: z.strictObject({ token: z.string().min(16).max(200), password: z.string().min(STAFF_PASSWORD_MIN).max(PASSWORD_MAX) }),
-};
+/** The shared request schemas: the admin forms import the same ones (CLAUDE.md "Validation rule"). */
+export const adminAuthSchemas = { login: adminLoginBody, stepUp: stepUpBody, empty: emptyBody, forgot: adminForgotPasswordBody, reset: adminResetPasswordBody };
+const schemas = adminAuthSchemas;
 
 export type AdminAuthRouterDeps = AuthDeps & { service: AuthService; env: DeployEnv; limiter: RateLimiter; onRateLimitError?: (e: unknown) => void };
 

@@ -11,7 +11,7 @@ import * as fn from '../db/functions.js';
 import type { Db } from '../db/functions.js';
 import { AppError } from '../lib/errors.js';
 import { rethrowCatalog } from './errors.js';
-import type { Bulk, CreateProduct, CreateVariant, Pricing, UpdateProduct, UpdateVariant } from './schemas.js';
+import type { Bulk, CreateProduct, CreateVariant, Pricing, UpdateProduct, UpdateVariant } from '@artq/shared';
 
 export type CatalogActor = {
   userId: number;

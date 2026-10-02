@@ -1,11 +1,10 @@
 // /v1/admin catalogue routes (api.md §4.3). Each endpoint accepts only the fields its permission covers (AT-10):
 // content endpoints are catalog:write with no commercial fields; pricing is pricing:write; bulk content is catalog:write.
-import { can, type Permission } from '@artq/shared';
+import { bulkBody, can, createProductBody, createVariantBody, idParam, pricingBody, updateProductBody, updateVariantBody, type Permission } from '@artq/shared';
 import type { Request, RequestHandler, Response, Router } from 'express';
 import { recordAudit } from '../admin/router.js';
 import { AppError } from '../lib/errors.js';
 import { validate } from '../middleware/validate.js';
-import { bulkBody, createProductBody, createVariantBody, idParam, pricingBody, updateProductBody, updateVariantBody } from './schemas.js';
 import type { CatalogActor, CatalogService } from './service.js';
 
 type AdminRoutes = { routes: Router; can: (p: Permission) => RequestHandler };

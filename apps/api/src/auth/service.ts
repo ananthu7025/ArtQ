@@ -308,7 +308,7 @@ export class AuthService {
       if (!user || user.status !== 'ACTIVE' || user.deletedAt) throw new AppError(422, 'TOKEN_INVALID', 'This link is invalid or has expired');
       if (STAFF_ROLES.includes(user.role) && input.password.length < STAFF_PASSWORD_MIN) {
         // Staff accounts need the longer staff minimum whichever reset page (storefront or admin) is used.
-        throw new AppError(400, 'VALIDATION_ERROR', `Staff passwords need at least ${STAFF_PASSWORD_MIN} characters`, [{ location: 'body', path: 'password', message: `at least ${STAFF_PASSWORD_MIN} characters` }]);
+        throw new AppError(400, 'VALIDATION_ERROR', 'Request validation failed', [{ location: 'body', path: 'password', message: `Use at least ${STAFF_PASSWORD_MIN} characters` }]);
       }
       await tx.passwordResetToken.updateMany({ where: { userId: user.id, usedAt: null }, data: { usedAt: new Date() } });   // other links die too
       await tx.user.update({ where: { id: user.id }, data: { passwordHash, failedLoginCount: 0, lockedUntil: null, emailVerifiedAt: user.emailVerifiedAt ?? new Date() } });   // the link proved the mailbox
