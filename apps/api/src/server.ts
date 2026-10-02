@@ -11,6 +11,10 @@ import { RedisSessionCache } from './auth/session-cache.js';
 import { ConfigError, loadEnv } from './config/env.js';
 import { makeReadinessChecks } from './lib/readiness.js';
 import { RedisRateLimiter } from './middleware/rateLimit.js';
+import { jobId } from './jobs/ids.js';
+import { QUEUE } from './jobs/registry.js';
+import { mediaServiceFromEnv } from './media/factory.js';
+import { customerMediaRouter, registerAdminMediaRoutes } from './media/routes.js';
 import { razorpayProvider } from './webhooks/provider.js';
 import { WEBHOOK_QUEUE, webhookRouter } from './webhooks/inbox.js';
 
@@ -41,6 +45,11 @@ const admin = createAdminRouter({ prisma, cache, jwt, limiter, onRateLimitError,
 const ru = new URL(env.REDIS_URL);
 const webhookQueue = new Queue(WEBHOOK_QUEUE, { connection: { host: ru.hostname, port: Number(ru.port || 6379), ...(ru.password ? { password: decodeURIComponent(ru.password) } : {}), maxRetriesPerRequest: 1, enableOfflineQueue: false } });
 webhookQueue.on('error', (err) => log.warn({ err: err.message }, 'webhook queue connection error'));
+const mediaQueue = new Queue(QUEUE.mediaProcess, { connection: webhookQueue.opts.connection });
+mediaQueue.on('error', (err) => log.warn({ err: err.message }, 'media queue connection error'));
+// A unique job id per enqueue: processing is claimed by a status transition, so a duplicate job is harmless.
+const media = mediaServiceFromEnv(env, prisma, async (id) => { await mediaQueue.add('media.process', { id }, { jobId: jobId('media', id, Date.now()), attempts: 3, backoff: { type: 'exponential', delay: 10_000 }, removeOnComplete: true }); });
+registerAdminMediaRoutes(admin, media, prisma);
 
 const app = createApp({
   version: env.APP_VERSION,
@@ -52,6 +61,7 @@ const app = createApp({
   routes: [
     authRouter({ prisma, cache, jwt, service, env: env.NODE_ENV, refreshMaxAgeS: DEFAULT_AUTH_TIMINGS.refreshIdleS, limiter, onRateLimitError }),
     adminAuthRouter({ prisma, cache, jwt, service, env: env.NODE_ENV, limiter, onRateLimitError }),
+    customerMediaRouter({ prisma, cache, jwt }, media),
     webhookRouter({ prisma, queue: webhookQueue, providers: [razorpayProvider(env.RAZORPAY_WEBHOOK_SECRET || undefined)], log }),
     admin.router,
   ],
@@ -61,6 +71,6 @@ const server = app.listen(env.PORT, () => log.info({ port: env.PORT }, 'api list
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {
   process.on(sig, () => {
     log.info({ sig }, 'shutting down');
-    server.close(async () => { await webhookQueue.close(); await prisma.$disconnect(); redis.disconnect(); process.exit(0); });
+    server.close(async () => { await mediaQueue.close(); await webhookQueue.close(); await prisma.$disconnect(); redis.disconnect(); process.exit(0); });
   });
 }

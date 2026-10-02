@@ -10,6 +10,7 @@ import { runRetention } from './jobs/retention.js';
 import { dispatchOnce, OUTBOX_CONSUMERS, type OutboxJobData } from './outbox/dispatcher.js';
 import { processWebhook, sweepWebhooks, WEBHOOK_QUEUE } from './webhooks/inbox.js';
 import { razorpayProvider } from './webhooks/provider.js';
+import { mediaServiceFromEnv } from './media/factory.js';
 import { createWorkerRuntime } from './worker/runtime.js';
 
 let env;
@@ -30,6 +31,8 @@ const email = (consumer: EmailConsumer) => async (job: Job<OutboxJobData>) =>
   processEmailDelivery({ prisma, transport, from: env.EMAIL_FROM, log }, consumer, job.data.deliveryId);
 
 const providers = [razorpayProvider(env.RAZORPAY_WEBHOOK_SECRET || undefined)];
+// The worker never enqueues media itself (the API does); retries come from BullMQ attempts.
+const media = mediaServiceFromEnv(env, prisma, async () => {});
 
 const runtime = createWorkerRuntime({
   connection, log,
@@ -37,6 +40,7 @@ const runtime = createWorkerRuntime({
     { name: QUEUE.maintenance, concurrency: 1, processor: async (job) => {
       if (job.name === 'retention') return runRetention(prisma);
       if (job.name === 'webhook-sweep') return sweepWebhooks(prisma, runtime.queues.get(WEBHOOK_QUEUE)!);
+      if (job.name === 'media-purge') return media.purgeStale();
       await redis.set('worker:heartbeat', new Date().toISOString(), 'EX', 300);
       return 'ok';
     } },
@@ -44,6 +48,8 @@ const runtime = createWorkerRuntime({
     { name: QUEUE.outboxDispatch, concurrency: 1, attempts: 1, processor: async () => dispatchOnce({ prisma, queues: runtime.queues, log }) },
     // Domain failures are recorded by aq_webhook_fail (with backoff) and retried by the sweeper, so the job itself completes.
     { name: WEBHOOK_QUEUE, concurrency: 5, attempts: 1, processor: async (job) => processWebhook({ prisma, providers, log }, (job.data as { id: number }).id) },
+    // Bad files end REJECTED (no retry); transient storage/processing errors throw ⇒ FAILED, retried by BullMQ.
+    { name: QUEUE.mediaProcess, concurrency: 2, attempts: 3, backoffMs: 10_000, processor: async (job) => media.process((job.data as { id: number }).id) },
     { name: OUTBOX_CONSUMERS['email.customer'], concurrency: 5, processor: email('email.customer') },
     { name: OUTBOX_CONSUMERS['email.admin'], concurrency: 2, processor: email('email.admin') },
   ],
@@ -53,6 +59,7 @@ const runtime = createWorkerRuntime({
     { queue: QUEUE.maintenance, id: 'heartbeat', everyMs: 60_000, jobName: 'heartbeat' },
     { queue: QUEUE.maintenance, id: 'retention', everyMs: 3_600_000, jobName: 'retention' },
     { queue: QUEUE.maintenance, id: 'webhook-sweep', everyMs: 60_000, jobName: 'webhook-sweep' },
+    { queue: QUEUE.maintenance, id: 'media-purge', everyMs: 3_600_000, jobName: 'media-purge' },
     { queue: QUEUE.outboxDispatch, id: 'outbox-dispatch', everyMs: 1000, jobName: 'dispatch' },
   ],
 });

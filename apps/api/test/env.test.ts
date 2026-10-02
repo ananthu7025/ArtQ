@@ -6,8 +6,9 @@ const base = {
   REDIS_URL: 'redis://localhost:6379', STOREFRONT_ORIGINS: 'http://localhost:3000, http://127.0.0.1:3000', ADMIN_ORIGINS: 'http://localhost:5173',
   AUTH_JWT_SECRET: 'dev-insecure-jwt-secret-0123456789abcdef', AUTH_OTP_PEPPER: 'dev-insecure-otp-pepper-0123',
   AUTH_LINK_SECRET: 'dev-insecure-link-secret-0123456789abcdef', WEB_URL: 'http://localhost:3000',
+  S3_ENDPOINT: 'http://localhost:9090', S3_ACCESS_KEY_ID: 'local', S3_SECRET_ACCESS_KEY: 'local', S3_BUCKET_PUBLIC: 'artq-public', S3_BUCKET_PRIVATE: 'artq-private',
 };
-const prodSecrets = { AUTH_JWT_SECRET: 'p'.repeat(40), AUTH_OTP_PEPPER: 'q'.repeat(20), AUTH_LINK_SECRET: 'r'.repeat(40), WEB_URL: 'https://artq.in', EMAIL_TRANSPORT: 'resend', RESEND_API_KEY: 're_test' };
+const prodSecrets = { AUTH_JWT_SECRET: 'p'.repeat(40), AUTH_OTP_PEPPER: 'q'.repeat(20), AUTH_LINK_SECRET: 'r'.repeat(40), WEB_URL: 'https://artq.in', EMAIL_TRANSPORT: 'resend', RESEND_API_KEY: 're_test', S3_ENDPOINT: 'https://acct.r2.cloudflarestorage.com' };
 const fails = (over: Record<string, string | undefined>) => {
   try { loadEnv({ ...base, ...over }); } catch (e) { expect(e).toBeInstanceOf(ConfigError); return (e as ConfigError).message; }
   throw new Error('expected ConfigError');
@@ -84,6 +85,21 @@ describe('loadEnv', () => {
       expect(fails({ ...prod, EMAIL_TRANSPORT: 'smtp' })).toContain('EMAIL_TRANSPORT: production must use');
       expect(loadEnv({ ...base, ...prod, EMAIL_TRANSPORT: 'resend', RESEND_API_KEY: 're_x' }).NODE_ENV).toBe('production');
       expect(fails({ EMAIL_TRANSPORT: 'carrier-pigeon' })).toContain('EMAIL_TRANSPORT');
+    });
+  });
+
+  describe('object storage settings', () => {
+    it('defaults region, path style and the public base URL', () => {
+      expect(loadEnv(base)).toMatchObject({ S3_REGION: 'auto', S3_FORCE_PATH_STYLE: true, MEDIA_PUBLIC_BASE_URL: 'http://localhost:9090/artq-public' });
+      expect(loadEnv({ ...base, S3_FORCE_PATH_STYLE: 'false', MEDIA_PUBLIC_BASE_URL: 'https://media.artq.in' })).toMatchObject({ S3_FORCE_PATH_STYLE: false, MEDIA_PUBLIC_BASE_URL: 'https://media.artq.in' });
+    });
+    it.each(['S3_ENDPOINT', 'S3_ACCESS_KEY_ID', 'S3_SECRET_ACCESS_KEY', 'S3_BUCKET_PUBLIC', 'S3_BUCKET_PRIVATE'])('requires %s', (k) => {
+      expect(fails({ [k]: undefined })).toContain(k);
+    });
+    it('rejects one bucket for both, a bad path-style flag and plain http in production', () => {
+      expect(fails({ S3_BUCKET_PRIVATE: 'artq-public' })).toContain('must differ from S3_BUCKET_PUBLIC');
+      expect(fails({ S3_FORCE_PATH_STYLE: 'yes' })).toContain('S3_FORCE_PATH_STYLE');
+      expect(fails({ ...prodSecrets, NODE_ENV: 'production', STOREFRONT_ORIGINS: 'https://artq.in', ADMIN_ORIGINS: 'https://admin.artq.in', S3_ENDPOINT: 'http://r2.example' })).toContain('S3_ENDPOINT: production must use https://');
     });
   });
 });

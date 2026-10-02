@@ -11,6 +11,10 @@ import { createApp } from '../../src/app.js';
 import { loadEnv } from '../../src/config/env.js';
 import { render } from '../../src/email/templates.js';
 import { SmtpTransport } from '../../src/email/transport.js';
+import sharp from 'sharp';
+import { MediaService } from '../../src/media/service.js';
+import { S3ObjectStore } from '../../src/media/storage.js';
+import { createMigratedDatabase } from '../helpers/db.js';
 import { makeReadinessChecks } from '../../src/lib/readiness.js';
 
 const enabled = process.env.COMPOSE_TESTS === '1';
@@ -123,6 +127,40 @@ describe.skipIf(!enabled)('docker-compose stack', () => {
       expect(full.HTML).toContain('Your ArtQ code');
       await expect(new SmtpTransport({ host: '127.0.0.1', port: 1 }).send({ from: env!.EMAIL_FROM, to: 'a@x.in', ...r, idempotencyKey: 'k' })).rejects.toMatchObject({ name: 'EmailSendError', retryable: true });
     });
+  });
+
+  describe('media pipeline against real S3Mock (task 1.11)', () => {
+    it('presigned PUT (type + length signed) → complete (HEAD) → processed renditions in the bucket → private presigned GET', async () => {
+      const db = await createMigratedDatabase(env!.DATABASE_URL);
+      closers.push(() => db.drop());
+      const store = new S3ObjectStore({ endpoint: env!.S3_ENDPOINT, region: env!.S3_REGION, accessKeyId: env!.S3_ACCESS_KEY_ID, secretAccessKey: env!.S3_SECRET_ACCESS_KEY, forcePathStyle: env!.S3_FORCE_PATH_STYLE });
+      const buckets = { PUBLIC: env!.S3_BUCKET_PUBLIC, PRIVATE: env!.S3_BUCKET_PRIVATE };
+      const media = new MediaService(db.prisma, { store, buckets, publicBaseUrl: env!.MEDIA_PUBLIC_BASE_URL }, async () => {});
+      const png = await sharp({ create: { width: 500, height: 200, channels: 3, background: '#00756f' } }).png().toBuffer();
+      const user = await db.prisma.user.create({ data: { email: 'media-admin@artq.in', role: 'ADMIN', status: 'ACTIVE' } });
+      const actor = { userId: user.id, audience: 'admin' as const, role: 'ADMIN' as const };
+
+      const p = await media.presign({ filename: 'frame.png', contentType: 'image/png', size: png.length, purpose: 'product-image' }, actor);
+      expect(new URL(p.upload.url).searchParams.get('X-Amz-SignedHeaders')).toBe('content-length;content-type;host');
+      const put = await fetch(p.upload.url, { method: 'PUT', headers: p.upload.headers, body: png });
+      expect(put.status).toBe(200);
+      expect((await media.complete(p.media.id, actor)).status).toBe('UPLOADED');
+      expect(await media.process(p.media.id)).toBe('READY');
+      const m = await db.prisma.media.findUniqueOrThrow({ where: { id: p.media.id } });
+      for (const key of Object.values(m.renditions as Record<string, string>)) expect(await store.head(buckets.PUBLIC, key)).toMatchObject({ contentType: 'image/webp' });
+      const publicUrl = media.view(m).renditions['160']!;
+      expect((await fetch(publicUrl)).status).toBe(200);
+
+      const x = await media.presign({ filename: 'import.png', contentType: 'image/png', size: png.length, purpose: 'cms-image' }, actor);
+      await fetch(x.upload.url, { method: 'PUT', headers: x.upload.headers, body: png });
+      const priv = await db.prisma.media.update({ where: { id: x.media.id }, data: { visibility: 'PRIVATE' } });
+      await store.put(buckets.PRIVATE, priv.key, png, 'image/png');
+      const url = await store.presignGet(buckets.PRIVATE, priv.key, { expiresIn: 60, attachmentName: 'a.png' });
+      const got = await fetch(url);
+      expect(got.status).toBe(200);
+      expect(Buffer.from(await got.arrayBuffer()).equals(png)).toBe(true);
+      expect(await store.head(buckets.PRIVATE, 'no/such/key')).toBeNull();
+    }, 60_000);
   });
 
   describe('API readiness with .env.example', () => {
