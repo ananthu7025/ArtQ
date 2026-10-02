@@ -7,7 +7,7 @@ const base = {
   AUTH_JWT_SECRET: 'dev-insecure-jwt-secret-0123456789abcdef', AUTH_OTP_PEPPER: 'dev-insecure-otp-pepper-0123',
   AUTH_LINK_SECRET: 'dev-insecure-link-secret-0123456789abcdef', WEB_URL: 'http://localhost:3000',
 };
-const prodSecrets = { AUTH_JWT_SECRET: 'p'.repeat(40), AUTH_OTP_PEPPER: 'q'.repeat(20), AUTH_LINK_SECRET: 'r'.repeat(40), WEB_URL: 'https://artq.in' };
+const prodSecrets = { AUTH_JWT_SECRET: 'p'.repeat(40), AUTH_OTP_PEPPER: 'q'.repeat(20), AUTH_LINK_SECRET: 'r'.repeat(40), WEB_URL: 'https://artq.in', EMAIL_TRANSPORT: 'resend', RESEND_API_KEY: 're_test' };
 const fails = (over: Record<string, string | undefined>) => {
   try { loadEnv({ ...base, ...over }); } catch (e) { expect(e).toBeInstanceOf(ConfigError); return (e as ConfigError).message; }
   throw new Error('expected ConfigError');
@@ -68,5 +68,22 @@ describe('loadEnv', () => {
     expect(fails({ STOREFRONT_ORIGINS: undefined })).toContain('STOREFRONT_ORIGINS');
     expect(fails({ ADMIN_ORIGINS: undefined })).toContain('ADMIN_ORIGINS');
     expect(fails({ ADMIN_ORIGINS: 'http://localhost:5173,http://localhost:3000' })).toContain('must not overlap');
+  });
+
+  describe('email settings', () => {
+    it('defaults to SMTP on localhost:1025', () => {
+      expect(loadEnv(base)).toMatchObject({ EMAIL_TRANSPORT: 'smtp', SMTP_HOST: 'localhost', SMTP_PORT: 1025 });
+    });
+    it('resend needs an API key', () => {
+      expect(fails({ EMAIL_TRANSPORT: 'resend' })).toContain('RESEND_API_KEY');
+      expect(fails({ EMAIL_TRANSPORT: 'resend', RESEND_API_KEY: '' })).toContain('RESEND_API_KEY');
+      expect(loadEnv({ ...base, EMAIL_TRANSPORT: 'resend', RESEND_API_KEY: 're_x' }).EMAIL_TRANSPORT).toBe('resend');
+    });
+    it('production refuses SMTP (no idempotency keys); unknown transports are rejected', () => {
+      const prod = { ...prodSecrets, NODE_ENV: 'production', STOREFRONT_ORIGINS: 'https://artq.in', ADMIN_ORIGINS: 'https://admin.artq.in' };
+      expect(fails({ ...prod, EMAIL_TRANSPORT: 'smtp' })).toContain('EMAIL_TRANSPORT: production must use');
+      expect(loadEnv({ ...base, ...prod, EMAIL_TRANSPORT: 'resend', RESEND_API_KEY: 're_x' }).NODE_ENV).toBe('production');
+      expect(fails({ EMAIL_TRANSPORT: 'carrier-pigeon' })).toContain('EMAIL_TRANSPORT');
+    });
   });
 });

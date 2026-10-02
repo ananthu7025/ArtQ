@@ -25,6 +25,12 @@ export const envSchema = z.object({
   AUTH_LINK_SECRET: z.string().min(32),
   /** Storefront origin used in emailed links. */
   WEB_URL: origin,
+  // Email (task 1.8): smtp for local Mailpit / tests; resend (idempotency keys) for staging and production.
+  EMAIL_TRANSPORT: z.enum(['smtp', 'resend']).default('smtp'),
+  EMAIL_FROM: z.string().min(3).default('ArtQ <no-reply@artq.in>'),
+  SMTP_HOST: z.string().min(1).default('localhost'),
+  SMTP_PORT: z.coerce.number().int().min(1).max(65535).default(1025),
+  RESEND_API_KEY: z.string().optional(),
 });
 export type Env = z.infer<typeof envSchema> & { AUTH_JWT_ISSUER: string };
 
@@ -49,6 +55,10 @@ export function loadEnv(source: Record<string, string | undefined> = process.env
       if (r.data[k].startsWith('dev-insecure')) issues.push(`${k}: the development placeholder cannot be used in ${r.data.NODE_ENV}`);
     }
     if (!r.data.WEB_URL.startsWith('https://')) issues.push('WEB_URL: must use https://');
+  }
+  if (r.data.EMAIL_TRANSPORT === 'resend' && !r.data.RESEND_API_KEY) issues.push('RESEND_API_KEY: required when EMAIL_TRANSPORT=resend');
+  if (r.data.NODE_ENV === 'production' && r.data.EMAIL_TRANSPORT !== 'resend') {
+    issues.push('EMAIL_TRANSPORT: production must use a provider with idempotency keys (resend)');
   }
   if (issues.length) throw new ConfigError(issues);
   return { ...r.data, AUTH_JWT_ISSUER: r.data.AUTH_JWT_ISSUER ?? `artq-${r.data.NODE_ENV}` };

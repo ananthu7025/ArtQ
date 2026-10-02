@@ -9,12 +9,14 @@ import request from 'supertest';
 import { afterAll, describe, expect, it } from 'vitest';
 import { createApp } from '../../src/app.js';
 import { loadEnv } from '../../src/config/env.js';
+import { render } from '../../src/email/templates.js';
+import { SmtpTransport } from '../../src/email/transport.js';
 import { makeReadinessChecks } from '../../src/lib/readiness.js';
 
 const enabled = process.env.COMPOSE_TESTS === '1';
 const root = join(import.meta.dirname, '..', '..', '..', '..');
 const example = Object.fromEntries(readFileSync(join(root, '.env.example'), 'utf8').split('\n')
-  .filter((l) => l.trim() && !l.startsWith('#')).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]));
+  .filter((l) => l.trim() && !l.startsWith('#')).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1).replace(/^"(.*)"$/, '$1')]));
 const env = enabled ? loadEnv(example) : undefined;
 const S3 = example.S3_ENDPOINT!;
 const MAIL_UI = `http://localhost:${process.env.ARTQ_MAIL_UI_PORT ?? 8025}`;
@@ -105,6 +107,21 @@ describe.skipIf(!enabled)('docker-compose stack', () => {
       expect(lines.some((l) => l.startsWith('250') && /queued|ok/i.test(l))).toBe(true);
       const res = await (await fetch(`${MAIL_UI}/api/v1/search?query=${encodeURIComponent(`subject:${subject}`)}`)).json() as { messages: { Subject: string }[] };
       expect(res.messages.map((m) => m.Subject)).toContain(subject);
+    });
+
+    it('receives a rendered ArtQ email from the real SmtpTransport (task 1.8)', async () => {
+      const code = String(Date.now()).slice(-6);
+      const r = render('otp', { code, purpose: 'LOGIN', expiresInMinutes: 10 });
+      const t = new SmtpTransport({ host: env!.SMTP_HOST, port: env!.SMTP_PORT });
+      const { messageId } = await t.send({ from: env!.EMAIL_FROM, to: 'buyer@example.com', ...r, idempotencyKey: `artq-compose-${code}` });
+      expect(messageId).toBeTruthy();
+      const res = await (await fetch(`${MAIL_UI}/api/v1/search?query=${encodeURIComponent(`subject:"${r.subject}"`)}`)).json() as { messages: { ID: string; Subject: string; From: { Address: string } }[] };
+      const msg = res.messages.find((m) => m.Subject === r.subject)!;
+      expect(msg.From.Address).toBe('no-reply@artq.in');
+      const full = await (await fetch(`${MAIL_UI}/api/v1/message/${msg.ID}`)).json() as { Text: string; HTML: string };
+      expect(full.Text).toContain(code);
+      expect(full.HTML).toContain('Your ArtQ code');
+      await expect(new SmtpTransport({ host: '127.0.0.1', port: 1 }).send({ from: env!.EMAIL_FROM, to: 'a@x.in', ...r, idempotencyKey: 'k' })).rejects.toMatchObject({ name: 'EmailSendError', retryable: true });
     });
   });
 
