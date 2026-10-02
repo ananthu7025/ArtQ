@@ -2,8 +2,10 @@
 // chooses a password and logs in with the role they were given; the owner blocks them and they are refused.
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Page } from '@playwright/test';
+import { axeClean, resetRateLimitsBeforeAll } from './helpers';
+
+resetRateLimitsBeforeAll();
 
 const OWNER = { email: 'owner@e2e.artq.in', password: 'e2e-owner-passphrase' };
 const STAFF = { email: 'staff@e2e.artq.in' };
@@ -20,11 +22,6 @@ async function login(page: Page, who: { email: string; password: string }) {
 function lastLink(email: string, template = 'staff_invite'): string {
   const api = join(import.meta.dirname, '..', '..', 'api');
   return execFileSync('pnpm', ['--dir', api, 'exec', 'tsx', 'scripts/e2e-last-link.ts', email, template], { env: { ...process.env, E2E_DATABASE_URL }, encoding: 'utf8' }).trim();
-}
-
-async function axeClean(page: Page) {
-  const r = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze();
-  expect(r.violations.map((v) => `${v.id} (${v.impact}): ${v.nodes.map((n) => n.target.join(' ')).join(' | ')}`)).toEqual([]);
 }
 
 test('invite → choose password → log in as STAFF → blocked by the owner', async ({ page, browser }) => {

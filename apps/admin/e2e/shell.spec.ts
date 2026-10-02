@@ -1,6 +1,8 @@
 // ✅ Task 2.1: every nav item reachable at 1280×720, 1024×600 and 200 % zoom (by scroll and by keyboard); axe passes.
-import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Locator, type Page } from '@playwright/test';
+import { axeClean, resetRateLimitsBeforeAll } from './helpers';
+
+resetRateLimitsBeforeAll();
 
 const OWNER = { email: 'owner@e2e.artq.in', password: 'e2e-owner-passphrase' };
 const STAFF = { email: 'staff@e2e.artq.in', password: 'e2e-staff-passphrase' };
@@ -14,11 +16,6 @@ async function login(page: Page, who: { email: string; password: string }) {
   await page.getByLabel('Password').fill(who.password);
   await page.getByRole('button', { name: 'Log in' }).click();
   await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
-}
-
-async function axeClean(page: Page) {
-  const r = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze();
-  expect(r.violations.map((v) => `${v.id} (${v.impact}): ${v.nodes.map((n) => n.target.join(' ')).join(' | ')}`)).toEqual([]);
 }
 
 /**
@@ -139,12 +136,5 @@ test.describe('roles and session', () => {
     await expect(page.getByRole('button', { name: 'Log in' })).toBeVisible();
   });
 
-  test('Audit Logs lists the logins of this run through the real API', async ({ page }) => {
-    await login(page, OWNER);
-    await page.goto('/audit-logs?action=admin.login');
-    await expect(page.getByRole('table', { name: 'Audit log entries' })).toBeVisible();
-    await expect(page.getByRole('cell', { name: 'admin.login' }).first()).toBeVisible();
-    await expect(page.getByText(/Page 1 of \d+ · \d+ total/)).toBeVisible();
-    await axeClean(page);
-  });
+  // The Audit Logs check lives in catalog.spec.ts (one owner session that also creates catalogue audit entries).
 });

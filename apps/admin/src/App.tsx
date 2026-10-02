@@ -25,7 +25,10 @@ export function App({ api }: { api: AdminApi }) {
       <AuthProvider api={api}>
         <RouterProvider router={router} />
         <StepUpDialog api={api} />
-        <Toaster position="top-right" richColors closeButton />
+        {/* Toast text in design-system token colours (success-700 / danger-700 on white, both ≥ 4.5:1). */}
+        <Toaster position="top-right" closeButton toastOptions={{ classNames: {
+          success: '!border-success-700 !text-success-700', error: '!border-danger-700 !text-danger-700', warning: '!border-warning-700 !text-warning-ink',
+        } }} />
       </AuthProvider>
     </QueryClientProvider>
   );

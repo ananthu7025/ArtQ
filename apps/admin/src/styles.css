@@ -2,6 +2,12 @@
 @import "@artq/ui/theme.css";
 @import "@artq/ui/tokens.css";
 
+/* The self-hosted variable fonts (main.tsx) first; the shared stacks stay as fallbacks. */
+:root {
+  --font-display: "Playfair Display Variable", "Playfair Display", Georgia, serif;
+  --font-body: "Inter Variable", Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
 html, body { background: var(--color-surface-50); color: var(--color-ink-900); font-family: var(--font-body); }
 :focus-visible { outline: 2px solid var(--color-brand-700); outline-offset: 2px; }
 

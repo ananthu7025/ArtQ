@@ -1,6 +1,6 @@
 // /v1/admin catalogue routes (api.md §4.3). Each endpoint accepts only the fields its permission covers (AT-10):
 // content endpoints are catalog:write with no commercial fields; pricing is pricing:write; bulk content is catalog:write.
-import { BULK_PUBLISH_ACTIONS, bulkBody, can, createProductBody, createVariantBody, emptyBody, idParam, pricingBody, taxApprovalBody, updateProductBody, updateVariantBody, type Bulk, type Permission } from '@artq/shared';
+import { BULK_PUBLISH_ACTIONS, bulkBody, can, createProductBody, createVariantBody, emptyBody, idParam, pricingBody, productListQuery, taxApprovalBody, updateProductBody, updateVariantBody, type Bulk, type Permission, type ProductListQuery } from '@artq/shared';
 import type { Request, RequestHandler, Response, Router } from 'express';
 import { recordAudit } from '../admin/router.js';
 import { AppError } from '../lib/errors.js';
@@ -45,6 +45,9 @@ export function registerCatalogRoutes(admin: AdminRoutes, catalog: CatalogServic
   }
   r.post('/products/:id/tax-approval', admin.can('catalog:publish'), validate({ params: idParam, body: taxApprovalBody }), async (req, res) => {
     noStore(res).json(await catalog.approveTax(id(req), req.body, actor(req, res)));
+  });
+  r.get('/products', admin.can('catalog:read'), validate({ query: productListQuery }), async (req, res) => {
+    noStore(res).json(await catalog.listProducts(req.query as unknown as ProductListQuery));
   });
   r.get('/products/:id', admin.can('catalog:read'), validate({ params: idParam }), async (req, res) => {
     const p = await catalog.getProduct(id(req), can(req.auth!.role, 'pricing:write'));

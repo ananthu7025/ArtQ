@@ -1,3 +1,6 @@
+// Brand fonts, self-hosted (design-system.md: admin self-hosts; the browser fetches only the Latin files it needs).
+import '@fontsource-variable/inter/wght.css';
+import '@fontsource-variable/playfair-display/wght.css';
 import './styles.css';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';

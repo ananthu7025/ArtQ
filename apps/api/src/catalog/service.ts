@@ -11,7 +11,8 @@ import * as fn from '../db/functions.js';
 import type { Db } from '../db/functions.js';
 import { AppError } from '../lib/errors.js';
 import { rethrowCatalog } from './errors.js';
-import type { Bulk, CreateProduct, CreateVariant, Pricing, TaxApproval, UpdateProduct, UpdateVariant } from '@artq/shared';
+import type { Bulk, CreateProduct, CreateVariant, Pricing, ProductListQuery, TaxApproval, UpdateProduct, UpdateVariant } from '@artq/shared';
+import { listProducts } from './list.js';
 
 export type CatalogActor = {
   userId: number;
@@ -21,7 +22,7 @@ export type CatalogActor = {
   audit: (db: Db, e: AuditEntry) => Promise<void>;
 };
 
-export type MediaRender = (m: Media) => unknown;
+export type MediaRender = (m: Media) => { renditions?: Record<string, string> } & Record<string, unknown>;
 
 const TX = { maxWait: 10_000, timeout: 20_000 } as const;
 const SLUG_MAX = 220;
@@ -66,7 +67,7 @@ function assertFlagsResolvedOnly(next: string[] | undefined, current: string[]):
 }
 
 export class CatalogService {
-  constructor(private readonly prisma: PrismaClient, private readonly renderMedia: MediaRender = (m) => ({ id: m.id, status: m.status })) {}
+  constructor(private readonly prisma: PrismaClient, private readonly renderMedia: MediaRender = (m) => ({ id: m.id, status: m.status, renditions: {} })) {}
 
   // ── Reads ────────────────────────────────────────────────────────────────
 
@@ -98,6 +99,11 @@ export class CatalogService {
       readiness: { ready: failures.length === 0, failures: describeReadiness(failures) },
       version: p.version, createdAt: p.createdAt, updatedAt: p.updatedAt,
     };
+  }
+
+  /** Products page listing (GET /admin/products). */
+  listProducts(q: ProductListQuery) {
+    return listProducts(this.prisma, q, this.renderMedia);
   }
 
   /** Storefront resolution: live slug, else a 301 target from slug_redirects, else null. */

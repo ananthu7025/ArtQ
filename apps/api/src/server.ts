@@ -20,6 +20,7 @@ import { registerAuditRoutes } from './admin/audit-routes.js';
 import { registerStaffRoutes } from './admin/staff-routes.js';
 import { registerCatalogRoutes } from './catalog/routes.js';
 import { CatalogService } from './catalog/service.js';
+import { registerTaxonomyRoutes } from './catalog/taxonomy-routes.js';
 import { razorpayProvider } from './webhooks/provider.js';
 import { WEBHOOK_QUEUE, webhookRouter } from './webhooks/inbox.js';
 
@@ -58,6 +59,7 @@ registerAdminMediaRoutes(admin, media, prisma);
 registerAuditRoutes(admin, prisma);
 registerStaffRoutes(admin, prisma, service);
 registerCatalogRoutes(admin, new CatalogService(prisma, (m) => media.view(m)));
+registerTaxonomyRoutes(admin, prisma);
 
 const app = createApp({
   version: env.APP_VERSION,

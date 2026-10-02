@@ -276,9 +276,10 @@ Target MFA endpoints (deferred): `POST /admin/auth/login` → `{challengeId, typ
 | `type` | type id, or `unassigned` (product tabs + **More** overflow are built from `GET /admin/product-types?withCounts=1`) |
 | `status` | `DRAFT`, `ACTIVE`, `ARCHIVED` (multi) |
 | `stock` | `in`, `low`, `out`, `oversold` |
-| `readiness` | `ready`, `blocked`, or a specific check (`no_image`, `no_price`, `estimated_weight`, `stock_uncounted`, `no_tax`, `no_description`, `has_flags`) |
+| `readiness` | `ready`, `blocked`, or one failing check, by the codes of `product_readiness_failures()` (`taxonomy`, `no_description`, `no_tax`, `has_flags`, `no_image`, `no_active_variant`, `no_price_or_size`, `stock_uncounted`, `shipping_data`, `variant_flags`) |
 | `imageState` | `ready`, `processing`, `failed`, `missing` |
-| `sort` | `name`, `updated_desc`, `price`, `stock` |
+| `flag` | an import flag on the product or any of its variants |
+| `sort` | `name`, `updated_desc`, `price` (unpriced last), `stock` (lowest first) |
 | `page`, `limit` | default 20 |
 
 Row DTO:
@@ -289,9 +290,10 @@ Row DTO:
   "category": { "id": 12, "name": "Gel Pigments" },
   "status": "DRAFT", "isPublishable": false, "readinessFailures": ["no_image", "estimated_weight"],
   "variantCount": 1, "priceRange": { "min": 9000, "max": 9000 }, "available": 20,
+  "activeVariantCount": 1, "lowStock": false, "oversold": false, "deletable": true,
   "flags": ["SIZE_CONFLICT"], "updatedAt": "…", "version": 3 }
 ```
-`serial` = (page − 1) × limit + row index, for the "#" column. The DTO maps `type` from the `type_id` relation. An unresolvable relation is a server bug, logged and reported as `type: null` with `typeMissing: true`, so it can be distinguished from a genuinely unassigned draft.
+`serial` = (page − 1) × limit + row index, for the "#" column. The DTO maps `type` from the `type_id` relation (a foreign key, so it always resolves); `type: null` means a genuinely unassigned draft, shown as "Unassigned". `readinessFailures` is evaluated live; `deletable` = a draft never ordered, carted, imported or stock-counted (else the row offers Archive). Query schema: `productListQuery` in `@artq/shared`. Type tabs: `GET /admin/product-types?withCounts=1` → `{data:[{…, productCount}], unassigned, total}`; `GET /admin/categories?typeId=` for filters and bulk Set category.
 
 | Method | Path | Permission | Notes |
 |--------|------|------------|-------|
