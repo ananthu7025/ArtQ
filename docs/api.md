@@ -54,7 +54,9 @@ calls) and completing all require the token. When an earlier request resumes aft
 retries with the same key and receives the new owner's response (`REPLAY`) or `REQUEST_IN_PROGRESS`. Provider idempotency (refund
 attempt keys, order receipts) is stored with the resource, so resuming never changes it.
 
-Records expire after 24 h. Business-level dedupe also applies: at most one `PENDING_PAYMENT` order per cart, one open payment attempt per order, refund `idempotency_key` unique per order. Provider-facing idempotency is separate: refund attempts carry their own `X-Refund-Idempotency` key (architecture.md §10.2).
+**Other cases** (implemented in `apps/api/src/idempotency/idempotency.ts`): a missing or non-UUID key → 400 `VALIDATION_ERROR` (`details[0].location = 'headers'`); keys are compared case-insensitively. A business error (4xx such as `OUT_OF_STOCK`) is stored as the key's response, so a retry with the same key receives the same answer. An unexpected failure (5xx) **before any resource was attached** deletes the key (fenced by the token), so an immediate retry runs; after a resource was attached the key stays `PROCESSING`, the retry gets `REQUEST_IN_PROGRESS` until the lock expires and then takes over and resumes the resource.
+
+Records expire after 24 h (hourly retention job). Business-level dedupe also applies: at most one `PENDING_PAYMENT` order per cart, one open payment attempt per order, refund `idempotency_key` unique per order. Provider-facing idempotency is separate: refund attempts carry their own `X-Refund-Idempotency` key (architecture.md §10.2).
 
 ---
 

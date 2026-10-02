@@ -11,7 +11,7 @@ export const RETENTION = {
   batch: 5000,
 } as const;
 
-export type RetentionResult = Record<'outboxDeliveries' | 'outboxEvents' | 'emailPayloadsScrubbed' | 'sessions' | 'otpCodes' | 'resetTokens', number>;
+export type RetentionResult = Record<'outboxDeliveries' | 'outboxEvents' | 'emailPayloadsScrubbed' | 'sessions' | 'otpCodes' | 'resetTokens' | 'idempotencyKeys', number>;
 
 async function batched(run: () => Promise<number>, batch: number): Promise<number> {
   let total = 0;
@@ -51,5 +51,8 @@ export async function runRetention(prisma: PrismaClient, o: Partial<typeof RETEN
     DELETE FROM password_reset_tokens WHERE id IN (
       SELECT id FROM password_reset_tokens WHERE greatest(expires_at, coalesce(used_at, expires_at)) < now() - make_interval(hours => ${r.resetTokenGraceHours}::int)
       LIMIT ${r.batch}::int)`, r.batch);
-  return { outboxDeliveries, outboxEvents, emailPayloadsScrubbed, sessions, otpCodes, resetTokens };
+  // Idempotency records expire 24 h after creation (api.md §1.2); a still-PROCESSING one past expiry is abandoned.
+  const idempotencyKeys = await batched(() => prisma.$executeRaw`
+    DELETE FROM idempotency_keys WHERE id IN (SELECT id FROM idempotency_keys WHERE expires_at < now() LIMIT ${r.batch}::int)`, r.batch);
+  return { outboxDeliveries, outboxEvents, emailPayloadsScrubbed, sessions, otpCodes, resetTokens, idempotencyKeys };
 }
