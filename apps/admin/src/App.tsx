@@ -1,13 +1,35 @@
-import { formatINR } from '@artq/shared';
-import { Button } from '@artq/ui';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { useState } from 'react';
+import { createBrowserRouter, RouterProvider } from 'react-router';
+import { Toaster } from 'sonner';
+import { ApiError, type AdminApi } from './api/client';
+import { AuthProvider } from './auth/AuthProvider';
+import { StepUpDialog } from './components/dialogs';
+import { routes } from './router';
 
-// Phase 0 placeholder: proves Vite + shared packages + tokens. The admin shell is task 2.1.
-export function App() {
+export function makeQueryClient() {
+  return new QueryClient({
+    defaultOptions: {
+      // 4xx answers are final; only network/5xx failures are worth one retry.
+      queries: { retry: (n, e) => n < 1 && !(e instanceof ApiError && e.status >= 400 && e.status < 500), refetchOnWindowFocus: false, staleTime: 15_000 },
+      mutations: { retry: false },
+    },
+  });
+}
+
+export function App({ api }: { api: AdminApi }) {
+  const [queryClient] = useState(makeQueryClient);
+  const [router] = useState(() => createBrowserRouter(routes));
   return (
-    <main style={{ fontFamily: 'var(--font-body)', padding: 32, background: 'var(--surface-50)', minHeight: '100vh' }}>
-      <h1 style={{ color: 'var(--ink-900)' }}>ArtQ Admin</h1>
-      <p>Shared package check: {formatINR(1310000)}</p>
-      <Button variant="secondary">Products</Button>
-    </main>
+    <QueryClientProvider client={queryClient}>
+      <AuthProvider api={api}>
+        <RouterProvider router={router} />
+        <StepUpDialog api={api} />
+        {/* Toast text in design-system token colours (success-700 / danger-700 on white, both ≥ 4.5:1). */}
+        <Toaster position="top-right" closeButton toastOptions={{ classNames: {
+          success: '!border-success-700 !text-success-700', error: '!border-danger-700 !text-danger-700', warning: '!border-warning-700 !text-warning-ink',
+        } }} />
+      </AuthProvider>
+    </QueryClientProvider>
   );
 }

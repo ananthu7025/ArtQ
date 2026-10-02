@@ -49,7 +49,7 @@ beforeAll(async () => {
   XLSX = Buffer.from(await wb.xlsx.writeBuffer());
 
   const cache = new MemorySessionCache();
-  const auth = new AuthService(prisma, cache, { ...DEFAULT_AUTH_TIMINGS, jwt: JWT, otpPepper: 'test-otp-pepper-0123', linkSecret: 'test-link-secret-0123456789abcdef0123', webUrl: WEB });
+  const auth = new AuthService(prisma, cache, { ...DEFAULT_AUTH_TIMINGS, jwt: JWT, otpPepper: 'test-otp-pepper-0123', linkSecret: 'test-link-secret-0123456789abcdef0123', webUrl: WEB, adminUrl: 'http://localhost:5173' });
   const deps = { prisma, cache, jwt: JWT };
   const admin = createAdminRouter({ ...deps, limiter: NO_LIMIT, log: pino({ level: 'silent' }), hasRecentStepUp: (sid) => auth.hasRecentStepUp(sid) });
   registerAdminMediaRoutes(admin, media, prisma);

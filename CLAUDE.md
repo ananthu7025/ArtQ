@@ -22,6 +22,19 @@ Read `docs/README.md` first; `docs/tasklist.md` is the plan and `docs/architectu
 3. Commit also at a meaningful checkpoint inside a long phase if the suite is green.
 4. Never push, merge or open a PR unless asked.
 
+## Validation rule: one set of criteria, front and back (every form, strict)
+1. **Frontend and backend validate with the same criteria.** A request schema lives once, in `packages/shared`
+   (`@artq/shared`), as Zod; the API endpoint and the form both import it. The form may only *add* client-only fields
+   (e.g. "repeat password") on top of the shared schema; it never loosens or re-types a rule (lengths, formats, ranges,
+   enums, required/optional). A field the server rejects must be rejected by the form with the same limit, and vice versa.
+2. **Frontend validation uses Zod** (React Hook Form + `zodResolver`), never ad-hoc checks or HTML `required`/`pattern`
+   as the only guard.
+3. **Every invalid field shows it the same way:** red border on the input (`aria-invalid="true"`, styled globally) and the
+   message directly under the field in red, linked with `aria-describedby`. Server-side `VALIDATION_ERROR` details are
+   mapped back onto the same fields; only errors that belong to no field go in the form-level alert.
+4. Tests for each form cover: empty submit shows the field messages, each limit at the boundary (exactly-at-limit passes,
+   one over fails) on both the form and the API, and a server field error lands on its field.
+
 ## Architecture guard-rails
 - `apps/web` is frontend only: no `app/api/**` route handlers, no `"use server"` (enforced by `pnpm lint:boundaries`).
 - All money/stock transactions go through the `aq_*` database functions in `docs/database.md` §6b, called via the typed

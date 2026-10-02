@@ -52,7 +52,7 @@ beforeAll(async () => {
   prisma = db.prisma;
   redis = new Redis(rd.url);
   cache = new RedisSessionCache(redis);
-  service = new AuthService(prisma, cache, { ...DEFAULT_AUTH_TIMINGS, jwt: JWT, otpPepper: 'test-otp-pepper-0123', linkSecret: 'test-link-secret-0123456789abcdef0123', webUrl: WEB });
+  service = new AuthService(prisma, cache, { ...DEFAULT_AUTH_TIMINGS, jwt: JWT, otpPepper: 'test-otp-pepper-0123', linkSecret: 'test-link-secret-0123456789abcdef0123', webUrl: WEB, adminUrl: 'http://localhost:5173' });
   app = build(NO_LIMIT);
 }, 180_000);
 afterAll(async () => { redis?.disconnect(); await db?.drop(); await Promise.all([pg?.stop(), rd?.stop()]); });

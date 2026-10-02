@@ -3,9 +3,8 @@ import argon2 from 'argon2';
 
 export const ARGON2_OPTIONS = { type: argon2.argon2id, memoryCost: 19_456, timeCost: 2, parallelism: 1 } as const;
 
-/** Staff passwords: 12–128 characters (argon2 cost makes very long inputs a DoS vector). */
-export const STAFF_PASSWORD_MIN = 12;
-export const PASSWORD_MAX = 128;
+/** Password limits are defined once in @artq/shared (the forms use the same ones). */
+export { PASSWORD_MAX, STAFF_PASSWORD_MIN } from '@artq/shared';
 
 export function hashPassword(password: string): Promise<string> {
   return argon2.hash(password, ARGON2_OPTIONS);

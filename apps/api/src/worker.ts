@@ -5,21 +5,26 @@ import { pino } from 'pino';
 import { ConfigError, loadEnv } from './config/env.js';
 import { processEmailDelivery, type EmailConsumer } from './email/consumer.js';
 import { ResendTransport, SmtpTransport, type EmailTransport } from './email/transport.js';
+import { processSearchQueue } from './db/functions.js';
+import { jobId } from './jobs/ids.js';
 import { QUEUE } from './jobs/registry.js';
+import { importEnqueue } from './imports/queues.js';
+import { ImportService } from './imports/service.js';
+import { runCatalogChecks } from './jobs/catalog-check.js';
 import { runRetention } from './jobs/retention.js';
 import { dispatchOnce, OUTBOX_CONSUMERS, type OutboxJobData } from './outbox/dispatcher.js';
 import { processWebhook, sweepWebhooks, WEBHOOK_QUEUE } from './webhooks/inbox.js';
 import { razorpayProvider } from './webhooks/provider.js';
 import { mediaServiceFromEnv } from './media/factory.js';
 import { createWorkerRuntime } from './worker/runtime.js';
+import { redisConnection } from './lib/redis-url.js';
 
 let env;
 try { env = loadEnv(); }
 catch (e) { if (e instanceof ConfigError) { console.error(e.message); process.exit(1); } throw e; }
 
 const log = pino({ name: 'worker', level: env.LOG_LEVEL });
-const u = new URL(env.REDIS_URL);
-const connection = { host: u.hostname, port: Number(u.port || 6379), ...(u.password ? { password: decodeURIComponent(u.password) } : {}), maxRetriesPerRequest: null };
+const connection = redisConnection(env.REDIS_URL);
 const redis = new Redis(env.REDIS_URL);
 redis.on('error', (err) => log.warn({ err: err.message }, 'redis connection error'));
 const prisma = new PrismaClient({ datasourceUrl: env.DATABASE_URL });
@@ -31,8 +36,12 @@ const email = (consumer: EmailConsumer) => async (job: Job<OutboxJobData>) =>
   processEmailDelivery({ prisma, transport, from: env.EMAIL_FROM, log }, consumer, job.data.deliveryId);
 
 const providers = [razorpayProvider(env.RAZORPAY_WEBHOOK_SECRET || undefined)];
-// The worker never enqueues media itself (the API does); retries come from BullMQ attempts.
-const media = mediaServiceFromEnv(env, prisma, async () => {});
+// Uploads are queued by the API; images downloaded by catalogue imports are queued here. Retries: BullMQ attempts.
+const media = mediaServiceFromEnv(env, prisma, async (id) => { await runtime.queues.get(QUEUE.mediaProcess)!.add('media.process', { id }, { jobId: jobId('media', id, Date.now()), attempts: 3, backoff: { type: 'exponential', delay: 10_000 }, removeOnComplete: true }); });
+const imports = new ImportService({
+  prisma, readFile: (m) => media.read(m), ingestImage: (url, userId) => media.ingestRemote(url, userId),
+  enqueue: { validate: (id, c) => importEnqueue(runtime.queues.get(QUEUE.importValidate)!, runtime.queues.get(QUEUE.importApply)!).validate(id, c), apply: (id) => importEnqueue(runtime.queues.get(QUEUE.importValidate)!, runtime.queues.get(QUEUE.importApply)!).apply(id) },
+});
 
 const runtime = createWorkerRuntime({
   connection, log,
@@ -41,6 +50,12 @@ const runtime = createWorkerRuntime({
       if (job.name === 'retention') return runRetention(prisma);
       if (job.name === 'webhook-sweep') return sweepWebhooks(prisma, runtime.queues.get(WEBHOOK_QUEUE)!);
       if (job.name === 'media-purge') return media.purgeStale();
+      if (job.name === 'import-sweep') return imports.sweep();
+      if (job.name === 'catalog-check') {
+        const r = await runCatalogChecks(prisma);
+        if (r.driftRepaired.length) log.error({ products: r.driftRepaired }, 'product aggregate drift repaired; investigate the write path');
+        return r;
+      }
       await redis.set('worker:heartbeat', new Date().toISOString(), 'EX', 300);
       return 'ok';
     } },
@@ -50,6 +65,16 @@ const runtime = createWorkerRuntime({
     { name: WEBHOOK_QUEUE, concurrency: 5, attempts: 1, processor: async (job) => processWebhook({ prisma, providers, log }, (job.data as { id: number }).id) },
     // Bad files end REJECTED (no retry); transient storage/processing errors throw ⇒ FAILED, retried by BullMQ.
     { name: QUEUE.mediaProcess, concurrency: 2, attempts: 3, backoffMs: 10_000, processor: async (job) => media.process((job.data as { id: number }).id) },
+    // Variant/category/type changes enqueue products in search_reindex_queue (database.md §7); drained every 2 s.
+    { name: QUEUE.searchReindex, concurrency: 1, attempts: 1, processor: async () => processSearchQueue(prisma) },
+    // Validation waits (retries) while media processing checks the uploaded workbook; apply resumes from PENDING rows.
+    { name: QUEUE.importValidate, concurrency: 1, attempts: 60, backoffMs: 5000, processor: async (job) => {
+      const { id, createMissing } = job.data as { id: number; createMissing: boolean };
+      const r = await imports.validate(id, createMissing);
+      if (r === 'WAITING') throw new Error(`import ${id}: the file is still being checked`);
+      return r;
+    } },
+    { name: QUEUE.importApply, concurrency: 1, attempts: 1, processor: async (job) => imports.apply((job.data as { id: number }).id) },
     { name: OUTBOX_CONSUMERS['email.customer'], concurrency: 5, processor: email('email.customer') },
     { name: OUTBOX_CONSUMERS['email.admin'], concurrency: 2, processor: email('email.admin') },
   ],
@@ -60,7 +85,10 @@ const runtime = createWorkerRuntime({
     { queue: QUEUE.maintenance, id: 'retention', everyMs: 3_600_000, jobName: 'retention' },
     { queue: QUEUE.maintenance, id: 'webhook-sweep', everyMs: 60_000, jobName: 'webhook-sweep' },
     { queue: QUEUE.maintenance, id: 'media-purge', everyMs: 3_600_000, jobName: 'media-purge' },
+    { queue: QUEUE.maintenance, id: 'import-sweep', everyMs: 60_000, jobName: 'import-sweep' },
+    { queue: QUEUE.maintenance, id: 'catalog-check', everyMs: 86_400_000, jobName: 'catalog-check' },
     { queue: QUEUE.outboxDispatch, id: 'outbox-dispatch', everyMs: 1000, jobName: 'dispatch' },
+    { queue: QUEUE.searchReindex, id: 'search-reindex', everyMs: 2000, jobName: 'reindex' },
   ],
 });
 await runtime.start();

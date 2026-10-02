@@ -10,6 +10,7 @@ import { pino } from 'pino';
 import request from 'supertest';
 import { z } from 'zod';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { registerAuditRoutes } from '../../src/admin/audit-routes.js';
 import { createAdminRouter, recordAudit } from '../../src/admin/router.js';
 import { createApp } from '../../src/app.js';
 import { adminAuthRouter } from '../../src/auth/admin-routes.js';
@@ -40,7 +41,7 @@ beforeAll(async () => {
   prisma = db.prisma;
   redis = new Redis(rd.url);
   const cache = new RedisSessionCache(redis);
-  service = new AuthService(prisma, cache, { ...DEFAULT_AUTH_TIMINGS, jwt: JWT, otpPepper: 'test-otp-pepper-0123', linkSecret: 'test-link-secret-0123456789abcdef0123', webUrl: WEB });
+  service = new AuthService(prisma, cache, { ...DEFAULT_AUTH_TIMINGS, jwt: JWT, otpPepper: 'test-otp-pepper-0123', linkSecret: 'test-link-secret-0123456789abcdef0123', webUrl: WEB, adminUrl: 'http://localhost:5173' });
   const deps = { prisma, cache, jwt: JWT };
   const admin = createAdminRouter({ ...deps, limiter: NO_LIMIT, log: pino({ level: 'silent' }), hasRecentStepUp: (sid) => service.hasRecentStepUp(sid), onMissingAudit: (req: Request) => missingAudit.push(`${req.method} ${req.originalUrl}`) });
   const r = admin.routes;
@@ -101,6 +102,7 @@ beforeAll(async () => {
   // A mutation that forgets to audit.
   r.post('/test/forgot-audit', admin.can('dashboard:read'), (_req, res) => { res.json({ ok: true }); });
 
+  registerAuditRoutes(admin, prisma);
   app = createApp({
     version: 't', origins: { storefront: [WEB], admin: [ADMIN_ORIGIN] }, readiness: { database: async () => {}, redis: async () => {} },
     routes: [
@@ -252,5 +254,27 @@ describe('audit guarantees', () => {
     const res = await call('post', '/test/inventory/adjust', staff.token, { rows: [{ variantId: 999_999, kind: 'RECOUNT', quantity: 1 }] });
     expect(res.status).toBe(500);
     expect(await prisma.auditLog.count({ where: { actorId: staff.id, action: 'inventory.adjust' } })).toBe(0);
+  });
+});
+
+describe('GET /admin/audit-logs (Audit Logs module)', () => {
+  it('SUPER_ADMIN pages through audit entries newest first, with actor details and filters; others are refused', async () => {
+    const sup = await login('SUPER_ADMIN');
+    const r = await call('get', '/audit-logs?limit=2', sup.token);
+    expect(r.status).toBe(200);
+    expect(r.body.meta).toMatchObject({ page: 1, limit: 2 });
+    expect(r.body.meta.total).toBeGreaterThanOrEqual(2);
+    expect(r.body.meta.totalPages).toBe(Math.ceil(r.body.meta.total / 2));
+    const [a, b] = r.body.data as { id: string; createdAt: string; actor: { email: string } | null }[];
+    expect(new Date(a!.createdAt).getTime()).toBeGreaterThanOrEqual(new Date(b!.createdAt).getTime());
+    expect(typeof a!.id).toBe('string');
+    const own = await call('get', `/audit-logs?actorId=${sup.id}&action=admin.`, sup.token);
+    expect(own.body.data.every((x: { action: string; actor: { id: number } }) => x.action.startsWith('admin.') && x.actor.id === sup.id)).toBe(true);
+    const asc = await call('get', '/audit-logs?sort=createdAt&limit=1', sup.token);
+    expect(new Date(asc.body.data[0].createdAt).getTime()).toBeLessThanOrEqual(new Date(a!.createdAt).getTime());
+    const last = await call('get', `/audit-logs?limit=2&page=${r.body.meta.totalPages + 5}`, sup.token);
+    expect(last.body.data).toEqual([]);
+    for (const bad of ['limit=101', 'page=0', 'sort=id', 'foo=1']) expect((await call('get', `/audit-logs?${bad}`, sup.token)).status).toBe(400);
+    expect((await call('get', '/audit-logs', (await login('ADMIN')).token)).status).toBe(403);
   });
 });

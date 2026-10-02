@@ -8,6 +8,7 @@ import type { Media, Prisma, PrismaClient } from '@prisma/client';
 import { fileTypeFromBuffer } from 'file-type';
 import sharp, { type Metadata } from 'sharp';
 import { AppError } from '../lib/errors.js';
+import { normaliseSourceUrl, safeFetch, SafeFetchError, type SafeFetchResult } from '../lib/safe-fetch.js';
 import type { ObjectStore } from './storage.js';
 
 const MB = 1024 * 1024;
@@ -108,6 +109,31 @@ export class MediaService {
     const uploaded = await this.setStatus(m.id, ['PENDING_UPLOAD'], { status: 'UPLOADED', sizeBytes: head!.size });
     if (uploaded) await this.enqueue(m.id);
     return this.view(uploaded ?? (await this.prisma.media.findUniqueOrThrow({ where: { id: m.id } })));
+  }
+
+  /**
+   * Catalogue import images (architecture.md §9.3): download through the SSRF-safe fetcher, store as a public product
+   * image and queue it for the same processing as uploads. A URL already ingested and not failed is reused.
+   */
+  async ingestRemote(url: string, uploadedBy: number | null, fetcher: (url: string) => Promise<SafeFetchResult> = (u) => safeFetch(u)): Promise<number> {
+    const source = normaliseSourceUrl(url);
+    const known = await this.prisma.media.findFirst({ where: { sourceUrl: source, kind: 'IMAGE', deletedAt: null, status: { in: ['UPLOADED', 'PROCESSING', 'READY'] } }, select: { id: true } });
+    if (known) return known.id;
+    const r = await fetcher(source);
+    const mime = r.contentType.split(';')[0]!.trim().toLowerCase();
+    if (!(IMAGE as readonly string[]).includes(mime)) throw new SafeFetchError('NOT_IMAGE', `content type ${mime} is not an allowed image`);
+    const key = `public/product-image/${new Date().toISOString().slice(0, 7)}/${randomUUID()}${EXT[mime]}`;
+    await this.cfg.store.put(this.cfg.buckets.PUBLIC, key, r.body, mime);
+    const m = await this.prisma.media.create({
+      data: { key, visibility: 'PUBLIC', kind: 'IMAGE', declaredMime: mime, declaredSize: r.body.length, sizeBytes: r.body.length, sourceUrl: source, uploadedBy, ownerScope: 'admin', status: 'UPLOADED' },
+    });
+    await this.enqueue(m.id);
+    return m.id;
+  }
+
+  /** The stored bytes of a media object (e.g. an import workbook), capped at its declared size. */
+  read(m: Media): Promise<Buffer> {
+    return this.cfg.store.get(this.cfg.buckets[m.visibility], m.key, m.declaredSize);
   }
 
   /** FAILED (transient) → UPLOADED and re-enqueued. */

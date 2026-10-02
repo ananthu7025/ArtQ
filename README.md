@@ -36,4 +36,12 @@ pnpm --filter @artq/api test:compose               # smoke tests against the run
 pnpm --filter @artq/api test:compose:integration   # integration suites against the containers
 docker compose down                  # (add -v to delete data)
 ```
+### Admin end-to-end tests (Playwright)
+```bash
+docker compose up -d --wait
+pnpm --filter @artq/admin exec playwright install chromium   # once
+pnpm --filter @artq/api build && pnpm --filter @artq/admin e2e
+```
+The run resets its own `artq_e2e` database and Redis database 5, starts the built API on :4001 and the admin build on :5173.
+
 Without Docker, `pnpm test` still runs the integration tests using a throwaway PostgreSQL 16.14 (embedded-postgres) and `redis-server` from PATH.

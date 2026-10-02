@@ -15,3 +15,7 @@ The full rules are in [CLAUDE.md](CLAUDE.md). In short:
   unauthorized, wrong state, not found) and edge/failure cases; run the whole suite (`pnpm build && pnpm typecheck && pnpm lint && pnpm test`,
   plus `pnpm validate:docs` when the database design changes) and report real results.
 - **Commits:** work on a `phase-<n>` branch; commit when each phase is complete with the suite green; never push or merge unless asked.
+- **Validation:** frontend and backend use the same criteria: one Zod schema per request in `@artq/shared`, imported by the
+  API and the form (forms may only add client-only fields such as "repeat password"). Forms validate with Zod (React Hook
+  Form + `zodResolver`); every invalid field gets a red border and its message in red directly under it (server field
+  errors mapped back onto the field). Applies to every form, strictly.

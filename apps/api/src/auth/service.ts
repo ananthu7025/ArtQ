@@ -5,7 +5,7 @@
 import type { Prisma, PrismaClient, User } from '@prisma/client';
 import * as fn from '../db/functions.js';
 import { AppError } from '../lib/errors.js';
-import { hashPassword, verifyPassword } from '../lib/password.js';
+import { hashPassword, STAFF_PASSWORD_MIN, verifyPassword } from '../lib/password.js';
 import type { SessionCache } from './session-cache.js';
 import { otpCode, otpHash, randomToken, safeEqualHex, sha256, signAccessToken, signLink, verifyLink, type JwtConfig } from './tokens.js';
 
@@ -14,6 +14,8 @@ export type AuthConfig = {
   otpPepper: string;
   linkSecret: string;
   webUrl: string;
+  /** Admin SPA origin: staff invite and admin password-reset links point here. */
+  adminUrl: string;
   accessTtlS: number;          // 600
   refreshIdleS: number;        // 30 d
   sessionAbsoluteS: number;    // 90 d
@@ -24,6 +26,7 @@ export type AuthConfig = {
   otpPerTargetPerHour: number; // 5
   resetTtlS: number;           // 1800
   setPasswordTtlS: number;     // 7 d
+  inviteTtlS: number;          // 72 h (staff invite = first password link)
   lockoutThreshold: number;    // 5
   lockoutS: number;            // 900
   adminAccessTtlS: number;     // 300
@@ -34,7 +37,7 @@ export type AuthConfig = {
 
 export const DEFAULT_AUTH_TIMINGS = {
   accessTtlS: 600, refreshIdleS: 30 * 86_400, sessionAbsoluteS: 90 * 86_400, graceS: 30, otpTtlS: 600, otpMaxAttempts: 5,
-  otpCooldownS: 30, otpPerTargetPerHour: 5, resetTtlS: 1800, setPasswordTtlS: 7 * 86_400, lockoutThreshold: 5, lockoutS: 900,
+  otpCooldownS: 30, otpPerTargetPerHour: 5, resetTtlS: 1800, setPasswordTtlS: 7 * 86_400, inviteTtlS: 72 * 3600, lockoutThreshold: 5, lockoutS: 900,
   adminAccessTtlS: 300, adminIdleS: 12 * 3600, adminAbsoluteS: 7 * 86_400, stepUpWindowS: 600,
 } as const;
 
@@ -60,7 +63,7 @@ export const maskEmail = (email: string) => {
   return `${local.slice(0, 1)}***@${domain}`;
 };
 
-const normaliseEmail = (e: string) => e.trim().toLowerCase();
+export const normaliseEmail = (e: string) => e.trim().toLowerCase();
 
 export class AuthService {
   private dummyHash: Promise<string> | null = null;
@@ -144,9 +147,13 @@ export class AuthService {
     return { stepUpUntil: r.until.toISOString() };
   }
 
-  /** Role change (architecture.md §5.4): admin sessions end at once (DB + cache); storefront sessions stay valid. */
-  async changeRole(userId: number, role: User['role']): Promise<void> {
+  /**
+   * Role change (architecture.md §5.4): admin sessions end at once (DB + cache); storefront sessions stay valid.
+   * `within` runs first in the same transaction (guards and the audit row of the caller).
+   */
+  async changeRole(userId: number, role: User['role'], within?: (tx: Tx) => Promise<void>): Promise<void> {
     const sids = await this.prisma.$transaction(async (tx) => {
+      await within?.(tx);
       const live = await tx.session.findMany({ where: { userId, audience: 'ADMIN', revokedAt: null }, select: { id: true } });
       await fn.changeRole(tx, userId, role);
       await tx.$executeRaw`UPDATE refresh_tokens SET status = 'REVOKED' WHERE status <> 'REVOKED' AND session_id IN (SELECT id FROM sessions WHERE user_id = ${userId} AND audience = 'ADMIN')`;
@@ -255,13 +262,39 @@ export class AuthService {
       await this.lockTarget(tx, email);
       const user = await this.liveUser(tx, email);
       if (user?.status !== 'ACTIVE') return;
-      const recent = await tx.passwordResetToken.count({ where: { userId: user.id, createdAt: { gt: new Date(Date.now() - 3_600_000) } } });
-      if (recent >= this.cfg.otpPerTargetPerHour) return;
-      const token = randomToken();
-      await tx.passwordResetToken.create({ data: { userId: user.id, tokenHash: sha256(token), expiresAt: new Date(Date.now() + this.cfg.resetTtlS * 1000) } });
-      await this.mail(tx, user.id, email, 'password_reset', { link: `${this.cfg.webUrl}/reset-password?token=${token}` });
+      await this.issueResetLink(tx, user, this.cfg.webUrl, 'password_reset', this.cfg.resetTtlS);
     }, TX);
     return { ok: true };
+  }
+
+  /** Admin "forgot password": same rules as the storefront, only for staff accounts, link to the admin app. */
+  async adminForgotPassword(input: { email: string }): Promise<{ ok: true }> {
+    const email = normaliseEmail(input.email);
+    await this.prisma.$transaction(async (tx) => {
+      await this.lockTarget(tx, email);
+      const user = await this.liveUser(tx, email);
+      if (user?.status !== 'ACTIVE' || !STAFF_ROLES.includes(user.role)) return;
+      await this.issueResetLink(tx, user, this.cfg.adminUrl, 'password_reset', this.cfg.resetTtlS);
+    }, TX);
+    return { ok: true };
+  }
+
+  /**
+   * Staff invite (or a fresh link from the Staff page): a single-use password link to the admin app, valid 72 h.
+   * Returns false when the per-account hourly link limit is reached.
+   */
+  async sendStaffInvite(tx: Tx, user: User): Promise<boolean> {
+    await this.lockTarget(tx, user.email);
+    return this.issueResetLink(tx, user, this.cfg.adminUrl, 'staff_invite', this.cfg.inviteTtlS, { role: user.role, name: user.name ?? '' });
+  }
+
+  private async issueResetLink(tx: Tx, user: User, base: string, template: string, ttlS: number, extra: Record<string, unknown> = {}): Promise<boolean> {
+    const recent = await tx.passwordResetToken.count({ where: { userId: user.id, createdAt: { gt: new Date(Date.now() - 3_600_000) } } });
+    if (recent >= this.cfg.otpPerTargetPerHour) return false;
+    const token = randomToken();
+    await tx.passwordResetToken.create({ data: { userId: user.id, tokenHash: sha256(token), expiresAt: new Date(Date.now() + ttlS * 1000) } });
+    await this.mail(tx, user.id, user.email, template, { ...extra, link: `${base.replace(/\/$/, '')}/reset-password?token=${token}` });
+    return true;
   }
 
   async resetPassword(input: { token: string; password: string }): Promise<{ ok: true }> {
@@ -273,8 +306,12 @@ export class AuthService {
       if (!t) throw new AppError(422, 'TOKEN_INVALID', 'This link is invalid or has expired');
       const user = await tx.user.findUnique({ where: { id: t.user_id } });
       if (!user || user.status !== 'ACTIVE' || user.deletedAt) throw new AppError(422, 'TOKEN_INVALID', 'This link is invalid or has expired');
+      if (STAFF_ROLES.includes(user.role) && input.password.length < STAFF_PASSWORD_MIN) {
+        // Staff accounts need the longer staff minimum whichever reset page (storefront or admin) is used.
+        throw new AppError(400, 'VALIDATION_ERROR', 'Request validation failed', [{ location: 'body', path: 'password', message: `Use at least ${STAFF_PASSWORD_MIN} characters` }]);
+      }
       await tx.passwordResetToken.updateMany({ where: { userId: user.id, usedAt: null }, data: { usedAt: new Date() } });   // other links die too
-      await tx.user.update({ where: { id: user.id }, data: { passwordHash, failedLoginCount: 0, lockedUntil: null } });
+      await tx.user.update({ where: { id: user.id }, data: { passwordHash, failedLoginCount: 0, lockedUntil: null, emailVerifiedAt: user.emailVerifiedAt ?? new Date() } });   // the link proved the mailbox
       await this.mail(tx, user.id, user.email, 'password_changed', {});
       return user.id;
     }, TX);
@@ -329,7 +366,7 @@ export class AuthService {
   }
 
   /** Serialises per-email operations (signup races, OTP issue limits). */
-  private async lockTarget(tx: Tx, email: string) {
+  async lockTarget(tx: Tx, email: string) {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('auth:' || ${email}))`;
   }
 
@@ -395,8 +432,9 @@ export class AuthService {
   }
 
   /** aq_revoke_all_sessions (both auth versions++) and cache tombstones for every live session of the user. */
-  async revokeAll(userId: number, reason: string, block = false): Promise<void> {
+  async revokeAll(userId: number, reason: string, block = false, within?: (tx: Tx) => Promise<void>): Promise<void> {
     const sids = await this.prisma.$transaction(async (tx) => {
+      await within?.(tx);
       const live = await tx.session.findMany({ where: { userId, revokedAt: null }, select: { id: true } });
       await fn.revokeAllSessions(tx, userId, reason, block);
       await tx.$executeRaw`UPDATE refresh_tokens SET status = 'REVOKED' WHERE status <> 'REVOKED' AND session_id IN (SELECT id FROM sessions WHERE user_id = ${userId})`;

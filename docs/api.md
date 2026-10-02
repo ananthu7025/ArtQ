@@ -23,7 +23,7 @@
 | Errors | `{ "error": { "code", "message", "details" } }` |
 
 ### 1.1 Error codes
-`VALIDATION_ERROR` 400 · `UNAUTHENTICATED` 401 · `SESSION_INVALID` 401 · `INVALID_CREDENTIALS` 401 · `STEP_UP_REQUIRED` 401 · `FORBIDDEN` 403 · `NOT_VERIFIED` 403 · `ACCOUNT_BLOCKED` 403 · `ORIGIN_REJECTED` 403 · `ACCOUNT_EXISTS` 409 (set-password link for an email that already has a password) · `TOKEN_INVALID` 422 (reset / set-password link invalid, used or expired) · `NOT_FOUND` 404 · `VERSION_CONFLICT` 409 · `OUT_OF_STOCK` 409 · `PRICE_CHANGED` 409 · `REQUEST_IN_PROGRESS` 409 · `REQUEST_SUPERSEDED` 409 · `REFUND_EXCEEDS_CAPACITY` 409 (`details.scope` = `item` (+ `orderItemId`) / `order` / `payment`) · `REFUND_NOT_RETRYABLE` 409 · `REFUND_RECONCILIATION_REQUIRED` 409 (provider refunds on the payment not yet reconciled) · `REFUND_NOT_CANCELLABLE` 409 · `IDEMPOTENCY_KEY_REUSED` 422 · `COUPON_INVALID` / `COUPON_EXPIRED` / `COUPON_MIN_ORDER` / `COUPON_USAGE_EXCEEDED` / `COUPON_NOT_ELIGIBLE` 422 · `COD_NOT_AVAILABLE` 422 · `PINCODE_NOT_SERVICEABLE` 422 · `SHIPPING_RESTRICTED` 422 · `NOT_PUBLISHABLE` 422 · `INVALID_TRANSITION` 422 · `RETURN_NOT_ALLOWED` 422 · `OTP_INVALID` / `OTP_EXPIRED` / `MFA_INVALID` 422 · `PAYMENT_VERIFICATION_FAILED` 422 · `ACCOUNT_LOCKED` 423 · `RATE_LIMITED` 429 · `PAYMENT_PROVIDER_UNAVAILABLE` 503 · `INTERNAL` 500.
+`VALIDATION_ERROR` 400 · `UNAUTHENTICATED` 401 · `SESSION_INVALID` 401 · `INVALID_CREDENTIALS` 401 · `STEP_UP_REQUIRED` 401 · `FORBIDDEN` 403 · `NOT_VERIFIED` 403 · `ACCOUNT_BLOCKED` 403 · `ORIGIN_REJECTED` 403 · `ACCOUNT_EXISTS` 409 (set-password link for an email that already has a password) · `TOKEN_INVALID` 422 (reset / set-password link invalid, used or expired) · `NOT_FOUND` 404 · `VERSION_CONFLICT` 409 · `OUT_OF_STOCK` 409 · `PRICE_CHANGED` 409 · `REQUEST_IN_PROGRESS` 409 · `REQUEST_SUPERSEDED` 409 · `REFUND_EXCEEDS_CAPACITY` 409 (`details.scope` = `item` (+ `orderItemId`) / `order` / `payment`) · `REFUND_NOT_RETRYABLE` 409 · `REFUND_RECONCILIATION_REQUIRED` 409 (provider refunds on the payment not yet reconciled) · `REFUND_NOT_CANCELLABLE` 409 · `IDEMPOTENCY_KEY_REUSED` 422 · `COUPON_INVALID` / `COUPON_EXPIRED` / `COUPON_MIN_ORDER` / `COUPON_USAGE_EXCEEDED` / `COUPON_NOT_ELIGIBLE` 422 · `COD_NOT_AVAILABLE` 422 · `PINCODE_NOT_SERVICEABLE` 422 · `SHIPPING_RESTRICTED` 422 · `NOT_PUBLISHABLE` 422 · Staff: `STAFF_EXISTS` / `LAST_SUPER_ADMIN` 409 · `CANNOT_CHANGE_SELF` 422 · Catalogue: `MEDIA_NOT_USABLE` / `RELATION_SELF` / `RELATION_NOT_FOUND` 422 · `UNPUBLISH_FIRST` / `TAXONOMY_IN_USE` / `NAME_TAKEN` 409 (a change would make a live product fail a publication check; `details.failures`) · `SLUG_TAKEN` / `SKU_EXISTS` / `VARIANT_OPTIONS_EXIST` / `ARCHIVE_INSTEAD` (`details.reason`) 409 · `CATEGORY_TYPE_MISMATCH` / `TAXONOMY_NOT_FOUND` / `MEDIA_NOT_FOUND` / `SIZE_INVALID` / `DIMENSIONS_INCOMPLETE` / `MRP_BELOW_PRICE` / `FLAGS_ADD_FORBIDDEN` 422 · `INVALID_TRANSITION` 422 · `RETURN_NOT_ALLOWED` 422 · `OTP_INVALID` / `OTP_EXPIRED` / `MFA_INVALID` 422 · `PAYMENT_VERIFICATION_FAILED` 422 · `ACCOUNT_LOCKED` 423 · `RATE_LIMITED` 429 · `PAYMENT_PROVIDER_UNAVAILABLE` 503 · `INTERNAL` 500.
 
 ### 1.2 Idempotency (required header `Idempotency-Key: <uuid>` on these operations)
 
@@ -257,6 +257,8 @@ re-check. The MFA endpoints below the table remain the target design (tasklist 1
 | POST | `/admin/auth/refresh` · `/admin/auth/logout` | Cookie `__Secure-aq_admin_rt` (`Path=/v1/admin/auth`, 12 h idle / 7 d absolute), Origin from `ADMIN_ORIGINS`; same rotation, grace and reuse rules as the storefront |
 | POST | `/admin/auth/logout-all` | Bearer (admin) → revoke all sessions |
 | POST | `/admin/auth/step-up` | Bearer (admin), `{password}` → `{stepUpUntil}` (10 min, this session only); wrong passwords count toward the lockout. Audited (`admin.step_up`) |
+| POST | `/admin/auth/password/forgot` | `{email}` → always `{ok:true}`; a 30-min link to `<admin origin>/reset-password` is emailed only to an ACTIVE staff account (per-IP `emailSend` limit; ≤ 5 links per account per hour) |
+| POST | `/admin/auth/password/reset` | `{token, password ≥ 12}` → `{ok:true}`; used by reset **and staff invite** links; ends every session. (The storefront reset also enforces 12 characters for staff accounts.) |
 | GET | `/admin/me` | `{user}` (task 1.7 adds `permissions[]`): the SPA hides navigation and actions without permission, and the server enforces |
 
 Target MFA endpoints (deferred): `POST /admin/auth/login` → `{challengeId, type:'MFA_LOGIN'|'MFA_ENROLL'}` (no tokens); `POST /admin/auth/mfa/enroll/start` `{challengeId}` → `{otpauthUri, qrSvg}`; `POST /admin/auth/mfa/enroll/confirm` `{challengeId, code}` → `{recoveryCodes[10], accessToken}` + cookie; `POST /admin/auth/mfa/verify` `{challengeId, code | recoveryCode}` → `{accessToken}` + cookie; step-up `{code}`; `POST /admin/me/recovery-codes/regenerate` (step-up).
@@ -274,9 +276,10 @@ Target MFA endpoints (deferred): `POST /admin/auth/login` → `{challengeId, typ
 | `type` | type id, or `unassigned` (product tabs + **More** overflow are built from `GET /admin/product-types?withCounts=1`) |
 | `status` | `DRAFT`, `ACTIVE`, `ARCHIVED` (multi) |
 | `stock` | `in`, `low`, `out`, `oversold` |
-| `readiness` | `ready`, `blocked`, or a specific check (`no_image`, `no_price`, `estimated_weight`, `stock_uncounted`, `no_tax`, `no_description`, `has_flags`) |
+| `readiness` | `ready`, `blocked`, or one failing check, by the codes of `product_readiness_failures()` (`taxonomy`, `no_description`, `no_tax`, `has_flags`, `no_image`, `no_active_variant`, `no_price_or_size`, `stock_uncounted`, `shipping_data`, `variant_flags`) |
 | `imageState` | `ready`, `processing`, `failed`, `missing` |
-| `sort` | `name`, `updated_desc`, `price`, `stock` |
+| `flag` | an import flag on the product or any of its variants |
+| `sort` | `name`, `updated_desc`, `price` (unpriced last), `stock` (lowest first) |
 | `page`, `limit` | default 20 |
 
 Row DTO:
@@ -287,21 +290,22 @@ Row DTO:
   "category": { "id": 12, "name": "Gel Pigments" },
   "status": "DRAFT", "isPublishable": false, "readinessFailures": ["no_image", "estimated_weight"],
   "variantCount": 1, "priceRange": { "min": 9000, "max": 9000 }, "available": 20,
+  "activeVariantCount": 1, "lowStock": false, "oversold": false, "deletable": true,
   "flags": ["SIZE_CONFLICT"], "updatedAt": "…", "version": 3 }
 ```
-`serial` = (page − 1) × limit + row index, for the "#" column. The DTO maps `type` from the `type_id` relation. An unresolvable relation is a server bug, logged and reported as `type: null` with `typeMissing: true`, so it can be distinguished from a genuinely unassigned draft.
+`serial` = (page − 1) × limit + row index, for the "#" column. The DTO maps `type` from the `type_id` relation (a foreign key, so it always resolves); `type: null` means a genuinely unassigned draft, shown as "Unassigned". `readinessFailures` is evaluated live; `deletable` = a draft never ordered, carted, imported or stock-counted (else the row offers Archive). Query schema: `productListQuery` in `@artq/shared`. Type tabs: `GET /admin/product-types?withCounts=1` → `{data:[{…, productCount}], unassigned, total}`; `GET /admin/categories?typeId=` for filters and bulk Set category.
 
 | Method | Path | Permission | Notes |
 |--------|------|------------|-------|
 | POST | `/admin/products` | catalog:write | Creates a **DRAFT**; variants without price allowed |
 | GET | `/admin/products/:id` | catalog:read | Full editor payload incl. variants, images (with media state), readiness |
-| PATCH | `/admin/products/:id` | catalog:write | Content fields only (`name`, `slug`, descriptions, lists, type/category, techniques, flags, ranks, SEO, relations); `version` required |
-| PUT | `/admin/products/:id/images` | catalog:write + media | Ordered list `{mediaId, alt, isCover}`; only READY/PROCESSING media |
+| PATCH | `/admin/products/:id` | catalog:write | Content fields only (`name`, `slug`, descriptions, lists, type/category, techniques, flags, ranks, SEO, `relations:[{productId, kind}]` replacing the set; 422 `RELATION_SELF` / `RELATION_NOT_FOUND`); `description` is rich text sanitised server-side (empty markup = no description); `version` required. `version` guards the content fields only: images, variants, prices, tax approval and publication do not bump it. The editor payload adds `relations[]` (with names) and `updatedBy {id, name, email}` for the conflict message |
+| PUT | `/admin/products/:id/images` | catalog:write + media:write | `{images:[{mediaId, alt, isCover}]}`, ordered, ≤ 20, exactly one cover; only this pipeline's PUBLIC images that are UPLOADED/PROCESSING/READY (else 422 `MEDIA_NOT_USABLE` with `details.mediaIds`); claims the media; a live product must keep a ready cover (409 `UNPUBLISH_FIRST`) |
 | POST | `/admin/products/:id/variants` · PATCH `/admin/variants/:id` | catalog:write | **Non-commercial** variant fields: size/net qty/unit, colour, hex, thickness, label, weight + source, dims, shipping class, image, barcode, sort, active |
 | PATCH | `/admin/variants/:id/pricing` | **pricing:write** | `{price, mrp, costPrice, version}`; audited with before/after |
 | POST | `/admin/products/:id/tax-approval` | catalog:publish | `{hsnCode, gstRate}`; sets `tax_approved_at/by` |
-| GET | `/admin/products/:id/readiness` | catalog:read | Gate checklist |
-| POST | `/admin/products/:id/publish` | **catalog:publish** | Activation toggle ON; 422 `NOT_PUBLISHABLE` with failures |
+| GET | `/admin/products/:id/readiness` | catalog:read | `{ready, failures:[{code, check, fix}]}`, evaluated live by `product_readiness_failures()`; labels in `@artq/shared` `READINESS` |
+| POST | `/admin/products/:id/publish` | **catalog:publish** | Activation toggle ON (DRAFT/ARCHIVED → ACTIVE); 422 `NOT_PUBLISHABLE` with `details.failures` (the evaluation is stored either way); already ACTIVE = no change; `published_at` keeps the first publication. While ACTIVE every catalogue change is re-checked in its transaction → 409 `UNPUBLISH_FIRST`; a variant added to an ACTIVE product starts inactive |
 | POST | `/admin/products/:id/unpublish` | catalog:publish | Toggle OFF → `DRAFT` |
 | POST | `/admin/products/:id/archive` | catalog:publish | Hidden; kept for history |
 | DELETE | `/admin/products/:id` | catalog:write | **Delete** = hard delete only for drafts never referenced by orders/carts/imports; otherwise 409 with "Archive instead" |
@@ -309,14 +313,15 @@ Row DTO:
 | POST | `/admin/products/bulk` | per action | `{ids[], action}`: `publish`/`unpublish`/`archive` (catalog:publish, per-item result), `markNew`/`unmarkNew`/`markTrending`/`unmarkTrending`/`setType`/`setCategory` (catalog:write) → `{results:[{id, ok, error?}]}` |
 
 ### 4.4 Product Types / Categories / Techniques (screenshot modules) [catalog:write]
-CRUD `/admin/product-types`, `/admin/categories`, `/admin/techniques` (image media id, slug, description, sort, active, show on home/menu, tile link, SEO). `PATCH /admin/product-types/reorder {ids[]}`. Deleting a type/category with products → 409 (reassign or archive first).
+CRUD `/admin/product-types`, `/admin/categories`, `/admin/techniques` (image media id, slug, description, sort, active, show on home/menu, tile link, SEO; categories also `typeId`, default HSN / GST). Lists take `?withCounts=1` (types: `productCount`, `categoryCount`, Unassigned, All; categories/techniques: `productCount`); `GET …/:id` returns the record with `media` and `usage`. Slug from the name when omitted (next free), 301s on change (entities `type` / `category` / `technique`). `PATCH …/reorder {ids[]}` for all three (sort order = list order). Images must be usable product images (422 `MEDIA_NOT_USABLE`). Delete refused while used (types: products or categories; categories: products, archived included; techniques: products) → 409 `TAXONOMY_IN_USE` with `details {products, categories?}` and the guidance in `message` (move/archive first, or turn it off). Moving a category to another type while products use it → 409 `TAXONOMY_IN_USE`; duplicate category name within a type → 409 `NAME_TAKEN`. Schemas in `@artq/shared` (`taxonomy-schemas.ts`). These tables have no `version`: last write wins, every change audited.
 
 ### 4.5 Inventory [inventory:read / inventory:adjust]
 | Method | Path | Notes |
 |--------|------|-------|
-| GET | `/admin/inventory?q=&stock=low|out|oversold&page=` | `{variantId, sku, product, onHand, reserved, available, lowStockThreshold, countedAt}` |
-| POST | `/admin/inventory/adjustments` | `[{variantId, kind:'RECOUNT'|'ADJUSTMENT'|'DAMAGE_WRITE_OFF', quantity, note}]`. **Schema contains no price/MRP/status fields** (unknown keys → 400). RECOUNT sets `on_hand`; others apply a delta; `reserved` is never written |
-| GET | `/admin/inventory/:variantId/movements` | Ledger incl. reservations |
+| GET | `/admin/inventory?q=&stock=low|out|oversold|uncounted&page=&limit=` | `{variantId, sku, label, product:{id,name,status}, onHand, reserved, available, lowStockThreshold, countedAt, isActive}`; `q` matches SKU or product name; oversold rows first. `low` = 0 < available ≤ threshold, `out` = available ≤ 0, `uncounted` = `countedAt` null |
+| POST | `/admin/inventory/adjustments` [inventory:adjust] | `{rows:[{variantId, kind:'RECOUNT'|'ADJUSTMENT'|'DAMAGE_WRITE_OFF', quantity, note?}]}` (1–200 rows, one per variant; `adjustmentsBody` in `@artq/shared`, also used by the form). RECOUNT: count ≥ 0, sets `on_hand`, marks counted. ADJUSTMENT: ±delta ≠ 0. DAMAGE_WRITE_OFF: units > 0, removed. A note is required except for RECOUNT; \|quantity\| ≤ 100 000. **Schema contains no price/MRP/status/reserved fields** (unknown keys → 400). Unknown variant → 404; a result below 0 → 422 `INVALID_ADJUSTMENT` `{variantId}` and nothing is written. Response `{data:[rows after], oversold:[variantIds]}`: a count below `reserved` raises the `OVERSOLD` exception. Audited `inventory.adjust` with before/after |
+| GET | `/admin/inventory/:variantId/movements?page=` | Ledger, newest first: `{reason, onHandDelta, reservedDelta, onHandAfter, reservedAfter, orderNumber, importId, note, actor, createdAt}` incl. reservations |
+| GET | `/admin/inventory/count-sheet.xlsx` | Count sheet with every variant (SKU, Product, Variant, On hand (system), Counted quantity, Change (+/−), Note) plus a "How to use" sheet; the file an `INVENTORY` import expects |
 | POST | `/admin/imports` (kind `INVENTORY`) | Counted-stock sheet (§4.9) |
 
 ### 4.6 Orders (screenshot module "Orders") [orders:*]
@@ -357,7 +362,7 @@ CRUD `/admin/product-types`, `/admin/categories`, `/admin/techniques` (image med
 ### 4.9 Imports, media, content
 | Resource | Endpoints | Permission |
 |----------|-----------|------------|
-| Imports | `POST /admin/imports {kind:'CATALOG'|'INVENTORY', fileMediaId}` → validation job; `GET /admin/imports/:id` (status, counts); `GET /admin/imports/:id/rows?status=` (row outcomes, messages); `POST /admin/imports/:id/confirm`; `POST /admin/imports/:id/cancel`; `POST /admin/imports/:id/rows/:rowId/resolve {action:'apply'|'skip'}` for `NEEDS_REVIEW`; `GET /admin/imports/:id/result.xlsx`; `GET /admin/imports/template.xlsx?kind=`; `GET /admin/exports/catalog.xlsx` | imports:catalog (+ pricing:write if price columns change) / inventory:adjust |
+| Imports | `POST /admin/imports {kind:'CATALOG'|'INVENTORY', fileMediaId, createMissing?, fileName?}` (`createMissing` is catalogue only; each kind needs its own permission and a caller sees only the kinds they may import; inventory rows read back as `{kind, quantity, note, systemOnHand}`) → validation job (waits for the file's media check); `GET /admin/imports/:id` (status, counts); `GET /admin/imports/:id/rows?status=` (row outcomes, messages); `POST /admin/imports/:id/confirm`; `POST /admin/imports/:id/cancel`; `POST /admin/imports/:id/rows/:rowId/resolve {action:'apply'|'skip'}` for `NEEDS_REVIEW`; `GET /admin/imports/:id/result.xlsx`; `GET /admin/imports/template.xlsx?kind=`; `GET /admin/exports/catalog.xlsx` | imports:catalog (+ pricing:write if price columns change) / inventory:adjust |
 | Media | `POST /admin/media/presign`, `POST /admin/media/:id/complete`, `POST /admin/media/:id/retry` (FAILED only), `GET /admin/media?kind=&status=&unused=1`, `DELETE /admin/media/:id` (409 if referenced) | media:write |
 | CMS | CRUD `/admin/home-slides`, `/admin/reels`, `/admin/testimonials`, `/admin/faqs`, `/admin/pages`; `PUT /admin/settings/{ANNOUNCEMENT_BAR|HOME_SECTIONS|HERO|INSTAGRAM_MOMENTS|SOCIAL}`; `GET/PATCH /admin/messages`; `GET /admin/newsletter` + CSV export (step-up) | content:write |
 
@@ -366,7 +371,7 @@ CRUD `/admin/product-types`, `/admin/categories`, `/admin/techniques` (image med
 |----------|-----------|------------|
 | Payment exceptions | `GET /admin/payment-exceptions?status=&type=`; `GET /:id`; `POST /:id/resolve {resolution, note}`; `POST /:id/dismiss {note}`; `POST /admin/payments/reconcile {orderId? | from,to}` (manual run) | payments:exceptions |
 | Jobs & webhooks | `GET /admin/ops/summary` (queue depths, failed counts, inbox status counts, outbox backlog, last scheduler runs); `GET /admin/ops/webhooks?status=`; `POST /admin/ops/webhooks/:id/retry` (DEAD/FAILED → RECEIVED); `GET /admin/ops/outbox-deliveries?status=&consumer=` (PENDING/LEASED/PUBLISHED-not-completed/DEAD with generation, last error); `POST /admin/ops/outbox-deliveries/:id/retry` (DEAD → PENDING, generation reset); `GET /admin/ops/jobs/failed`; `POST /admin/ops/jobs/:id/retry` | jobs:read / jobs:retry |
-| Staff & permissions | CRUD `/admin/staff` (role changes revoke admin sessions); `POST /admin/staff/:id/reset-mfa` (step-up); `POST /admin/staff/:id/revoke-sessions` | staff:manage |
+| Staff & permissions | `GET /admin/staff?q=&role=&status=&page=` (no step-up) → `{id, name, email, role, status, passwordSet, lastLoginAt, activeSessions}`; `POST /admin/staff {email, name, role}` → 201, new account or promoted customer, invite email (72 h single-use link), 409 `STAFF_EXISTS`/`ACCOUNT_BLOCKED`; `PATCH /admin/staff/:id {name?, role?}` (role change ends their admin sessions; `role:'CUSTOMER'` removes access → 204); `POST /admin/staff/:id/block` · `/unblock` · `/revoke-sessions` · `/send-password-link` (429 after 5 links/hour). Guards: own access → 422 `CANNOT_CHANGE_SELF`; demoting/blocking the last active SUPER_ADMIN → 409 `LAST_SUPER_ADMIN` (rows locked, safe under concurrency). Deferred with MFA: `POST /admin/staff/:id/reset-mfa` | staff:manage (+ step-up for changes) |
 | Settings | `GET /admin/settings`; `PUT /admin/settings/:key` (STORE_INFO, PAYMENT toggles, ORDER, TAX, NOTIFY; step-up) | settings:write |
 | Audit logs | `GET /admin/audit-logs?entity=&entityId=&actor=&action=&from=&to=` | audit:read |
 

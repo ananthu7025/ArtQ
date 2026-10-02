@@ -39,6 +39,15 @@ const TEMPLATES: Record<string, (d: Record<string, unknown>) => Rendered> = {
       html: layout('Reset your password', ['Use the button below to choose a new password. The link expires in 30 minutes.', 'If you did not ask for it, you can ignore this email.'], { label: 'Reset password', href: link }),
     };
   },
+  staff_invite: (d) => {
+    const link = str(d.link, 'link');
+    const role = ({ STAFF: 'Staff', ADMIN: 'Admin', SUPER_ADMIN: 'Super Admin' } as Record<string, string>)[str(d.role, 'role')] ?? 'Staff';
+    return {
+      subject: 'You have been added to the ArtQ admin',
+      text: `You now have ${role} access to the ArtQ admin. Choose your password here: ${link}\nThe link expires in 72 hours and works once.`,
+      html: layout('Welcome to the ArtQ admin', [`You now have ${role} access to the ArtQ admin panel.`, 'Choose a password to sign in. The link expires in 72 hours and works once.'], { label: 'Choose password', href: link }),
+    };
+  },
   password_changed: () => ({
     subject: 'Your ArtQ password was changed',
     text: 'Your password was changed and you were logged out everywhere. If this was not you, reset your password now.',

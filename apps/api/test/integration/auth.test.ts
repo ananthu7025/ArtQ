@@ -28,7 +28,7 @@ const NO_LIMIT: RateLimiter = { hit: async () => ({ count: 0, resetMs: 60_000 })
 let pg: Service, rd: Service, db: TestDb, prisma: PrismaClient, redis: Redis, cache: SessionCache, service: AuthService, app: Express;
 
 function build(c: SessionCache): { app: Express; service: AuthService } {
-  const s = new AuthService(prisma, c, { ...DEFAULT_AUTH_TIMINGS, jwt: JWT, otpPepper: 'test-otp-pepper-0123', linkSecret: LINK_SECRET, webUrl: ORIGIN });
+  const s = new AuthService(prisma, c, { ...DEFAULT_AUTH_TIMINGS, jwt: JWT, otpPepper: 'test-otp-pepper-0123', linkSecret: LINK_SECRET, webUrl: ORIGIN, adminUrl: 'http://localhost:5173' });
   // Rate limits are exercised in rate-limit.test.ts; here they would only throttle the suite's own traffic.
   const a = createApp({ version: 't', origins: { storefront: [ORIGIN], admin: ['http://localhost:5173'] }, readiness: { database: async () => {}, redis: async () => {} },
     routes: [authRouter({ prisma, cache: c, jwt: JWT, service: s, env: 'test', refreshMaxAgeS: DEFAULT_AUTH_TIMINGS.refreshIdleS, limiter: NO_LIMIT })] });
