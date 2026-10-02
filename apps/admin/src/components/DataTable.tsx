@@ -23,7 +23,12 @@ export function useTableParams(defaults: { sort: string; filterKeys: string[] })
   const page = Math.max(1, Number(sp.get('page')) || 1);
   const sort = sp.get('sort') ?? defaults.sort;
   const filters = Object.fromEntries(defaults.filterKeys.map((k) => [k, sp.get(k) ?? '']).filter(([, v]) => v !== ''));
-  const update = (fn: (p: URLSearchParams) => void) => setSp((prev) => { const p = new URLSearchParams(prev); fn(p); return p; });
+  // Each change starts from the newest params: the ones last written, until a render shows them. React Router hands an
+  // updater the params of the last render, so a second change made before that render (pick a filter, then press Enter
+  // in search) would otherwise silently drop the first.
+  const latest = useRef(sp);
+  useEffect(() => { latest.current = sp; }, [sp]);
+  const update = (fn: (p: URLSearchParams) => void) => { const p = new URLSearchParams(latest.current); fn(p); latest.current = p; setSp(p); };
   return {
     page, sort, filters, hasFilters: Object.keys(filters).length > 0,
     setPage: (n) => update((p) => { if (n <= 1) p.delete('page'); else p.set('page', String(n)); }),

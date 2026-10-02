@@ -73,3 +73,16 @@ export async function resultWorkbook(rows: ResultRow[]): Promise<Buffer> {
 export async function templateWorkbook(): Promise<Buffer> {
   return resultWorkbook([]);
 }
+
+/** Result of an inventory import: the rows as uploaded, with their outcome and notes. */
+export async function countResultWorkbook(rows: { count: { sku: string | null; kind: string | null; quantity: number | null; note: string | null; systemOnHand: number | null }; outcome: string; messages: { text: string }[] }[]): Promise<Buffer> {
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('Stock count', { views: [{ state: 'frozen', ySplit: 1 }] });
+  const cols = ['SKU', 'On hand (system)', 'Counted quantity', 'Change (+/−)', 'Note', 'Outcome', 'Messages'];
+  ws.columns = cols.map((h) => ({ header: h, key: h, width: h === 'Messages' ? 60 : 18 }));
+  ws.getRow(1).font = { bold: true };
+  for (const { count: c, outcome, messages } of rows) {
+    ws.addRow({ SKU: c.sku, 'On hand (system)': c.systemOnHand, 'Counted quantity': c.kind === 'RECOUNT' ? c.quantity : null, 'Change (+/−)': c.kind === 'ADJUSTMENT' ? c.quantity : null, Note: c.note, Outcome: outcome, Messages: messages.map((m) => m.text).join(' · ') || null });
+  }
+  return Buffer.from(await wb.xlsx.writeBuffer());
+}

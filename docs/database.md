@@ -3618,6 +3618,7 @@ END $$ LANGUAGE plpgsql;
 | Migration | Task | Adds |
 |-----------|------|------|
 | `0004_import_initial_stock` | 2.7 | `aq_import_initial_stock(p_variant, p_quantity, p_import, p_actor)`: locks the variant, refuses stock already set or any movement (`STOCK_ALREADY_SET`), sets `on_hand` (never `inventory_counted_at`), inserts the `IMPORT_INITIAL` movement. Wrapper `importInitialStock` |
+| `0005_refresh_products_lock_first` | 2.8 | Replaces `aq_refresh_products`: locks each product (`FOR NO KEY UPDATE`) in one statement and computes its aggregates in the next. The `0003` version computed inside the `UPDATE` that waited for the lock, so under READ COMMITTED two transactions changing **different variants of the same product** (a stock count and a checkout, which lock only their own variants) could write aggregates missing the other's committed change (`product_aggregate_drift`). Found by the task 2.8 concurrency test; regression test in `inventory.test.ts` |
 
 ---
 
@@ -3764,9 +3765,10 @@ Two separate import kinds (`product_imports.kind`):
 
 | | `CATALOG` | `INVENTORY` |
 |---|-----------|-------------|
-| Changes | types/categories (create-missing optional), products, variants, descriptions, images, prices (requires `pricing:write`), flags, SEO | `on_hand` only (`SET` counted quantity or `DELTA`) |
+| Changes | types/categories (create-missing optional), products, variants, descriptions, images, prices (requires `pricing:write`), flags, SEO | `on_hand` only: "Counted quantity" sets it (`RECOUNT`, marks the variant counted), "Change (+/−)" adds or removes units (`ADJUSTMENT`, a note is required) |
 | Never changes | `on_hand` of existing variants, `reserved`, product `status` (imports create/keep `DRAFT`; publishing is a separate gated action) | prices, content, `reserved` |
-| Identity | Variant by **SKU** (stable; generated SKUs are written back to the result file); product by `import_key` (product handle column), falling back to exact name on first import | SKU |
+| Identity | Variant by **SKU** (stable; generated SKUs are written back to the result file); product by `import_key` (product handle column), falling back to exact name on first import. Within a product, size + colour + thickness must differ: a second row with the same options fails the check (`OPTIONS_DUPLICATE`), as does a new SKU with the options of an existing variant (`OPTIONS_TAKEN`) | SKU (case-insensitive) |
+| Permission | `imports:catalog` | `inventory:adjust` |
 
 **Lifecycle:** `UPLOADED` → `VALIDATING` → `VALIDATED` (every row stored in `product_import_rows` with `payload`, messages and `base_version` = current `products.version`/`variants.version`) → admin confirms → `IMPORTING` → `COMPLETED` / `COMPLETED_WITH_ERRORS` / `FAILED` / `CANCELLED`.
 
@@ -3774,9 +3776,11 @@ Two separate import kinds (`product_imports.kind`):
 
 **Resume & retries:** the job processes `PENDING` rows in batches of 25, one transaction per batch, holding a Postgres advisory lock (one batch of any import at a time) and re-checking under it that the rows are still `PENDING` (`FOR UPDATE`), so two workers never apply a row twice. A crash (the worker killed mid-batch) rolls the batch back; the next run (BullMQ retry, or the `import-sweep` job re-queuing an `IMPORTING` import idle for 2 minutes) resumes from the remaining `PENDING` rows. Attempts are counted before each batch; a row in a batch that crashed 3 times is `FAILED` (`GAVE_UP`). New variants get stock through `aq_import_initial_stock` (§6c), which refuses a second time, so stock is never doubled.
 
-**Concurrent edits:** at apply time, if the target product/variant `version` differs from the row's `base_version`, the row becomes `NEEDS_REVIEW` (no overwrite). Catalogue batches lock variants ascending then products (§4.1). Inventory imports call `aq_adjust_on_hand` per batch (variants ascending, `on_hand` only), so active reservations are never overwritten (C09 runs imports concurrently with checkouts).
+**Concurrent edits:** at apply time, if the target product/variant `version` differs from the row's `base_version`, the row becomes `NEEDS_REVIEW` (no overwrite). Catalogue batches lock variants ascending then products (§4.1). Inventory imports call `aq_adjust_on_hand` per batch (variants ascending, `on_hand` only), so active reservations are never overwritten (C09 runs imports concurrently with checkouts); a count below `reserved` is applied and raises the `OVERSOLD` exception (row message `OVERSOLD`), a change that would go below 0 fails only its row (`BELOW_ZERO`). The check step shows the planned result per row (`PLANNED`, `WILL_OVERSELL`) against the stock at that moment; apply re-reads stock under the lock.
 
 **Layouts.** `Sheet1` (the client's list; forward-filled; cleaned by `apps/api/src/imports/sheet1-profile.ts`, which is catalog.md §1/§2/§4/§6 as data) and the template below (also the **result file**: template columns + `Product Key`, `Flags`, `Outcome`, `Messages`, with generated SKUs written back). On re-import, flags = those recomputed from the data ∪ those still listed in the `Flags` column (the client deletes a flag once fixed); `WEIGHT_ESTIMATED` always follows the stored weight source; a weight missing from the file never clears a stored one.
+
+**Inventory count sheet** (`GET /admin/inventory/count-sheet.xlsx`, sheet "Stock count"): `SKU`, `Product`, `Variant`, `On hand (system)` (read-only context), `Counted quantity`, `Change (+/−)`, `Note`. Per row exactly one of count/change: blank both ⇒ `SKIPPED` (`NOTHING_TO_DO`); both ⇒ `BOTH_FILLED`; not a whole number ⇒ `NOT_A_NUMBER`; count < 0 ⇒ `NEGATIVE_COUNT`; more than 100 000 units ⇒ `TOO_LARGE`; a change without a note ⇒ `NOTE_REQUIRED`; a SKU twice ⇒ `SKU_DUPLICATE`; unknown SKU ⇒ `SKU_UNKNOWN` (all `FAILED`, the rest still apply). The result file adds `Outcome` and `Messages`.
 
 **Spreadsheet → database mapping (catalogue template "2. Products & Variants")**
 
@@ -3787,7 +3791,7 @@ Two separate import kinds (`product_imports.kind`):
 | Product Name * | `products.name`; consecutive rows = one product | Sheet1 layout: blank cells are forward-filled from the previous row |
 | Description * | `products.description` | Identical text across unrelated products ⇒ `DESCRIPTION_SUSPECT_COPY` |
 | Product Images | `media` (downloaded via the SSRF-safe fetcher, architecture.md §9.3) + `product_images` | 1st = cover |
-| Size / Volume * | `variants.size`, `net_quantity`, `net_unit` | Unit missing or conflicting with details ⇒ `SIZE_CONFLICT` |
+| Size / Volume * | `variants.size`, `net_quantity`, `net_unit` | Unit missing or conflicting with details ⇒ `SIZE_CONFLICT`; words after the size are kept (`10 g Red` ⇒ `10 gm Red`, max 60 characters) |
 | Color / Thickness | variant options | "NA" ⇒ null |
 | Selling Price (₹) * | `variants.price` (×100) | Missing ⇒ `PRICE_MISSING`, variant stays draft |
 | MRP (₹) | `variants.mrp` (×100) | Must be ≥ price |

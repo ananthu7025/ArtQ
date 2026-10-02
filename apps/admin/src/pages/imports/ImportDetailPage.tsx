@@ -74,6 +74,11 @@ export function ImportDetailPage() {
   const counts = i.rows ?? {};
   const done = (counts.CREATED ?? 0) + (counts.UPDATED ?? 0) + (counts.UNCHANGED ?? 0) + (counts.SKIPPED ?? 0) + (counts.NEEDS_REVIEW ?? 0) + (counts.FAILED ?? 0);
   const percent = i.totalRows ? Math.round((done / i.totalRows) * 100) : 0;
+  const isCounts = i.kind === 'INVENTORY';
+  const tabs = isCounts ? TABS.filter((t) => ['all', 'FAILED', 'UPDATED'].includes(t.key)).map((t) => (t.key === 'UPDATED' ? { ...t, label: 'Counted' } : t)) : TABS;
+  const stats: [string, number][] = isCounts
+    ? [['Rows', i.totalRows], ['To apply', counts.PENDING ?? 0], ['Counted', counts.UPDATED ?? 0], ['Skipped', counts.SKIPPED ?? 0], ['Failed', counts.FAILED ?? 0]]
+    : [['Rows', i.totalRows], ['Products', i.products ?? 0], ['With flags', i.flaggedRows ?? 0], ['Created', counts.CREATED ?? 0], ['Updated', (counts.UPDATED ?? 0) + (counts.UNCHANGED ?? 0)], ['Needs review', counts.NEEDS_REVIEW ?? 0], ['Failed', counts.FAILED ?? 0]];
 
   return (
     <>
@@ -89,15 +94,15 @@ export function ImportDetailPage() {
 
       <section aria-label="Summary" className="mb-4 rounded-lg border border-surface-200 bg-white p-5">
         {(i.status === 'UPLOADED' || i.status === 'VALIDATING') && <p role="status" className="text-ink-700">Checking the file. This page updates by itself.</p>}
-        {i.status === 'FAILED' && <FormAlert>The file could not be imported. Check that it is the catalogue workbook (download the template to compare) and upload it again.</FormAlert>}
+        {i.status === 'FAILED' && <FormAlert>{isCounts ? 'The file could not be imported. Check that it is the stock count sheet (download it from Inventory to compare) and upload it again.' : 'The file could not be imported. Check that it is the catalogue workbook (download the template to compare) and upload it again.'}</FormAlert>}
         {i.status !== 'UPLOADED' && i.status !== 'VALIDATING' && i.status !== 'FAILED' && (
           <dl className="grid grid-cols-2 gap-4 text-sm sm:grid-cols-4 lg:grid-cols-7">
-            {[['Rows', i.totalRows], ['Products', i.products ?? 0], ['With flags', i.flaggedRows ?? 0], ['Created', counts.CREATED ?? 0], ['Updated', (counts.UPDATED ?? 0) + (counts.UNCHANGED ?? 0)], ['Needs review', counts.NEEDS_REVIEW ?? 0], ['Failed', counts.FAILED ?? 0]].map(([label, n]) => (
+            {stats.map(([label, n]) => (
               <div key={label}><dt className="text-ink-700">{label}</dt><dd className="text-2xl font-semibold tabular-nums text-ink-900">{n}</dd></div>
             ))}
           </dl>
         )}
-        {i.status === 'VALIDATED' && <p className="mt-3 text-sm text-ink-700">Nothing has changed yet. Review the rows below, then import. Rows with flags are imported as drafts that list what to fix before publishing.</p>}
+        {i.status === 'VALIDATED' && <p className="mt-3 text-sm text-ink-700">{isCounts ? 'Nothing has changed yet. Each row shows the stock it will set; rows that failed the check are left out.' : 'Nothing has changed yet. Review the rows below, then import. Rows with flags are imported as drafts that list what to fix before publishing.'}</p>}
         {i.status === 'IMPORTING' && (
           <div className="mt-4" role="status">
             <div className="h-2 w-full overflow-hidden rounded-full bg-surface-200"><div className="h-2 bg-brand-700 transition-all" style={{ width: `${percent}%` }} /></div>
@@ -109,17 +114,28 @@ export function ImportDetailPage() {
       {rows.data && (
         <>
           <div className="mb-3 flex flex-wrap gap-1" role="group" aria-label="Show rows">
-            {TABS.map((t) => <button key={t.key} type="button" aria-pressed={tab === t.key} onClick={() => { setTab(t.key); setPage(1); }} className={`h-10 rounded-md px-3 text-sm font-medium ${tab === t.key ? 'bg-brand-700 text-white' : 'text-ink-900 hover:bg-surface-100'}`}>{t.label}</button>)}
+            {tabs.map((t) => <button key={t.key} type="button" aria-pressed={tab === t.key} onClick={() => { setTab(t.key); setPage(1); }} className={`h-10 rounded-md px-3 text-sm font-medium ${tab === t.key ? 'bg-brand-700 text-white' : 'text-ink-900 hover:bg-surface-100'}`}>{t.label}</button>)}
           </div>
           <div className="overflow-x-auto rounded-lg border border-surface-200 bg-white">
             <table className="w-full border-collapse text-left text-sm">
               <caption className="sr-only">Import rows</caption>
               <thead className="bg-surface-100 text-ink-700">
-                <tr>{['Row', 'SKU', 'Product', 'Size', 'Price', 'Stock in sheet', 'Flags', 'Outcome', 'Notes'].map((h) => <th key={h} scope="col" className="px-3 py-2 font-semibold">{h}</th>)}</tr>
+                <tr>{(isCounts ? ['Row', 'SKU', 'Count or change', 'Note', 'On hand when checked', 'Outcome', 'Notes'] : ['Row', 'SKU', 'Product', 'Size', 'Price', 'Stock in sheet', 'Flags', 'Outcome', 'Notes']).map((h) => <th key={h} scope="col" className="px-3 py-2 font-semibold">{h}</th>)}</tr>
               </thead>
               <tbody>
                 {rows.data.data.length === 0 && <tr><td colSpan={9} className="px-3 py-6 text-center text-ink-700">No rows here.</td></tr>}
-                {rows.data.data.map((r) => (
+                {isCounts && rows.data.data.map((r) => (
+                  <tr key={r.id} className="border-t border-surface-200 align-top">
+                    <td className="px-3 py-2 tabular-nums text-ink-700">{r.rowNumber}</td>
+                    <td className="whitespace-nowrap px-3 py-2 font-mono text-xs">{r.sku ?? '—'}</td>
+                    <td className="whitespace-nowrap px-3 py-2 tabular-nums">{r.kind === 'RECOUNT' ? `Counted ${r.quantity}` : r.kind === 'ADJUSTMENT' ? `${r.quantity! > 0 ? '+' : ''}${r.quantity}` : '—'}</td>
+                    <td className="px-3 py-2 text-ink-700">{r.note ?? ''}</td>
+                    <td className="px-3 py-2 tabular-nums text-ink-700">{r.systemOnHand ?? '—'}</td>
+                    <td className="whitespace-nowrap px-3 py-2"><span className={r.status === 'FAILED' ? 'font-semibold text-danger-700' : 'text-ink-900'}>{r.status === 'UPDATED' ? 'Counted' : r.status === 'PENDING' ? 'To apply' : OUTCOME[r.status] ?? r.status}</span></td>
+                    <td className="max-w-md px-3 py-2 text-xs text-ink-700">{r.messages.map((m) => m.text).join(' · ')}</td>
+                  </tr>
+                ))}
+                {!isCounts && rows.data.data.map((r) => (
                   <tr key={r.id} className="border-t border-surface-200 align-top">
                     <td className="px-3 py-2 tabular-nums text-ink-700">{r.rowNumber}</td>
                     <td className="whitespace-nowrap px-3 py-2 font-mono text-xs">{r.sku}</td>
@@ -153,7 +169,7 @@ export function ImportDetailPage() {
       {confirming && (
         <ConfirmDialog open onOpenChange={(o) => { if (!o) setConfirming(null); }} busy={busy} onConfirm={() => void act(confirming)}
           title={confirming === 'confirm' ? `Import ${i.totalRows} rows?` : 'Cancel this import?'}
-          description={confirming === 'confirm' ? 'New products are created as drafts and existing ones are updated. Stock and live/draft status are never changed by an import.' : 'Rows already imported stay; the rest are skipped.'}
+          description={confirming !== 'confirm' ? 'Rows already imported stay; the rest are skipped.' : isCounts ? 'Counts replace stock on hand (and mark items as counted); changes add or remove units. Reserved units are never changed.' : 'New products are created as drafts and existing ones are updated. Stock and live/draft status are never changed by an import.'}
           confirmLabel={confirming === 'confirm' ? 'Import' : 'Cancel import'} {...(confirming === 'cancel' ? { danger: true } : {})} />
       )}
     </>

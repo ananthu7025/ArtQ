@@ -331,7 +331,9 @@ describe('validation and options', () => {
     expect(await imports.validate(res.body.id, true)).toBe('WAITING');
     await prisma.media.update({ where: { id: processing }, data: { status: 'REJECTED', failureReason: 'content is unknown' } });
     expect(await imports.validate(res.body.id, true)).toBe('FAILED');
-    expect((await call('post', '/imports', ADMIN, { kind: 'INVENTORY', fileMediaId: processing })).status).toBe(400);
+    // Stock-count imports (task 2.8) follow the same file rules: a rejected file is refused with its reason.
+    expect((await call('post', '/imports', ADMIN, { kind: 'INVENTORY', fileMediaId: processing })).body.error).toMatchObject({ code: 'MEDIA_NOT_USABLE', message: 'The file was rejected: content is unknown' });
+    expect((await call('post', '/imports', ADMIN, { kind: 'STOCK', fileMediaId: processing })).status).toBe(400);
   });
 
   it('confirm only once and only when validated; cancel stops what is left; a finished import cannot be cancelled', async () => {
@@ -342,6 +344,58 @@ describe('validation and options', () => {
     expect(await prisma.productVariant.count({ where: { sku: 'CANCEL-1' } })).toBe(0);
     expect((await call('post', `/imports/${id}/cancel`, ADMIN, {})).status).toBe(422);
     expect((await call('get', '/imports/999999')).status).toBe(404);
+  });
+});
+
+describe('variants that would share size, colour and thickness', () => {
+  const row = (name: string, size: string, sku: string, extra: Record<string, unknown> = {}) => ({ 'Category (Type) *': 'Pigments', 'Subcategory *': 'Mica', 'Product Name *': name, 'Size / Volume *': size, 'Selling Price (₹) *': 149, 'Stock Quantity *': 5, SKU: sku, ...extra });
+  const rowsOf = (id: number) => prisma.productImportRow.findMany({ where: { importId: id }, orderBy: { rowNumber: 'asc' } });
+
+  it('the words after a size keep variants apart: “10 g Red” and “10 g Blue” become two variants', async () => {
+    const n = uniq();
+    await imported(await workbook([row(`Mica ${n}`, '10 g Red', `MR-${n}`), row(`Mica ${n}`, '10 g Blue', `MB-${n}`)]));
+    expect((await variantBySku(`MR-${n}`.toUpperCase())).size).toBe('10 gm Red');
+    expect((await variantBySku(`MB-${n}`.toUpperCase())).size).toBe('10 gm Blue');
+  });
+
+  it('two rows of one product with the same options: the second fails the check with the row it clashes with; the first imports', async () => {
+    const n = uniq();
+    const id = await validated(await workbook([row(`Dup ${n}`, '10 g', `D1-${n}`), row(`Dup ${n}`, '10 GM', `D2-${n}`), row(`Dup ${n}`, '10 g', `D3-${n}`, { Color: 'Gold' })]));
+    const [a, b, c] = await rowsOf(id);
+    expect([a!.status, b!.status, c!.status]).toEqual(['PENDING', 'FAILED', 'PENDING']);
+    expect(b!.messages).toContainEqual({ code: 'OPTIONS_DUPLICATE', text: 'Row 2 of this product already has 10 gm; give each variant a different size, colour or thickness' });
+    expect((await call('post', `/imports/${id}/confirm`, ADMIN, {})).status).toBe(200);
+    expect(await imports.apply(id)).toBe('DONE');
+    expect(await prisma.productVariant.count({ where: { sku: { in: [`D1-${n}`, `D2-${n}`, `D3-${n}`].map((x) => x.toUpperCase()) } } })).toBe(2);
+    // The same options on different products are fine.
+    expect((await rowsOf(await validated(await workbook([row(`Other ${n}`, '10 g', `O1-${n}`)]))))[0]!.status).toBe('PENDING');
+  });
+
+  it('a new SKU with the options of an existing variant fails the check and names that variant; the existing SKU updates', async () => {
+    const n = uniq();
+    await imported(await workbook([row(`Twin ${n}`, '25 g', `T1-${n}`)]));
+    const id = await validated(await workbook([row(`Twin ${n}`, '25 g', `T1-${n}`), row(`Twin ${n}`, '25 g', `T2-${n}`)]));
+    const [same, twin] = await rowsOf(id);
+    expect(same!.status).toBe('PENDING');
+    expect(twin!.status).toBe('FAILED');
+    // In-file clash is reported once (row 2), not also as a clash with the stored variant.
+    expect((twin!.messages as { code: string }[]).map((m) => m.code)).toContain('OPTIONS_DUPLICATE');
+    const alone = await rowsOf(await validated(await workbook([row(`Twin ${n}`, '25 g', `T3-${n}`)])));
+    expect(alone[0]!.status).toBe('FAILED');
+    expect(alone[0]!.messages).toContainEqual({ code: 'OPTIONS_TAKEN', text: `Variant T1-${n.toUpperCase()} of this product already has 25 gm; use its SKU to update it, or change the size, colour or thickness` });
+  });
+
+  it('a clash that appears after the check (an admin adds the variant meanwhile) fails that row in plain words, not driver text', async () => {
+    const n = uniq();
+    await imported(await workbook([row(`Late ${n}`, '50 g', `L1-${n}`)]));
+    const id = await validated(await workbook([row(`Late ${n}`, '75 g', `L2-${n}`)]));
+    const product = (await variantBySku(`L1-${n}`.toUpperCase())).productId;
+    await prisma.productVariant.create({ data: { productId: product, sku: `LX-${n}`.toUpperCase(), label: '75 gm', size: '75 gm', price: 100 } });
+    expect((await call('post', `/imports/${id}/confirm`, ADMIN, {})).status).toBe(200);
+    expect(await imports.apply(id)).toBe('DONE');
+    const [r] = await rowsOf(id);
+    expect(r!.status).toBe('FAILED');
+    expect(r!.messages).toContainEqual({ code: 'APPLY_FAILED', text: 'Could not apply: another variant of this product already has this size, colour and thickness' });
   });
 });
 
@@ -364,12 +418,16 @@ describe('aq_import_initial_stock (migration 0004)', () => {
 });
 
 describe('AT-10 re-run against the real import endpoints', () => {
-  it('STAFF → 403 on every import endpoint, audited; no import created', async () => {
+  it('STAFF → 403 on every catalogue import endpoint, audited; the list shows only stock-count imports', async () => {
     const before = await prisma.productImport.count();
     const media = await upload(CLIENT_FILE, { userId: STAFF.id });
-    const someId = (await prisma.productImport.findFirstOrThrow()).id;
+    const someId = (await prisma.productImport.findFirstOrThrow({ where: { kind: 'CATALOG' } })).id;
+    // Since task 2.8 STAFF (inventory:adjust) may list imports, but only stock-count ones.
+    const list = await call('get', '/imports?limit=100', STAFF);
+    expect(list.status).toBe(200);
+    expect(list.body.data.some((i: { id: number }) => i.id === someId)).toBe(false);
+    expect(list.body.data.every((i: { kind: string }) => i.kind === 'INVENTORY')).toBe(true);
     const attempts = [
-      await call('get', '/imports', STAFF),
       await call('get', '/imports/template.xlsx', STAFF),
       await call('post', '/imports', STAFF, { kind: 'CATALOG', fileMediaId: media }),
       await call('get', `/imports/${someId}`, STAFF),
@@ -378,15 +436,17 @@ describe('AT-10 re-run against the real import endpoints', () => {
       await call('post', `/imports/${someId}/cancel`, STAFF, {}),
       await call('get', `/imports/${someId}/result.xlsx`, STAFF),
     ];
-    expect(attempts.map((a) => a.status)).toEqual([403, 403, 403, 403, 403, 403, 403, 403]);
-    expect(attempts[2]!.body.error.details).toEqual({ permission: 'imports:catalog' });
+    expect(attempts.map((a) => a.status)).toEqual([403, 403, 403, 403, 403, 403, 403]);
+    expect(attempts.map((a) => a.body.error?.details)).toEqual(Array(7).fill({ permission: 'imports:catalog' }));
     expect(await prisma.productImport.count()).toBe(before);
-    expect(await prisma.auditLog.count({ where: { actorId: STAFF.id, action: 'security.admin_rejected' } })).toBe(8);
+    expect(await prisma.auditLog.count({ where: { actorId: STAFF.id, action: 'security.admin_rejected' } })).toBe(7);
   });
 
   it('a role without pricing:write cannot confirm a file that sets prices (service rule)', async () => {
     const id = await validated(await workbook([{ 'Category (Type) *': 'P', 'Product Name *': 'Priced', 'Size / Volume *': '1 kg', 'Selling Price (₹) *': 99, 'Stock Quantity *': 0, SKU: 'PRICED-1' }]));
-    await expect(imports.confirm(id, { userId: STAFF.id, role: 'STAFF' })).rejects.toMatchObject({ status: 403, details: { permission: 'pricing:write' } });
+    // No role holds imports:catalog without pricing:write, so STAFF is refused one step earlier (2.8); the pricing check
+    // stays as a backstop. Either way nothing changes.
+    await expect(imports.confirm(id, { userId: STAFF.id, role: 'STAFF' })).rejects.toMatchObject({ status: 403, details: { permission: 'imports:catalog' } });
     expect((await prisma.productImport.findUniqueOrThrow({ where: { id } })).status).toBe('VALIDATED');
   });
 

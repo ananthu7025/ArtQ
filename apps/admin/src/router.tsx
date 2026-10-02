@@ -10,6 +10,7 @@ import { ProductsPage } from './pages/products/ProductsPage';
 import { TaxonomyPage } from './pages/taxonomy/TaxonomyPage';
 import { ImportDetailPage } from './pages/imports/ImportDetailPage';
 import { ImportsPage } from './pages/imports/ImportsPage';
+import { InventoryPage } from './pages/inventory/InventoryPage';
 import { ProductEditorPage } from './pages/products/editor/ProductEditorPage';
 import { DashboardPage, ForbiddenPage, FullPageSpinner, ModulePlaceholder, NotFoundPage } from './pages/simple';
 
@@ -36,6 +37,7 @@ const BUILT: Record<string, () => React.ReactNode> = {
   '/categories': () => <TaxonomyPage key="category" kind="category" />,
   '/techniques': () => <TaxonomyPage key="technique" kind="technique" />,
   '/imports': () => <ImportsPage />,
+  '/inventory': () => <InventoryPage />,
 };
 const PRODUCTS = ALL_NAV_ITEMS.find((i) => i.path === '/products')!;
 const IMPORTS = ALL_NAV_ITEMS.find((i) => i.path === '/imports')!;

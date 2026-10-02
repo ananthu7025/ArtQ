@@ -318,9 +318,10 @@ CRUD `/admin/product-types`, `/admin/categories`, `/admin/techniques` (image med
 ### 4.5 Inventory [inventory:read / inventory:adjust]
 | Method | Path | Notes |
 |--------|------|-------|
-| GET | `/admin/inventory?q=&stock=low|out|oversold&page=` | `{variantId, sku, product, onHand, reserved, available, lowStockThreshold, countedAt}` |
-| POST | `/admin/inventory/adjustments` | `[{variantId, kind:'RECOUNT'|'ADJUSTMENT'|'DAMAGE_WRITE_OFF', quantity, note}]`. **Schema contains no price/MRP/status fields** (unknown keys → 400). RECOUNT sets `on_hand`; others apply a delta; `reserved` is never written |
-| GET | `/admin/inventory/:variantId/movements` | Ledger incl. reservations |
+| GET | `/admin/inventory?q=&stock=low|out|oversold|uncounted&page=&limit=` | `{variantId, sku, label, product:{id,name,status}, onHand, reserved, available, lowStockThreshold, countedAt, isActive}`; `q` matches SKU or product name; oversold rows first. `low` = 0 < available ≤ threshold, `out` = available ≤ 0, `uncounted` = `countedAt` null |
+| POST | `/admin/inventory/adjustments` [inventory:adjust] | `{rows:[{variantId, kind:'RECOUNT'|'ADJUSTMENT'|'DAMAGE_WRITE_OFF', quantity, note?}]}` (1–200 rows, one per variant; `adjustmentsBody` in `@artq/shared`, also used by the form). RECOUNT: count ≥ 0, sets `on_hand`, marks counted. ADJUSTMENT: ±delta ≠ 0. DAMAGE_WRITE_OFF: units > 0, removed. A note is required except for RECOUNT; \|quantity\| ≤ 100 000. **Schema contains no price/MRP/status/reserved fields** (unknown keys → 400). Unknown variant → 404; a result below 0 → 422 `INVALID_ADJUSTMENT` `{variantId}` and nothing is written. Response `{data:[rows after], oversold:[variantIds]}`: a count below `reserved` raises the `OVERSOLD` exception. Audited `inventory.adjust` with before/after |
+| GET | `/admin/inventory/:variantId/movements?page=` | Ledger, newest first: `{reason, onHandDelta, reservedDelta, onHandAfter, reservedAfter, orderNumber, importId, note, actor, createdAt}` incl. reservations |
+| GET | `/admin/inventory/count-sheet.xlsx` | Count sheet with every variant (SKU, Product, Variant, On hand (system), Counted quantity, Change (+/−), Note) plus a "How to use" sheet; the file an `INVENTORY` import expects |
 | POST | `/admin/imports` (kind `INVENTORY`) | Counted-stock sheet (§4.9) |
 
 ### 4.6 Orders (screenshot module "Orders") [orders:*]
@@ -361,7 +362,7 @@ CRUD `/admin/product-types`, `/admin/categories`, `/admin/techniques` (image med
 ### 4.9 Imports, media, content
 | Resource | Endpoints | Permission |
 |----------|-----------|------------|
-| Imports | `POST /admin/imports {kind:'CATALOG', fileMediaId, createMissing?, fileName?}` (task 2.7; `INVENTORY` with task 2.8) → validation job (waits for the file's media check); `GET /admin/imports/:id` (status, counts); `GET /admin/imports/:id/rows?status=` (row outcomes, messages); `POST /admin/imports/:id/confirm`; `POST /admin/imports/:id/cancel`; `POST /admin/imports/:id/rows/:rowId/resolve {action:'apply'|'skip'}` for `NEEDS_REVIEW`; `GET /admin/imports/:id/result.xlsx`; `GET /admin/imports/template.xlsx?kind=`; `GET /admin/exports/catalog.xlsx` | imports:catalog (+ pricing:write if price columns change) / inventory:adjust |
+| Imports | `POST /admin/imports {kind:'CATALOG'|'INVENTORY', fileMediaId, createMissing?, fileName?}` (`createMissing` is catalogue only; each kind needs its own permission and a caller sees only the kinds they may import; inventory rows read back as `{kind, quantity, note, systemOnHand}`) → validation job (waits for the file's media check); `GET /admin/imports/:id` (status, counts); `GET /admin/imports/:id/rows?status=` (row outcomes, messages); `POST /admin/imports/:id/confirm`; `POST /admin/imports/:id/cancel`; `POST /admin/imports/:id/rows/:rowId/resolve {action:'apply'|'skip'}` for `NEEDS_REVIEW`; `GET /admin/imports/:id/result.xlsx`; `GET /admin/imports/template.xlsx?kind=`; `GET /admin/exports/catalog.xlsx` | imports:catalog (+ pricing:write if price columns change) / inventory:adjust |
 | Media | `POST /admin/media/presign`, `POST /admin/media/:id/complete`, `POST /admin/media/:id/retry` (FAILED only), `GET /admin/media?kind=&status=&unused=1`, `DELETE /admin/media/:id` (409 if referenced) | media:write |
 | CMS | CRUD `/admin/home-slides`, `/admin/reels`, `/admin/testimonials`, `/admin/faqs`, `/admin/pages`; `PUT /admin/settings/{ANNOUNCEMENT_BAR|HOME_SECTIONS|HERO|INSTAGRAM_MOMENTS|SOCIAL}`; `GET/PATCH /admin/messages`; `GET /admin/newsletter` + CSV export (step-up) | content:write |
 

@@ -34,7 +34,7 @@ describe('prisma migrate deploy on an empty database', () => {
   it('records the generated migrations 0001–0003 and the later ones (0004+) as applied', async () => {
     const rows = await db.prisma.$queryRaw<{ migration_name: string; finished_at: Date | null; rolled_back_at: Date | null }[]>`
       SELECT migration_name, finished_at, rolled_back_at FROM _prisma_migrations ORDER BY migration_name`;
-    expect(rows.map((r) => r.migration_name)).toEqual(['0001_init', '0002_constraints_search_integrity', '0003_money_stock_functions', '0004_import_initial_stock']);
+    expect(rows.map((r) => r.migration_name)).toEqual(['0001_init', '0002_constraints_search_integrity', '0003_money_stock_functions', '0004_import_initial_stock', '0005_refresh_products_lock_first']);
     expect(rows.every((r) => r.finished_at !== null && r.rolled_back_at === null)).toBe(true);
   });
 
@@ -84,7 +84,7 @@ describe('failure paths', () => {
       try {
         const rows = await c.$queryRaw<{ migration_name: string; finished_at: Date | null }[]>`SELECT migration_name, finished_at FROM _prisma_migrations ORDER BY 1`;
         expect(rows.map((r) => [r.migration_name, r.finished_at !== null])).toEqual([
-          ['0001_init', true], ['0002_constraints_search_integrity', true], ['0003_money_stock_functions', true], ['0004_import_initial_stock', true], ['0099_broken', false],
+          ['0001_init', true], ['0002_constraints_search_integrity', true], ['0003_money_stock_functions', true], ['0004_import_initial_stock', true], ['0005_refresh_products_lock_first', true], ['0099_broken', false],
         ]);
         // a later deploy refuses to continue past the failed migration
         expect(() => prisma(['migrate', 'deploy', '--schema', join(dir, 'prisma', 'schema.prisma')], empty.url)).toThrow(/P3009|failed migrations/);

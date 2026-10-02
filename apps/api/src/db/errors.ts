@@ -17,6 +17,7 @@ export const DB_ERROR_CODES = [
   'LEASE_LOST',
   'NOT_FOUND',
   'INVALID_ADJUSTMENT',
+  'STOCK_ALREADY_SET',
   'NOT_PUBLISHABLE',
   'INVARIANT',
 ] as const;

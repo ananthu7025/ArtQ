@@ -89,13 +89,13 @@ describe('login and session', () => {
 
 describe('shell and navigation', () => {
   it('shows only the modules the role may use; the current item is marked aria-current=page', async () => {
-    setup({ path: '/inventory', session: 'STAFF' });
+    setup({ path: '/orders', session: 'STAFF' });
     const sidebar = await screen.findByTestId('sidebar');
     const links = within(sidebar).getAllByRole('link').map((a) => a.textContent);
     expect(links).toEqual(['Dashboard', 'Orders', 'Customers', 'Products', 'Restock Requests', 'Inventory', 'Returns & Refunds', 'Imports']);
-    expect(within(sidebar).getByRole('link', { name: 'Inventory' }).getAttribute('aria-current')).toBe('page');
-    expect(within(sidebar).getByRole('link', { name: 'Orders' }).getAttribute('aria-current')).toBeNull();
-    expect(await screen.findByText(/delivered by task 2.8/)).toBeTruthy();   // a module not built yet shows its placeholder
+    expect(within(sidebar).getByRole('link', { name: 'Orders' }).getAttribute('aria-current')).toBe('page');
+    expect(within(sidebar).getByRole('link', { name: 'Inventory' }).getAttribute('aria-current')).toBeNull();
+    expect(await screen.findByText(/delivered by task 5.1/)).toBeTruthy();   // a module not built yet shows its placeholder
   });
 
   it('a module the role cannot use shows "No access" even when typed into the address bar', async () => {
@@ -219,6 +219,29 @@ describe('DataTable selection and bulk actions', () => {
     await u.click(screen.getByRole('button', { name: 'Next ›' }));
     expect(await screen.findByText('C')).toBeTruthy();
     expect(screen.queryByText(/selected/)).toBeNull();                              // per-page selection reset
+  });
+});
+
+describe('useTableParams', () => {
+  it('two changes before the next render both stay in the URL (filter, then search)', async () => {
+    function Harness() {
+      const params = useTableParams({ sort: 'name', filterKeys: ['stock', 'q'] });
+      return (
+        <>
+          <button type="button" onClick={() => { params.setPage(3); params.setFilter('stock', 'out'); params.setFilter('q', 'res'); }}>Both</button>
+          <button type="button" onClick={() => { params.setFilter('stock', null); params.setSort('-name'); }}>Clear stock, sort</button>
+          <output data-testid="filters">{JSON.stringify(params.filters)} {params.page} {params.sort}</output>
+        </>
+      );
+    }
+    const u = userEvent.setup();
+    const router = createMemoryRouter([{ path: '/', element: <Harness /> }], { initialEntries: ['/?page=2&keep=1'] });
+    render(<RouterProvider router={router} />);
+    await u.click(screen.getByRole('button', { name: 'Both' }));
+    expect(screen.getByTestId('filters').textContent).toBe('{"stock":"out","q":"res"} 1 name');   // a filter change resets the page
+    expect(router.state.location.search).toBe('?keep=1&stock=out&q=res');                        // unrelated params survive
+    await u.click(screen.getByRole('button', { name: 'Clear stock, sort' }));
+    expect(router.state.location.search).toBe('?keep=1&q=res&sort=-name');
   });
 });
 

@@ -28,6 +28,13 @@ export async function planRows(db: Db, rows: CatalogRow[], createMissing: boolea
     db.product.findMany({ where: { name: { in: names }, importKey: null, deletedAt: null }, select: { id: true, name: true, version: true } }),
   ]);
   const variantBySku = new Map(variants.map((v) => [v.sku, v]));
+  // Size / colour / thickness identify a variant within its product (variants_options_live_uq): two rows, or a row and an
+  // existing variant with another SKU, that would end up with the same options are refused here instead of at apply.
+  const options = (o: { size: string | null; color: string | null; thickness: string | null }) => JSON.stringify([o.size ?? '', o.color ?? '', o.thickness ?? '']);
+  const productIds = [...new Set([...byKey, ...byName].map((p) => p.id))];
+  const existing = productIds.length ? await db.productVariant.findMany({ where: { productId: { in: productIds }, deletedAt: null }, select: { productId: true, sku: true, size: true, color: true, thickness: true } }) : [];
+  const takenInFile = new Map<string, number>();
+  const describe = (o: { size: string | null; color: string | null; thickness: string | null }) => [o.size, o.color, o.thickness].filter(Boolean).join(' / ') || 'no size, colour or thickness';
   const out: { rowNumber: number; sku: string; productKey: string; payload: RowPayload; status: 'PENDING' | 'FAILED'; messages: Message[] }[] = [];
   for (const row of rows) {
     const messages = [...row.messages];
@@ -42,6 +49,17 @@ export async function planRows(db: Db, rows: CatalogRow[], createMissing: boolea
     if (v && !product) {
       status = 'FAILED';
       messages.push({ code: 'SKU_OTHER_PRODUCT', text: `SKU ${row.variant.sku} already exists on a product that is not “${row.product.name}”` });
+    }
+    const opt = options(row.variant);
+    const earlier = takenInFile.get(`${row.productKey}|${opt}`);
+    if (earlier !== undefined) {
+      status = 'FAILED';
+      messages.push({ code: 'OPTIONS_DUPLICATE', text: `Row ${earlier} of this product already has ${describe(row.variant)}; give each variant a different size, colour or thickness` });
+    } else takenInFile.set(`${row.productKey}|${opt}`, row.rowNumber);
+    const twin = product ? existing.find((e) => e.productId === product.id && e.sku !== row.variant.sku && options(e) === opt) : undefined;
+    if (twin && earlier === undefined) {
+      status = 'FAILED';
+      messages.push({ code: 'OPTIONS_TAKEN', text: `Variant ${twin.sku} of this product already has ${describe(row.variant)}; use its SKU to update it, or change the size, colour or thickness` });
     }
     const priceChanged = v ? (row.variant.price !== null && row.variant.price !== v.price) || (row.variant.price !== null && row.variant.mrp !== v.mrp) : row.variant.price !== null;
     const contentChanged = v ? !(same(v.size, row.variant.size) && same(v.color, row.variant.color) && same(v.thickness, row.variant.thickness)

@@ -23,6 +23,7 @@ import { CatalogService } from './catalog/service.js';
 import { registerTaxonomyRoutes } from './catalog/taxonomy-routes.js';
 import { importEnqueue } from './imports/queues.js';
 import { registerImportRoutes } from './imports/routes.js';
+import { registerInventoryRoutes } from './inventory/routes.js';
 import { ImportService } from './imports/service.js';
 import { razorpayProvider } from './webhooks/provider.js';
 import { WEBHOOK_QUEUE, webhookRouter } from './webhooks/inbox.js';
@@ -66,6 +67,7 @@ registerTaxonomyRoutes(admin, prisma, (m) => media.view(m));
 const importValidateQueue = new Queue(QUEUE.importValidate, { connection: webhookQueue.opts.connection });
 const importApplyQueue = new Queue(QUEUE.importApply, { connection: webhookQueue.opts.connection });
 for (const q of [importValidateQueue, importApplyQueue]) q.on('error', (err) => log.warn({ err: err.message, queue: q.name }, 'import queue connection error'));
+registerInventoryRoutes(admin, prisma);
 registerImportRoutes(admin, prisma, new ImportService({ prisma, readFile: (m) => media.read(m), enqueue: importEnqueue(importValidateQueue, importApplyQueue) }));
 
 const app = createApp({

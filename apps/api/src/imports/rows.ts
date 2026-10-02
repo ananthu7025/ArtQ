@@ -106,7 +106,7 @@ export function finalizeRows(drafts: DraftRow[]): CatalogRow[] {
     let size: string | null = rawSize, netQuantity: number | null = null, netUnit: NetUnit | null = null;
     if (rawSize) {
       const n = normaliseSize(rawSize);
-      if (n.ok) { size = n.label; netQuantity = n.netQuantity; netUnit = n.netUnit; }
+      if (n.ok) { size = (n.extra ? `${n.label} ${n.extra}` : n.label).slice(0, 60); netQuantity = n.netQuantity; netUnit = n.netUnit; }   // “10 g Red” → “10 gm Red”: the words after the size tell variants apart
       else if (n.reason === 'UNIT_MISSING') { add(variantFlags, 'SIZE_CONFLICT'); messages.push({ code: 'SIZE_CONFLICT', text: `Size “${rawSize}” has no unit; confirm it (e.g. 10 gm)` }); }
       else messages.push({ code: 'SIZE_UNPARSED', text: `Size “${rawSize}” kept as written (no net quantity)` });
     }

@@ -3,6 +3,7 @@ import ExcelJS from 'exceljs';
 import { describe, expect, it } from 'vitest';
 import { parseCatalog } from '../src/imports/catalog-file.js';
 import { finalizeRows, paise, stockUnits, type DraftRow } from '../src/imports/rows.js';
+import { applyFailure } from '../src/imports/service.js';
 
 const draft = (o: Partial<DraftRow['variant']> & { key?: string; desc?: string | null; family?: string; productFlags?: string[] } = {}): DraftRow => ({
   rowNumber: 2, productKey: o.key ?? 'p', typeName: 'T', categoryName: 'C',
@@ -40,6 +41,11 @@ describe('rules', () => {
     expect(one({ size: '500GM' }).variant).toMatchObject({ size: '500 gm', netQuantity: 500, netUnit: 'G' });
     expect(one({ size: '10' }).variant).toMatchObject({ size: '10', netQuantity: null, flags: ['SIZE_CONFLICT'] });
     expect(one({ size: 'Set of 9 colours' }).variant).toMatchObject({ size: 'Set of 9 colours', netQuantity: null, flags: [] });
+    // Words after the size are kept: they are what tells two variants apart (“10 g Red” / “10 g Blue”).
+    expect(one({ size: '10 g Red' }).variant).toMatchObject({ size: '10 gm Red', netQuantity: 10, netUnit: 'G' });
+    expect(one({ size: '12X16 Double Frame' }).variant).toMatchObject({ size: '12×16 in Double Frame', netQuantity: 1, netUnit: 'PCS' });
+    expect(one({ size: `10 g ${'x'.repeat(80)}` }).variant.size).toHaveLength(60);   // the column holds 60
+    expect(one({ size: `10 g ${'x'.repeat(54)}` }).variant.size).toBe(`10 gm ${'x'.repeat(54)}`);   // exactly 60 kept whole
   });
 
   it('weight: measured from kg, else the category estimate flagged WEIGHT_ESTIMATED, else none', () => {
@@ -84,5 +90,18 @@ describe('template layout', () => {
     expect(rows[0]!.variant.flags).toEqual(['PRICE_CONFLICT', 'WEIGHT_ESTIMATED']);   // no parcel weight: UV resin estimate
     expect(rows[0]!.product.flags).toEqual(['COPY_REVIEW']);
     expect(rows[1]!.messages.map((m) => m.code)).not.toContain('IS_ACTIVE_IGNORED');
+  });
+});
+
+describe('applyFailure: database refusals in plain words', () => {
+  it('names what is duplicated instead of index and column names', () => {
+    expect(applyFailure({ code: 'P2002', message: 'Unique constraint failed on the fields: (`product_id`,`COALESCE(size`)', meta: { target: ['product_id'] } })).toBe('Could not apply: another variant of this product already has this size, colour and thickness');
+    expect(applyFailure({ code: 'P2002', message: 'x', meta: { target: ['sku'] } })).toBe('Could not apply: this SKU is already used by another variant');
+    expect(applyFailure({ message: 'duplicate key value violates unique constraint "products_slug_key"' })).toBe('Could not apply: another product already uses this name in its web address (slug)');
+    expect(applyFailure({ code: 'P2002', message: 'x', meta: { target: ['email'] } })).toBe('Could not apply: a value on this row is already used elsewhere');
+  });
+  it('anything else keeps the last line of the error, at most 300 characters', () => {
+    expect(applyFailure(new Error(`first\n${'y'.repeat(400)}`))).toBe(`Could not apply: ${'y'.repeat(300)}`);
+    expect(applyFailure('boom')).toBe('Could not apply: boom');
   });
 });

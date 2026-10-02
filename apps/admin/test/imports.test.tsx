@@ -13,7 +13,7 @@ type Role = 'STAFF' | 'ADMIN' | 'SUPER_ADMIN';
 afterEach(() => { vi.unstubAllGlobals(); });
 
 const imp = (o: Partial<ImportView> = {}): ImportView => ({
-  id: 5, fileName: 'ArtQ_Product_Import_All_Items.xlsx', status: 'VALIDATED', totalRows: 98, createdCount: 0, updatedCount: 0, unchangedCount: 0, reviewCount: 0, failedCount: 0,
+  id: 5, kind: 'CATALOG', fileName: 'ArtQ_Product_Import_All_Items.xlsx', status: 'VALIDATED', totalRows: 98, createdCount: 0, updatedCount: 0, unchangedCount: 0, reviewCount: 0, failedCount: 0,
   createdAt: '2026-10-03T09:00:00Z', validatedAt: '2026-10-03T09:00:05Z', completedAt: null, rows: { PENDING: 98 }, flaggedRows: 71, products: 64, ...o,
 });
 const row = (o: Partial<ImportRowView> & { id: number }): ImportRowView => ({
@@ -72,10 +72,48 @@ describe('Imports list', () => {
     expect(server.calls.some((c) => c.path === '/admin/media/presign')).toBe(false);
   });
 
-  it('STAFF (inventory only) does not get the catalogue upload', async () => {
-    setup({ path: '/imports', role: 'STAFF' });
-    expect(await screen.findByText(/Inventory count imports arrive/)).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Check file' })).toBeNull();
+  it('STAFF (inventory:adjust only) gets the stock-count upload, never the catalogue one', async () => {
+    const u = userEvent.setup();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 200 })));
+    const { server } = setup({ path: '/imports', role: 'STAFF', extra: {
+      'POST /admin/media/presign': () => [201, { media: { id: 41 }, upload: { url: 'https://s3.test/41', headers: {} } }],
+      'POST /admin/media/41/complete': () => [200, { id: 41 }],
+      'POST /admin/imports': () => [201, imp({ id: 6, kind: 'INVENTORY', status: 'UPLOADED', rows: {} })],
+      'GET /admin/imports/6': () => [200, imp({ id: 6, kind: 'INVENTORY', status: 'VALIDATING', rows: {} })],
+    } });
+    expect(await screen.findByRole('heading', { name: 'Import stock counts' })).toBeTruthy();
+    expect(screen.queryByRole('radio', { name: /Catalogue/ })).toBeNull();
+    expect(screen.queryByLabelText(/Create missing/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Download count sheet' })).toBeTruthy();
+    await u.upload(screen.getByLabelText('Workbook (.xlsx, up to 5 MB)'), new File([new Uint8Array([80, 75])], 'count.xlsx', { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+    await u.click(screen.getByRole('button', { name: 'Check file' }));
+    await screen.findByText('Checking the file. This page updates by itself.');
+    expect(last(server, 'POST', '/admin/imports')!.body).toEqual({ kind: 'INVENTORY', fileMediaId: 41, fileName: 'count.xlsx' });
+  });
+
+  it('ADMIN chooses catalogue or stock counts; ?kind=INVENTORY preselects counts', async () => {
+    const u = userEvent.setup();
+    setup({ path: '/imports?kind=INVENTORY' });
+    expect(await screen.findByRole('heading', { name: 'Import stock counts' })).toBeTruthy();
+    await u.click(screen.getByRole('radio', { name: /Catalogue/ }));
+    expect(screen.getByRole('heading', { name: 'Import the catalogue from a spreadsheet' })).toBeTruthy();
+    expect(screen.getByLabelText(/Create missing/)).toBeTruthy();
+  });
+
+  it('an inventory import shows counts and changes, not catalogue columns', async () => {
+    setup({ path: '/imports/6', extra: {
+      'GET /admin/imports/6': () => [200, imp({ id: 6, kind: 'INVENTORY', status: 'VALIDATED', rows: { PENDING: 1, FAILED: 1 } })],
+      'GET /admin/imports/6/rows': () => page([
+        { ...row({ id: 1 }), kind: 'RECOUNT', quantity: 8, note: null, systemOnHand: 10, sku: 'RES-21-300G', messages: [{ code: 'PLANNED', text: 'On hand 10 → 8' }] },
+        { ...row({ id: 2 }), status: 'FAILED', kind: null, quantity: null, note: null, systemOnHand: null, sku: 'NOPE-1', messages: [{ code: 'SKU_UNKNOWN', text: 'No variant has SKU NOPE-1' }] },
+      ]),
+    } });
+    const table = await screen.findByRole('table', { name: 'Import rows' });
+    expect(await within(table).findByText('Counted 8')).toBeTruthy();
+    expect(within(table).getByText('On hand 10 → 8')).toBeTruthy();
+    expect(within(table).getByText('No variant has SKU NOPE-1')).toBeTruthy();
+    expect(within(table).queryByText('Price')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'With flags' })).toBeNull();
   });
 });
 
@@ -130,5 +168,12 @@ describe('One import', () => {
     expect(await screen.findByText(/The file could not be imported/)).toBeTruthy();
     expect(server.calls.some((c) => c.path === '/admin/imports/5/rows')).toBe(false);
     expect(screen.queryByRole('button', { name: /Result file/ })).toBeNull();
+    expect(screen.getByText(/catalogue workbook/)).toBeTruthy();
+  });
+
+  it('a failed stock-count import points to the count sheet, not the catalogue template', async () => {
+    setup({ path: '/imports/6', extra: { 'GET /admin/imports/6': () => [200, imp({ id: 6, kind: 'INVENTORY', status: 'FAILED', totalRows: 0 })] } });
+    expect(await screen.findByText(/stock count sheet \(download it from Inventory/)).toBeTruthy();
+    expect(screen.queryByText(/catalogue workbook/)).toBeNull();
   });
 });

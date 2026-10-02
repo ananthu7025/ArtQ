@@ -8,7 +8,8 @@ import * as fn from '../db/functions.js';
 import type { Db } from '../db/functions.js';
 import { AppError } from '../lib/errors.js';
 import { applyRow, type RowOutcome } from './apply-row.js';
-import { parseCatalog, resultWorkbook } from './catalog-file.js';
+import { countResultWorkbook, parseCatalog, resultWorkbook } from './catalog-file.js';
+import { parseCountSheet, type CountRow } from './inventory-file.js';
 import { asJson, planRows, type RowPayload } from './plan.js';
 import type { Message } from './rows.js';
 import { WorkbookError } from './workbook.js';
@@ -32,19 +33,31 @@ export type ApplyHooks = { beforeCommit?: (batch: number) => Promise<void> | voi
 
 const notFound = () => new AppError(404, 'NOT_FOUND', 'Import not found');
 
+/** An inventory count row as stored (payload). */
+export type CountPayload = { sku: string | null; kind: 'RECOUNT' | 'ADJUSTMENT' | null; quantity: number | null; note: string | null; variantId: number | null; systemOnHand: number | null };
+
+/** Catalogue imports need imports:catalog; inventory counts need inventory:adjust. */
+export function importPermission(kind: 'CATALOG' | 'INVENTORY') { return kind === 'CATALOG' ? 'imports:catalog' as const : 'inventory:adjust' as const; }
+function assertKind(kind: 'CATALOG' | 'INVENTORY', actor: ImportActor) {
+  const p = importPermission(kind);
+  if (!can(actor.role, p)) throw new AppError(403, 'FORBIDDEN', 'You do not have permission to do this', { permission: p });
+}
+
 export class ImportService {
   constructor(private readonly d: ImportDeps) {}
 
   private get prisma() { return this.d.prisma; }
 
-  async create(input: { fileMediaId: number; createMissing: boolean; fileName?: string | undefined }, actor: ImportActor) {
+  async create(input: { kind?: 'CATALOG' | 'INVENTORY'; fileMediaId: number; createMissing: boolean; fileName?: string | undefined }, actor: ImportActor) {
+    const kind = input.kind ?? 'CATALOG';
+    assertKind(kind, actor);
     const file = await this.prisma.media.findUnique({ where: { id: input.fileMediaId } });
     if (!file || file.deletedAt || file.kind !== 'DOCUMENT' || file.ownerScope !== 'import' || file.uploadedBy !== actor.userId) {
-      throw new AppError(422, 'MEDIA_NOT_USABLE', 'Upload the .xlsx file first (catalogue import upload)');
+      throw new AppError(422, 'MEDIA_NOT_USABLE', 'Upload the .xlsx file first');
     }
     if (['REJECTED', 'PENDING_UPLOAD'].includes(file.status)) throw new AppError(422, 'MEDIA_NOT_USABLE', file.status === 'REJECTED' ? `The file was rejected: ${file.failureReason ?? 'not a valid .xlsx'}` : 'The upload has not finished');
     const imp = await this.prisma.productImport.create({
-      data: { kind: 'CATALOG', fileMediaId: file.id, fileName: (input.fileName ?? file.key.split('/').pop() ?? 'catalogue.xlsx').slice(0, 200), createdBy: actor.userId },
+      data: { kind, fileMediaId: file.id, fileName: (input.fileName ?? file.key.split('/').pop() ?? 'catalogue.xlsx').slice(0, 200), createdBy: actor.userId },
     });
     await this.d.enqueue.validate(imp.id, input.createMissing);
     return imp;
@@ -57,6 +70,7 @@ export class ImportService {
     if (imp.file.status === 'REJECTED' || imp.file.status === 'FAILED') return this.fail(importId, `The file was rejected: ${imp.file.failureReason ?? 'not a valid .xlsx'}`);
     if (imp.file.status !== 'READY') return 'WAITING';                              // the job retries later
     await this.prisma.productImport.updateMany({ where: { id: importId, status: 'UPLOADED' }, data: { status: 'VALIDATING' } });
+    if (imp.kind === 'INVENTORY') return this.validateCounts(importId, imp.file);
     let parsed;
     try { parsed = await parseCatalog(await this.d.readFile(imp.file)); }
     catch (e) {
@@ -90,8 +104,9 @@ export class ImportService {
   async confirm(importId: number, actor: ImportActor) {
     const imp = await this.prisma.productImport.findUnique({ where: { id: importId } });
     if (!imp) throw notFound();
+    assertKind(imp.kind, actor);
     if (imp.status !== 'VALIDATED') throw new AppError(422, 'INVALID_TRANSITION', `This import is ${imp.status.toLowerCase().replace(/_/g, ' ')}; only a checked import can be confirmed`);
-    if (!can(actor.role, 'pricing:write')) {
+    if (imp.kind === 'CATALOG' && !can(actor.role, 'pricing:write')) {
       const pricing = await this.prisma.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM product_import_rows WHERE import_id = ${importId} AND status = 'PENDING' AND (payload->'plan'->>'setsPrice')::boolean`;
       if (Number(pricing[0]!.n) > 0) throw new AppError(403, 'FORBIDDEN', 'This file sets prices, which your role cannot change', { permission: 'pricing:write' });
     }
@@ -128,7 +143,9 @@ export class ImportService {
         await this.prisma.productImportRow.update({ where: { id: r.id }, data: { status: 'FAILED', processedAt: new Date(), messages: asJson([...(r.messages as Message[]), { code: 'GAVE_UP', text: `Stopped after ${MAX_ATTEMPTS} attempts` }]) } });
       }
       const todo = rows.filter((r) => r.attempts + 1 <= MAX_ATTEMPTS);
-      if (todo.length) await this.applyBatch(importId, imp.createdBy, todo.map((r) => ({ id: r.id, payload: r.payload as unknown as RowPayload, messages: r.messages as Message[] })), () => hooks.beforeCommit?.(batch));
+      const items = todo.map((r) => ({ id: r.id, payload: r.payload as unknown as RowPayload, messages: r.messages as Message[] }));
+      if (todo.length && imp.kind === 'INVENTORY') await this.applyCounts(importId, imp.createdBy, todo.map((r) => ({ id: r.id, count: r.payload as unknown as CountPayload, messages: r.messages as Message[] })), () => hooks.beforeCommit?.(batch));
+      else if (todo.length) await this.applyBatch(importId, imp.createdBy, items, () => hooks.beforeCommit?.(batch));
     }
     await this.finish(importId);
     return 'DONE';
@@ -173,7 +190,7 @@ export class ImportService {
           }
         } catch (e) {
           await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT import_row');
-          const text = e instanceof AppError ? e.message : `Could not apply: ${(e as Error).message.split('\n').at(-1)?.slice(0, 300)}`;
+          const text = e instanceof AppError ? e.message : applyFailure(e);
           await tx.productImportRow.update({ where: { id: r.id }, data: { status: 'FAILED', processedAt: new Date(), messages: asJson([...r.messages, { code: 'APPLY_FAILED', text }]) } });
           continue;
         }
@@ -216,6 +233,76 @@ export class ImportService {
     return stuck.map((s) => s.id);
   }
 
+  // ── Inventory counts (on-hand only, through aq_adjust_on_hand) ─────────────
+
+  private async validateCounts(importId: number, file: Media): Promise<'VALIDATED' | 'FAILED'> {
+    let parsed: CountRow[];
+    try { parsed = await parseCountSheet(await this.d.readFile(file)); }
+    catch (e) {
+      if (e instanceof WorkbookError) return this.fail(importId, e.message);
+      throw e;
+    }
+    const skus = parsed.map((r) => r.sku).filter((x): x is string => x !== null);
+    // SKUs match case-insensitively (people type them by hand on count sheets).
+    const variants = new Map((await this.prisma.$queryRaw<{ id: number; sku: string; on_hand: number; reserved: number }[]>`
+      SELECT id, sku, on_hand, reserved FROM product_variants WHERE upper(sku) = ANY(${skus}) AND deleted_at IS NULL`).map((v) => [v.sku.toUpperCase(), { id: v.id, sku: v.sku, onHand: v.on_hand, reserved: v.reserved }]));
+    const rows = parsed.map((r) => {
+      const v = r.sku ? variants.get(r.sku) : undefined;
+      const messages = [...r.messages];
+      let status = r.status;
+      if (status === 'PENDING' && !v) { status = 'FAILED'; messages.push({ code: 'SKU_UNKNOWN', text: `No variant has SKU ${r.sku}` }); }
+      if (status === 'PENDING' && v) {
+        const next = r.kind === 'RECOUNT' ? r.quantity! : v.onHand + r.quantity!;
+        if (next < 0) { status = 'FAILED'; messages.push({ code: 'BELOW_ZERO', text: `This would leave ${next} units on hand` }); }
+        else {
+          messages.push({ code: 'PLANNED', text: `On hand ${v.onHand} → ${next}` });
+          if (next < v.reserved) messages.push({ code: 'WILL_OVERSELL', text: `${v.reserved} units are reserved by open orders: this count makes the variant oversold` });
+        }
+      }
+      const payload: CountPayload = { sku: r.sku, kind: r.kind, quantity: r.quantity, note: r.note, variantId: v?.id ?? null, systemOnHand: v?.onHand ?? null };
+      return { rowNumber: r.rowNumber, sku: v?.sku ?? r.sku, status, messages, payload: { ...payload, sku: v?.sku ?? r.sku } };
+    });
+    await this.prisma.$transaction(async (tx) => {
+      await tx.productImportRow.deleteMany({ where: { importId } });
+      await tx.productImportRow.createMany({ data: rows.map((r) => ({ importId, rowNumber: r.rowNumber, sku: r.sku, payload: asJson(r.payload), status: r.status, messages: asJson(r.messages), variantId: r.payload.variantId })) });
+      await tx.productImport.update({ where: { id: importId }, data: { status: 'VALIDATED', validatedAt: new Date(), totalRows: rows.length, failedCount: rows.filter((r) => r.status === 'FAILED').length } });
+    }, TX);
+    return 'VALIDATED';
+  }
+
+  /** One batch of counts: one aq_adjust_on_hand call (variants ascending); a change that would go below zero fails its row only. */
+  private async applyCounts(importId: number, actorId: number, batch: { id: number; count: CountPayload; messages: Message[] }[], beforeCommit: () => Promise<void> | void) {
+    await this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${LOCK}))`;
+      const still = new Set((await tx.$queryRaw<{ id: number }[]>`SELECT id FROM product_import_rows WHERE id = ANY(${batch.map((r) => r.id)}) AND status = 'PENDING' FOR UPDATE`).map((r) => r.id));
+      const rows = batch.filter((r) => still.has(r.id)).sort((a, b) => a.count.variantId! - b.count.variantId!);
+      if (rows.length === 0) return;
+      const ids = rows.map((r) => r.count.variantId!);
+      const current = new Map((await tx.$queryRaw<{ id: number; on_hand: number; deleted: boolean }[]>`
+        SELECT id, on_hand, deleted_at IS NOT NULL AS deleted FROM product_variants WHERE id = ANY(${ids}) ORDER BY id FOR NO KEY UPDATE`).map((v) => [v.id, v]));
+      const ok: typeof rows = [];
+      for (const r of rows) {
+        const v = current.get(r.count.variantId!);
+        const next = v ? (r.count.kind === 'RECOUNT' ? r.count.quantity! : v.on_hand + r.count.quantity!) : -1;
+        if (!v || v.deleted || next < 0) {
+          await tx.productImportRow.update({ where: { id: r.id }, data: { status: 'FAILED', processedAt: new Date(), messages: asJson([...r.messages, { code: !v || v.deleted ? 'SKU_UNKNOWN' : 'BELOW_ZERO', text: !v || v.deleted ? 'The variant no longer exists' : `This would leave ${next} units on hand` }]) } });
+        } else ok.push(r);
+      }
+      if (ok.length) {
+        await fn.adjustOnHand(tx, { rows: ok.map((r) => ({ variantId: r.count.variantId!, kind: r.count.kind!, quantity: r.count.quantity!, ...(r.count.note ? { note: r.count.note } : {}) })), actorId, importId });
+        const after = new Map((await tx.productVariant.findMany({ where: { id: { in: ok.map((r) => r.count.variantId!) } }, select: { id: true, onHand: true, reserved: true } })).map((v) => [v.id, v]));
+        const products = (await tx.productVariant.findMany({ where: { id: { in: ok.map((r) => r.count.variantId!) } }, select: { productId: true } })).map((v) => v.productId);
+        await storeReadiness(tx, [...new Set(products)]);   // a recount can clear "stock uncounted"
+        for (const r of ok) {
+          const a = after.get(r.count.variantId!)!;
+          const notes = [{ code: 'APPLIED', text: `On hand ${current.get(r.count.variantId!)!.on_hand} → ${a.onHand}` }, ...(a.onHand < a.reserved ? [{ code: 'OVERSOLD', text: `Oversold: ${a.reserved} reserved, ${a.onHand} on hand (exception raised)` }] : [])];
+          await tx.productImportRow.update({ where: { id: r.id }, data: { status: 'UPDATED', processedAt: new Date(), messages: asJson([...r.messages.filter((m) => m.code !== 'PLANNED' && m.code !== 'WILL_OVERSELL'), ...notes]) } });
+        }
+      }
+      await beforeCommit();
+    }, TX);
+  }
+
   /** NEEDS_REVIEW rows: apply over the current data (the admin looked at it), or skip. */
   async resolve(importId: number, rowId: number, action: 'apply' | 'skip', actor: ImportActor) {
     const row = await this.prisma.productImportRow.findFirst({ where: { id: rowId, importId } });
@@ -250,15 +337,30 @@ export class ImportService {
 
   /** The result workbook: every row with the SKU it got, its outcome, flags and messages (catalog.md §5). */
   async resultFile(importId: number): Promise<Buffer> {
-    if (!(await this.prisma.productImport.findUnique({ where: { id: importId } }))) throw notFound();
+    const imp = await this.prisma.productImport.findUnique({ where: { id: importId } });
+    if (!imp) throw notFound();
     const rows = await this.prisma.productImportRow.findMany({ where: { importId }, orderBy: { rowNumber: 'asc' } });
+    if (imp.kind === 'INVENTORY') return countResultWorkbook(rows.map((r) => ({ count: r.payload as unknown as CountPayload, outcome: r.status, messages: r.messages as Message[] })));
     return resultWorkbook(rows.map((r) => ({ row: (r.payload as unknown as RowPayload).row, outcome: r.status, messages: r.messages as Message[] })));
   }
 }
 
 /** Stored readiness for drafts touched by an import (the editor reads it; live products are guarded above). */
-async function storeReadiness(db: Db, ids: number[]) {
+export async function storeReadiness(db: Db, ids: number[]) {
   await db.$executeRaw`UPDATE products p SET is_publishable = cardinality(product_readiness_failures(p)) = 0,
       readiness = jsonb_build_object('failures', to_jsonb(product_readiness_failures(p)), 'evaluatedAt', now())
     WHERE id = ANY(${ids}) AND status <> 'ACTIVE'`;
+}
+
+/** A database refusal in words a person can act on (the raw driver text names indexes and columns). */
+export function applyFailure(e: unknown): string {
+  const err = e as { code?: string; message?: string; meta?: { target?: unknown } };
+  const raw = `${String(err.meta?.target ?? '')} ${err.message ?? ''}`;
+  if (err.code === 'P2002' || /unique constraint|duplicate key/i.test(raw)) {
+    if (/product_id|options/i.test(raw)) return 'Could not apply: another variant of this product already has this size, colour and thickness';
+    if (/sku/i.test(raw)) return 'Could not apply: this SKU is already used by another variant';
+    if (/slug/i.test(raw)) return 'Could not apply: another product already uses this name in its web address (slug)';
+    return 'Could not apply: a value on this row is already used elsewhere';
+  }
+  return `Could not apply: ${(err.message ?? String(e)).split('\n').at(-1)?.slice(0, 300)}`;
 }

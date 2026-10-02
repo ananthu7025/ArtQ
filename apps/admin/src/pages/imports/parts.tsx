@@ -1,13 +1,15 @@
 // Shared pieces of the Imports pages.
 export type ImportStatusValue = 'UPLOADED' | 'VALIDATING' | 'VALIDATED' | 'IMPORTING' | 'COMPLETED' | 'COMPLETED_WITH_ERRORS' | 'FAILED' | 'CANCELLED';
 export type ImportView = {
-  id: number; fileName: string; status: ImportStatusValue; totalRows: number; createdCount: number; updatedCount: number; unchangedCount: number;
+  id: number; kind: 'CATALOG' | 'INVENTORY'; fileName: string; status: ImportStatusValue; totalRows: number; createdCount: number; updatedCount: number; unchangedCount: number;
   reviewCount: number; failedCount: number; createdAt: string; validatedAt: string | null; completedAt: string | null;
   rows?: Partial<Record<string, number>>; flaggedRows?: number; products?: number;
 };
 export type ImportRowView = {
   id: number; rowNumber: number; sku: string | null; productKey: string | null; status: string; plan: string; productName: string; size: string | null;
   price: number | null; mrp: number | null; stock: number | string; flags: string[]; messages: { code: string; text: string }[]; productId: number | null;
+  /** Inventory count rows */
+  kind?: 'RECOUNT' | 'ADJUSTMENT' | null; quantity?: number | null; note?: string | null; systemOnHand?: number | null;
 };
 
 const LABEL: Record<ImportStatusValue, [string, string]> = {
