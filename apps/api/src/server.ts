@@ -11,10 +11,12 @@ import { RedisSessionCache } from './auth/session-cache.js';
 import { ConfigError, loadEnv } from './config/env.js';
 import { makeReadinessChecks } from './lib/readiness.js';
 import { RedisRateLimiter } from './middleware/rateLimit.js';
+import { redisConnection } from './lib/redis-url.js';
 import { jobId } from './jobs/ids.js';
 import { QUEUE } from './jobs/registry.js';
 import { mediaServiceFromEnv } from './media/factory.js';
 import { customerMediaRouter, registerAdminMediaRoutes } from './media/routes.js';
+import { registerAuditRoutes } from './admin/audit-routes.js';
 import { razorpayProvider } from './webhooks/provider.js';
 import { WEBHOOK_QUEUE, webhookRouter } from './webhooks/inbox.js';
 
@@ -42,14 +44,14 @@ const onRateLimitError = (err: unknown) => log.warn({ err: String(err) }, 'rate 
 // Admin feature modules (Phase 2+) register on admin.routes; auth, rate limit and audit are wired by the factory.
 const admin = createAdminRouter({ prisma, cache, jwt, limiter, onRateLimitError, log, hasRecentStepUp: (sid) => service.hasRecentStepUp(sid) });
 
-const ru = new URL(env.REDIS_URL);
-const webhookQueue = new Queue(WEBHOOK_QUEUE, { connection: { host: ru.hostname, port: Number(ru.port || 6379), ...(ru.password ? { password: decodeURIComponent(ru.password) } : {}), maxRetriesPerRequest: 1, enableOfflineQueue: false } });
+const webhookQueue = new Queue(WEBHOOK_QUEUE, { connection: { ...redisConnection(env.REDIS_URL), maxRetriesPerRequest: 1, enableOfflineQueue: false } });
 webhookQueue.on('error', (err) => log.warn({ err: err.message }, 'webhook queue connection error'));
 const mediaQueue = new Queue(QUEUE.mediaProcess, { connection: webhookQueue.opts.connection });
 mediaQueue.on('error', (err) => log.warn({ err: err.message }, 'media queue connection error'));
 // A unique job id per enqueue: processing is claimed by a status transition, so a duplicate job is harmless.
 const media = mediaServiceFromEnv(env, prisma, async (id) => { await mediaQueue.add('media.process', { id }, { jobId: jobId('media', id, Date.now()), attempts: 3, backoff: { type: 'exponential', delay: 10_000 }, removeOnComplete: true }); });
 registerAdminMediaRoutes(admin, media, prisma);
+registerAuditRoutes(admin, prisma);
 
 const app = createApp({
   version: env.APP_VERSION,

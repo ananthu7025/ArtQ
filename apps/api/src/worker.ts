@@ -12,14 +12,14 @@ import { processWebhook, sweepWebhooks, WEBHOOK_QUEUE } from './webhooks/inbox.j
 import { razorpayProvider } from './webhooks/provider.js';
 import { mediaServiceFromEnv } from './media/factory.js';
 import { createWorkerRuntime } from './worker/runtime.js';
+import { redisConnection } from './lib/redis-url.js';
 
 let env;
 try { env = loadEnv(); }
 catch (e) { if (e instanceof ConfigError) { console.error(e.message); process.exit(1); } throw e; }
 
 const log = pino({ name: 'worker', level: env.LOG_LEVEL });
-const u = new URL(env.REDIS_URL);
-const connection = { host: u.hostname, port: Number(u.port || 6379), ...(u.password ? { password: decodeURIComponent(u.password) } : {}), maxRetriesPerRequest: null };
+const connection = redisConnection(env.REDIS_URL);
 const redis = new Redis(env.REDIS_URL);
 redis.on('error', (err) => log.warn({ err: err.message }, 'redis connection error'));
 const prisma = new PrismaClient({ datasourceUrl: env.DATABASE_URL });

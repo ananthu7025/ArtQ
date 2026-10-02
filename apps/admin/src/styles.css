@@ -1,0 +1,6 @@
+@import "tailwindcss";
+@import "@artq/ui/theme.css";
+@import "@artq/ui/tokens.css";
+
+html, body { background: var(--color-surface-50); color: var(--color-ink-900); font-family: var(--font-body); }
+:focus-visible { outline: 2px solid var(--color-brand-700); outline-offset: 2px; }

@@ -8,3 +8,6 @@ dist/
 !.env.example
 coverage/
 .DS_Store
+# Playwright
+apps/admin/test-results/
+apps/admin/playwright-report/

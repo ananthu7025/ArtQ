@@ -58,7 +58,7 @@ jobs:
   compose:
     name: docker compose stack
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -66,10 +66,19 @@ jobs:
       - run: corepack enable pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @artq/api prisma:generate
-      - run: pnpm --filter @artq/shared build
+      - run: pnpm --filter @artq/shared --filter @artq/ui build
       - run: docker compose up -d --wait
       - run: pnpm --filter @artq/api test:compose
       - run: pnpm --filter @artq/api test:compose:integration
+      - name: Admin end-to-end (Playwright; real API + compose services)
+        run: |
+          pnpm --filter @artq/api build
+          pnpm --filter @artq/admin exec playwright install --with-deps chromium
+          pnpm --filter @artq/admin e2e
+      - name: Playwright traces on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with: { name: admin-e2e-results, path: apps/admin/test-results, if-no-files-found: ignore }
       - name: Logs on failure
         if: failure()
         run: docker compose logs --no-color | tail -300

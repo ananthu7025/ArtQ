@@ -31,6 +31,10 @@
 | Redis client | ioredis | 5.11.1 | Same version BullMQ 5.81.5 resolves |
 | Test infra | embedded-postgres (dev) / yaml (dev) | 16.14.0-beta.17 / 2.9.1 | Real PostgreSQL 16.14 for local integration tests without Docker; CI uses service containers (`TEST_DATABASE_URL`, `TEST_REDIS_URL`) |
 | UI tests | jsdom / @testing-library/react / user-event / axe-core | **29.1.1** / 16.3.3 / 14.6.7 / 4.13.0 | jsdom 30.x requires Node ≥ 24.15; the dev machine runs 24.14.0. Upgrade Node to the current 24 LTS (24.21.0) to move to jsdom 30 |
+| Admin SPA | react-router / @tanstack/react-query / react-hook-form / @hookform/resolvers / @radix-ui/react-dialog / @radix-ui/react-dropdown-menu / sonner / lucide-react | 8.4.0 / 5.104.0 / 7.89.0 / 5.9.1 / 1.1.23 / 2.1.24 / 2.0.8 / 1.49.0 | Task 2.1; peers checked against React 19.3 and Node 24 |
+| Admin tables | @tanstack/react-table | **8.21.3** | **Not 9.x** (released Aug 2026 with a changed API); v8 is the API the DataTable is written against. Upgrade is a separate decision |
+| Admin E2E | @playwright/test / @axe-core/playwright | 1.63.0 / 4.13.0 | Chromium only; run in the CI compose job |
+| Email / storage / file types | nodemailer / @aws-sdk/client-s3 + s3-request-presigner / file-type / jose | 10.0.13 / 3.1145.0 / 22.1.1 / 6.2.12 | Tasks 1.4, 1.8, 1.11 |
 | Local object storage | adobe/s3mock | 5.2.3 | MinIO no longer publishes community images on Docker Hub or Quay (checked 2026-10-01) |
 | Database | PostgreSQL | **16** (16.14 tested) | Deployment major (architecture.md §2) |
 | Cache/queue store | Redis | 7+ (8.6.2 tested) | |
