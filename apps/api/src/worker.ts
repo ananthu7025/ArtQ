@@ -5,6 +5,7 @@ import { pino } from 'pino';
 import { ConfigError, loadEnv } from './config/env.js';
 import { processEmailDelivery, type EmailConsumer } from './email/consumer.js';
 import { ResendTransport, SmtpTransport, type EmailTransport } from './email/transport.js';
+import { processSearchQueue } from './db/functions.js';
 import { QUEUE } from './jobs/registry.js';
 import { runRetention } from './jobs/retention.js';
 import { dispatchOnce, OUTBOX_CONSUMERS, type OutboxJobData } from './outbox/dispatcher.js';
@@ -50,6 +51,8 @@ const runtime = createWorkerRuntime({
     { name: WEBHOOK_QUEUE, concurrency: 5, attempts: 1, processor: async (job) => processWebhook({ prisma, providers, log }, (job.data as { id: number }).id) },
     // Bad files end REJECTED (no retry); transient storage/processing errors throw ⇒ FAILED, retried by BullMQ.
     { name: QUEUE.mediaProcess, concurrency: 2, attempts: 3, backoffMs: 10_000, processor: async (job) => media.process((job.data as { id: number }).id) },
+    // Variant/category/type changes enqueue products in search_reindex_queue (database.md §7); drained every 2 s.
+    { name: QUEUE.searchReindex, concurrency: 1, attempts: 1, processor: async () => processSearchQueue(prisma) },
     { name: OUTBOX_CONSUMERS['email.customer'], concurrency: 5, processor: email('email.customer') },
     { name: OUTBOX_CONSUMERS['email.admin'], concurrency: 2, processor: email('email.admin') },
   ],
@@ -61,6 +64,7 @@ const runtime = createWorkerRuntime({
     { queue: QUEUE.maintenance, id: 'webhook-sweep', everyMs: 60_000, jobName: 'webhook-sweep' },
     { queue: QUEUE.maintenance, id: 'media-purge', everyMs: 3_600_000, jobName: 'media-purge' },
     { queue: QUEUE.outboxDispatch, id: 'outbox-dispatch', everyMs: 1000, jobName: 'dispatch' },
+    { queue: QUEUE.searchReindex, id: 'search-reindex', everyMs: 2000, jobName: 'reindex' },
   ],
 });
 await runtime.start();

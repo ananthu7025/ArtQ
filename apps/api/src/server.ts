@@ -17,6 +17,8 @@ import { QUEUE } from './jobs/registry.js';
 import { mediaServiceFromEnv } from './media/factory.js';
 import { customerMediaRouter, registerAdminMediaRoutes } from './media/routes.js';
 import { registerAuditRoutes } from './admin/audit-routes.js';
+import { registerCatalogRoutes } from './catalog/routes.js';
+import { CatalogService } from './catalog/service.js';
 import { razorpayProvider } from './webhooks/provider.js';
 import { WEBHOOK_QUEUE, webhookRouter } from './webhooks/inbox.js';
 
@@ -52,6 +54,7 @@ mediaQueue.on('error', (err) => log.warn({ err: err.message }, 'media queue conn
 const media = mediaServiceFromEnv(env, prisma, async (id) => { await mediaQueue.add('media.process', { id }, { jobId: jobId('media', id, Date.now()), attempts: 3, backoff: { type: 'exponential', delay: 10_000 }, removeOnComplete: true }); });
 registerAdminMediaRoutes(admin, media, prisma);
 registerAuditRoutes(admin, prisma);
+registerCatalogRoutes(admin, new CatalogService(prisma, (m) => media.view(m)));
 
 const app = createApp({
   version: env.APP_VERSION,
