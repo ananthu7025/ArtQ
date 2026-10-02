@@ -26,6 +26,20 @@
         "COMPOSE_TESTS"
       ]
     },
+    "@artq/api#test": {
+      "dependsOn": [
+        "^build"
+      ],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/docs/database.md"
+      ],
+      "env": [
+        "TEST_DATABASE_URL",
+        "TEST_REDIS_URL",
+        "COMPOSE_TESTS"
+      ]
+    },
     "dev": {
       "cache": false,
       "persistent": true

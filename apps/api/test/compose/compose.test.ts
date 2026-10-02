@@ -9,12 +9,18 @@ import request from 'supertest';
 import { afterAll, describe, expect, it } from 'vitest';
 import { createApp } from '../../src/app.js';
 import { loadEnv } from '../../src/config/env.js';
+import { render } from '../../src/email/templates.js';
+import { SmtpTransport } from '../../src/email/transport.js';
+import sharp from 'sharp';
+import { MediaService } from '../../src/media/service.js';
+import { S3ObjectStore } from '../../src/media/storage.js';
+import { createMigratedDatabase } from '../helpers/db.js';
 import { makeReadinessChecks } from '../../src/lib/readiness.js';
 
 const enabled = process.env.COMPOSE_TESTS === '1';
 const root = join(import.meta.dirname, '..', '..', '..', '..');
 const example = Object.fromEntries(readFileSync(join(root, '.env.example'), 'utf8').split('\n')
-  .filter((l) => l.trim() && !l.startsWith('#')).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]));
+  .filter((l) => l.trim() && !l.startsWith('#')).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1).replace(/^"(.*)"$/, '$1')]));
 const env = enabled ? loadEnv(example) : undefined;
 const S3 = example.S3_ENDPOINT!;
 const MAIL_UI = `http://localhost:${process.env.ARTQ_MAIL_UI_PORT ?? 8025}`;
@@ -106,6 +112,55 @@ describe.skipIf(!enabled)('docker-compose stack', () => {
       const res = await (await fetch(`${MAIL_UI}/api/v1/search?query=${encodeURIComponent(`subject:${subject}`)}`)).json() as { messages: { Subject: string }[] };
       expect(res.messages.map((m) => m.Subject)).toContain(subject);
     });
+
+    it('receives a rendered ArtQ email from the real SmtpTransport (task 1.8)', async () => {
+      const code = String(Date.now()).slice(-6);
+      const r = render('otp', { code, purpose: 'LOGIN', expiresInMinutes: 10 });
+      const t = new SmtpTransport({ host: env!.SMTP_HOST, port: env!.SMTP_PORT });
+      const { messageId } = await t.send({ from: env!.EMAIL_FROM, to: 'buyer@example.com', ...r, idempotencyKey: `artq-compose-${code}` });
+      expect(messageId).toBeTruthy();
+      const res = await (await fetch(`${MAIL_UI}/api/v1/search?query=${encodeURIComponent(`subject:"${r.subject}"`)}`)).json() as { messages: { ID: string; Subject: string; From: { Address: string } }[] };
+      const msg = res.messages.find((m) => m.Subject === r.subject)!;
+      expect(msg.From.Address).toBe('no-reply@artq.in');
+      const full = await (await fetch(`${MAIL_UI}/api/v1/message/${msg.ID}`)).json() as { Text: string; HTML: string };
+      expect(full.Text).toContain(code);
+      expect(full.HTML).toContain('Your ArtQ code');
+      await expect(new SmtpTransport({ host: '127.0.0.1', port: 1 }).send({ from: env!.EMAIL_FROM, to: 'a@x.in', ...r, idempotencyKey: 'k' })).rejects.toMatchObject({ name: 'EmailSendError', retryable: true });
+    });
+  });
+
+  describe('media pipeline against real S3Mock (task 1.11)', () => {
+    it('presigned PUT (type + length signed) → complete (HEAD) → processed renditions in the bucket → private presigned GET', async () => {
+      const db = await createMigratedDatabase(env!.DATABASE_URL);
+      closers.push(() => db.drop());
+      const store = new S3ObjectStore({ endpoint: env!.S3_ENDPOINT, region: env!.S3_REGION, accessKeyId: env!.S3_ACCESS_KEY_ID, secretAccessKey: env!.S3_SECRET_ACCESS_KEY, forcePathStyle: env!.S3_FORCE_PATH_STYLE });
+      const buckets = { PUBLIC: env!.S3_BUCKET_PUBLIC, PRIVATE: env!.S3_BUCKET_PRIVATE };
+      const media = new MediaService(db.prisma, { store, buckets, publicBaseUrl: env!.MEDIA_PUBLIC_BASE_URL }, async () => {});
+      const png = await sharp({ create: { width: 500, height: 200, channels: 3, background: '#00756f' } }).png().toBuffer();
+      const user = await db.prisma.user.create({ data: { email: 'media-admin@artq.in', role: 'ADMIN', status: 'ACTIVE' } });
+      const actor = { userId: user.id, audience: 'admin' as const, role: 'ADMIN' as const };
+
+      const p = await media.presign({ filename: 'frame.png', contentType: 'image/png', size: png.length, purpose: 'product-image' }, actor);
+      expect(new URL(p.upload.url).searchParams.get('X-Amz-SignedHeaders')).toBe('content-length;content-type;host');
+      const put = await fetch(p.upload.url, { method: 'PUT', headers: p.upload.headers, body: png });
+      expect(put.status).toBe(200);
+      expect((await media.complete(p.media.id, actor)).status).toBe('UPLOADED');
+      expect(await media.process(p.media.id)).toBe('READY');
+      const m = await db.prisma.media.findUniqueOrThrow({ where: { id: p.media.id } });
+      for (const key of Object.values(m.renditions as Record<string, string>)) expect(await store.head(buckets.PUBLIC, key)).toMatchObject({ contentType: 'image/webp' });
+      const publicUrl = media.view(m).renditions['160']!;
+      expect((await fetch(publicUrl)).status).toBe(200);
+
+      const x = await media.presign({ filename: 'import.png', contentType: 'image/png', size: png.length, purpose: 'cms-image' }, actor);
+      await fetch(x.upload.url, { method: 'PUT', headers: x.upload.headers, body: png });
+      const priv = await db.prisma.media.update({ where: { id: x.media.id }, data: { visibility: 'PRIVATE' } });
+      await store.put(buckets.PRIVATE, priv.key, png, 'image/png');
+      const url = await store.presignGet(buckets.PRIVATE, priv.key, { expiresIn: 60, attachmentName: 'a.png' });
+      const got = await fetch(url);
+      expect(got.status).toBe(200);
+      expect(Buffer.from(await got.arrayBuffer()).equals(png)).toBe(true);
+      expect(await store.head(buckets.PRIVATE, 'no/such/key')).toBeNull();
+    }, 60_000);
   });
 
   describe('API readiness with .env.example', () => {
@@ -113,7 +168,7 @@ describe.skipIf(!enabled)('docker-compose stack', () => {
       const prisma = new PrismaClient({ datasourceUrl: env!.DATABASE_URL });
       const redis = new Redis(env!.REDIS_URL, { lazyConnect: true });
       closers.push(() => prisma.$disconnect(), () => redis.disconnect());
-      const app = createApp({ version: 'compose', corsOrigins: env!.CORS_ORIGINS, readiness: makeReadinessChecks(prisma, redis) });
+      const app = createApp({ version: 'compose', origins: { storefront: env!.STOREFRONT_ORIGINS, admin: env!.ADMIN_ORIGINS }, readiness: makeReadinessChecks(prisma, redis) });
       const res = await request(app).get('/health/ready');
       expect(res.status).toBe(200);
       expect(res.body.checks).toEqual({ database: { ok: true }, redis: { ok: true } });

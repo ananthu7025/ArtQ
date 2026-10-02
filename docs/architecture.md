@@ -235,7 +235,7 @@ Users have two versions, `storefront_auth_version` and `admin_auth_version`. A s
 ### 5.5 CSRF and Origin protection
 Bearer-token requests cannot be forged cross-site, because browsers never attach the header automatically. **Cookie-authenticated** endpoints can be, so they get these layers:
 1. `SameSite=Strict` cookies (above).
-2. **Origin guard** on every non-GET request to a route that reads a cookie (`/v1/auth/*`, `/v1/admin/auth/*`, `/v1/cart*`, `/v1/checkout*`, `/v1/orders/*` guest routes): `Origin` must be present and exactly match the environment allowlist (`https://artq.in`, `https://www.artq.in`, `https://admin.artq.in` for admin auth). A missing or other origin returns 403 `ORIGIN_REJECTED`. If present, `Sec-Fetch-Site` must be `same-origin` or `same-site`.
+2. **Origin guard**, applied app-wide (`originPolicy` in `createApp`, so no route can forget it) to every non-GET/HEAD/OPTIONS request, which covers all cookie routes (`/v1/auth/*`, `/v1/admin/auth/*`, `/v1/cart*`, `/v1/checkout*`, `/v1/orders/*` guest routes): `Origin` must be present and exactly match the environment allowlist: `STOREFRONT_ORIGINS` (`https://artq.in`, `https://www.artq.in`) everywhere except `/v1/admin/*`, which accepts only `ADMIN_ORIGINS` (`https://admin.artq.in`). The path is matched case-insensitively, like Express routing. A missing or other origin returns 403 `ORIGIN_REJECTED`. If present, `Sec-Fetch-Site` must be `same-origin` or `same-site`.
 3. **JSON only**: state-changing endpoints reject `application/x-www-form-urlencoded`, `multipart/form-data` and `text/plain` (except presigned uploads, which go directly to R2), so HTML forms cannot submit them.
 4. GET requests never change state.
 5. Webhooks are exempt from the Origin check and authenticated by signature.
@@ -262,6 +262,11 @@ SMS/WhatsApp are post-launch (DLT registration needed). At launch:
 - Email change always requires an OTP to the **new** email plus a notification to the old one; then `aq_revoke_all_sessions` (both versions++).
 
 ### 5.8 Admin authentication with mandatory MFA
+> **Status 2026-10-02: MFA deferred by the owner.** Admin login is currently email + password (staff roles only, shared
+> lockout, separate `ADMIN` session audience and cookie, 5-min access token, 12 h idle / 7 d absolute), and **step-up is a
+> password re-check** recorded in `sessions.mfa_verified_at` (10 minutes, per session). The design below is the target and
+> is tracked as tasklist 1.6b. Risk accepted until then: a stolen staff password gives admin access without a second factor.
+
 All staff roles (`STAFF`, `ADMIN`, `SUPER_ADMIN`) require TOTP. **No admin access or refresh token is issued before the MFA step completes.**
 
 ```mermaid
@@ -291,7 +296,7 @@ sequenceDiagram
 - **Separation:** admin sessions (`audience=ADMIN`) use a separate cookie and route prefix. Staff accounts cannot use storefront login to obtain admin tokens, and storefront tokens are rejected by `/v1/admin/*`.
 
 ### 5.9 Permissions
-Permissions are declared in `packages/shared/permissions.ts` and checked by `requirePermission()`. **Each endpoint's request schema accepts only the fields its permission covers.** For example, the inventory endpoint's schema has no price fields, and unknown keys are rejected.
+Permissions are declared in `packages/shared/src/permissions.ts` and checked by `admin.can(permission)` from `createAdminRouter` (`apps/api/src/admin/router.ts`), which also authenticates every `/v1/admin/*` feature route, applies the per-admin rate limit, audits rejected requests and reports successful mutations that wrote no audit entry. **Each endpoint's request schema accepts only the fields its permission covers.** For example, the inventory endpoint's schema has no price fields, and unknown keys are rejected.
 
 | Permission | What it allows | STAFF | ADMIN | SUPER_ADMIN |
 |-----------|----------------|:-----:|:-----:|:-----------:|
@@ -486,7 +491,7 @@ sequenceDiagram
 `POST /v1/webhooks/razorpay`:
 1. Read the raw body and verify `X-Razorpay-Signature` = HMAC-SHA256(rawBody, `RAZORPAY_WEBHOOK_SECRET`) with a constant-time compare. Invalid → 400 (not stored).
 2. `INSERT … ON CONFLICT (provider, event_id) DO NOTHING` with `event_id` from the `x-razorpay-event-id` header, then **commit**.
-3. Best-effort `queue.add('webhook.process', {id}, {jobId: 'wh-' + id})`. (BullMQ rejects custom ids containing `:`; verified on 5.81.5 and 6.3.11.)
+3. Best-effort `queue.add('webhook.process', {id}, {jobId: 'wh-' + id, removeOnComplete: true})`. (BullMQ rejects custom ids containing `:`; verified on 5.81.5 and 6.3.11.) The job is removed when it completes: BullMQ ignores an `add` whose id still exists, so a retained `wh-<id>` would silently swallow the sweeper's re-enqueue of a FAILED event. Domain failures are recorded by `aq_webhook_fail`, so the job itself completes.
 4. Respond **200 only after step 2 committed**. If the DB is unavailable, respond 503 so Razorpay retries.
 5. Duplicate delivery: if the row is `PROCESSED`/`IGNORED`, respond 200. If `RECEIVED`/`FAILED`, or `PROCESSING` with an expired lock, re-enqueue and respond 200.
 
@@ -544,7 +549,7 @@ The **dispatcher** (worker, every second, plus `LISTEN/NOTIFY` wake-up) follows 
 1. `POST /v1/admin/media/presign` (customers: `/v1/uploads/presign` for custom-work, scoped to the cart; `/v1/me/orders/:n/uploads/presign` or `/v1/orders/:n/uploads/presign` for return photos, scoped to the order) with `{filename, contentType, size, purpose}`. The API checks the allow-list (images: jpeg/png/webp/avif ≤ 15 MB admin / 8 MB customer; video: mp4/webm ≤ 50 MB admin only; xlsx ≤ 5 MB for imports), creates `media` (`PENDING_UPLOAD`, `uploaded_by`, `owner_scope`, `visibility`), and returns a presigned PUT whose signature covers `Content-Type` and `Content-Length`. Expiry 5 minutes.
 2. The browser uploads directly to R2.
 3. `POST …/media/:id/complete`: only the uploader (same user, or same cart/order scope) may complete. The API `HEAD`s the object; size/type mismatch or a missing object → `REJECTED`; otherwise `UPLOADED` and `media.process` is enqueued.
-4. The worker downloads the object, checks magic bytes (`file-type`), decodes with sharp (`limitInputPixels` 40 MP, `failOn: 'error'`), re-encodes to WebP/AVIF at widths 160–1600 (metadata stripped), computes the placeholder and SHA-256 → `READY`. Decode failure → `REJECTED`; transient failure → `FAILED` (retry 3×).
+4. The worker downloads the object, checks magic bytes (`file-type`), decodes with sharp (`limitInputPixels` 40 MP, `failOn: 'error'`), re-encodes to WebP at widths 160–1600 capped at the source width (metadata stripped), computes the placeholder and SHA-256 → `READY`. Decode failure → `REJECTED`; transient failure → `FAILED` (retry 3×). AVIF renditions are deferred (encoding cost; revisit with the storefront image component, task 3.4).
 5. Only `READY` media may be attached to anything customer-visible. The publication gate requires a `READY` cover image.
 
 ### 9.2 Private media

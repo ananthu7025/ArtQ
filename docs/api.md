@@ -23,7 +23,7 @@
 | Errors | `{ "error": { "code", "message", "details" } }` |
 
 ### 1.1 Error codes
-`VALIDATION_ERROR` 400 · `UNAUTHENTICATED` 401 · `SESSION_INVALID` 401 · `STEP_UP_REQUIRED` 401 · `FORBIDDEN` 403 · `ORIGIN_REJECTED` 403 · `NOT_FOUND` 404 · `VERSION_CONFLICT` 409 · `OUT_OF_STOCK` 409 · `PRICE_CHANGED` 409 · `REQUEST_IN_PROGRESS` 409 · `REQUEST_SUPERSEDED` 409 · `REFUND_EXCEEDS_CAPACITY` 409 (`details.scope` = `item` (+ `orderItemId`) / `order` / `payment`) · `REFUND_NOT_RETRYABLE` 409 · `REFUND_RECONCILIATION_REQUIRED` 409 (provider refunds on the payment not yet reconciled) · `REFUND_NOT_CANCELLABLE` 409 · `IDEMPOTENCY_KEY_REUSED` 422 · `COUPON_INVALID` / `COUPON_EXPIRED` / `COUPON_MIN_ORDER` / `COUPON_USAGE_EXCEEDED` / `COUPON_NOT_ELIGIBLE` 422 · `COD_NOT_AVAILABLE` 422 · `PINCODE_NOT_SERVICEABLE` 422 · `SHIPPING_RESTRICTED` 422 · `NOT_PUBLISHABLE` 422 · `INVALID_TRANSITION` 422 · `RETURN_NOT_ALLOWED` 422 · `OTP_INVALID` / `OTP_EXPIRED` / `MFA_INVALID` 422 · `PAYMENT_VERIFICATION_FAILED` 422 · `ACCOUNT_LOCKED` 423 · `RATE_LIMITED` 429 · `PAYMENT_PROVIDER_UNAVAILABLE` 503 · `INTERNAL` 500.
+`VALIDATION_ERROR` 400 · `UNAUTHENTICATED` 401 · `SESSION_INVALID` 401 · `INVALID_CREDENTIALS` 401 · `STEP_UP_REQUIRED` 401 · `FORBIDDEN` 403 · `NOT_VERIFIED` 403 · `ACCOUNT_BLOCKED` 403 · `ORIGIN_REJECTED` 403 · `ACCOUNT_EXISTS` 409 (set-password link for an email that already has a password) · `TOKEN_INVALID` 422 (reset / set-password link invalid, used or expired) · `NOT_FOUND` 404 · `VERSION_CONFLICT` 409 · `OUT_OF_STOCK` 409 · `PRICE_CHANGED` 409 · `REQUEST_IN_PROGRESS` 409 · `REQUEST_SUPERSEDED` 409 · `REFUND_EXCEEDS_CAPACITY` 409 (`details.scope` = `item` (+ `orderItemId`) / `order` / `payment`) · `REFUND_NOT_RETRYABLE` 409 · `REFUND_RECONCILIATION_REQUIRED` 409 (provider refunds on the payment not yet reconciled) · `REFUND_NOT_CANCELLABLE` 409 · `IDEMPOTENCY_KEY_REUSED` 422 · `COUPON_INVALID` / `COUPON_EXPIRED` / `COUPON_MIN_ORDER` / `COUPON_USAGE_EXCEEDED` / `COUPON_NOT_ELIGIBLE` 422 · `COD_NOT_AVAILABLE` 422 · `PINCODE_NOT_SERVICEABLE` 422 · `SHIPPING_RESTRICTED` 422 · `NOT_PUBLISHABLE` 422 · `INVALID_TRANSITION` 422 · `RETURN_NOT_ALLOWED` 422 · `OTP_INVALID` / `OTP_EXPIRED` / `MFA_INVALID` 422 · `PAYMENT_VERIFICATION_FAILED` 422 · `ACCOUNT_LOCKED` 423 · `RATE_LIMITED` 429 · `PAYMENT_PROVIDER_UNAVAILABLE` 503 · `INTERNAL` 500.
 
 ### 1.2 Idempotency (required header `Idempotency-Key: <uuid>` on these operations)
 
@@ -54,7 +54,9 @@ calls) and completing all require the token. When an earlier request resumes aft
 retries with the same key and receives the new owner's response (`REPLAY`) or `REQUEST_IN_PROGRESS`. Provider idempotency (refund
 attempt keys, order receipts) is stored with the resource, so resuming never changes it.
 
-Records expire after 24 h. Business-level dedupe also applies: at most one `PENDING_PAYMENT` order per cart, one open payment attempt per order, refund `idempotency_key` unique per order. Provider-facing idempotency is separate: refund attempts carry their own `X-Refund-Idempotency` key (architecture.md §10.2).
+**Other cases** (implemented in `apps/api/src/idempotency/idempotency.ts`): a missing or non-UUID key → 400 `VALIDATION_ERROR` (`details[0].location = 'headers'`); keys are compared case-insensitively. A business error (4xx such as `OUT_OF_STOCK`) is stored as the key's response, so a retry with the same key receives the same answer. An unexpected failure (5xx) **before any resource was attached** deletes the key (fenced by the token), so an immediate retry runs; after a resource was attached the key stays `PROCESSING`, the retry gets `REQUEST_IN_PROGRESS` until the lock expires and then takes over and resumes the resource.
+
+Records expire after 24 h (hourly retention job). Business-level dedupe also applies: at most one `PENDING_PAYMENT` order per cart, one open payment attempt per order, refund `idempotency_key` unique per order. Provider-facing idempotency is separate: refund attempts carry their own `X-Refund-Idempotency` key (architecture.md §10.2).
 
 ---
 
@@ -154,7 +156,7 @@ Return photos are uploaded under the order routes so the order-scoped cookie (`P
 |--------|------|-----------------|
 | POST | `/auth/signup` | `{name, email, phone?, password, marketingOptIn}` → `201 {otpSentTo:"e***@gmail.com"}` (always the same shape, even if the email exists: an existing verified account instead receives a "someone tried to sign up" email) |
 | POST | `/auth/signup/verify` | `{email, code}` → `{accessToken, user}` + refresh cookie; links verified-email guest orders; merges cart & wishlist |
-| POST | `/auth/login` | `{email, password}` → `{accessToken, user}` + cookie. `INVALID_CREDENTIALS`, `ACCOUNT_LOCKED`, `NOT_VERIFIED` |
+| POST | `/auth/login` | `{email, password}` → `{accessToken, user}` + cookie. `INVALID_CREDENTIALS` (same response for unknown email and wrong password), `ACCOUNT_LOCKED` (`details.retryAfterSeconds`), `NOT_VERIFIED` / `ACCOUNT_BLOCKED` (only after a correct password) |
 | POST | `/auth/otp/request` | `{email, purpose:'LOGIN'}` → always `{sent:true, resendAfter:30}` |
 | POST | `/auth/otp/verify` | `{email, purpose:'LOGIN', code}` → tokens + cookie |
 | POST | `/auth/refresh` | cookie only, body `{}` → `{accessToken, user}` (+ rotated cookie, or no cookie inside the grace window) |
@@ -245,17 +247,19 @@ Return photos are uploaded under the order routes so the order-scoped cookie (`P
 
 ## 4. Admin endpoints (`/admin/*`; audience admin; permission in brackets)
 
-### 4.1 Admin auth & MFA
+### 4.1 Admin auth (MFA deferred)
+**Status 2026-10-02:** the owner deferred MFA. Until it ships, admin login is email + password and step-up is a password
+re-check. The MFA endpoints below the table remain the target design (tasklist 1.6b).
+
 | Method | Path | Notes |
 |--------|------|-------|
-| POST | `/admin/auth/login` | `{email, password}` → `{challengeId, type:'MFA_LOGIN'|'MFA_ENROLL'}`. **Never returns tokens** |
-| POST | `/admin/auth/mfa/enroll/start` | `{challengeId}` → `{otpauthUri, qrSvg}` |
-| POST | `/admin/auth/mfa/enroll/confirm` | `{challengeId, code}` → `{recoveryCodes[10], accessToken}` + admin cookie |
-| POST | `/admin/auth/mfa/verify` | `{challengeId, code}` or `{challengeId, recoveryCode}` → `{accessToken}` + cookie |
-| POST | `/admin/auth/refresh` · `/admin/auth/logout` | Cookie (`Path=/v1/admin/auth`), Origin `https://admin.artq.in` |
-| POST | `/admin/auth/step-up` | `{code}` → sets `mfa_verified_at` |
-| POST | `/admin/me/recovery-codes/regenerate` | Step-up |
-| GET | `/admin/me` | `{user, permissions[]}`: the SPA hides navigation and actions without permission, and the server enforces |
+| POST | `/admin/auth/login` | `{email, password}` → `{accessToken, user}` + admin cookie. Staff roles only; a customer account, wrong password and unknown email all return the same 401 `INVALID_CREDENTIALS`; shared lockout (`ACCOUNT_LOCKED`); `ACCOUNT_BLOCKED`. Audited (`admin.login`) |
+| POST | `/admin/auth/refresh` · `/admin/auth/logout` | Cookie `__Secure-aq_admin_rt` (`Path=/v1/admin/auth`, 12 h idle / 7 d absolute), Origin from `ADMIN_ORIGINS`; same rotation, grace and reuse rules as the storefront |
+| POST | `/admin/auth/logout-all` | Bearer (admin) → revoke all sessions |
+| POST | `/admin/auth/step-up` | Bearer (admin), `{password}` → `{stepUpUntil}` (10 min, this session only); wrong passwords count toward the lockout. Audited (`admin.step_up`) |
+| GET | `/admin/me` | `{user}` (task 1.7 adds `permissions[]`): the SPA hides navigation and actions without permission, and the server enforces |
+
+Target MFA endpoints (deferred): `POST /admin/auth/login` → `{challengeId, type:'MFA_LOGIN'|'MFA_ENROLL'}` (no tokens); `POST /admin/auth/mfa/enroll/start` `{challengeId}` → `{otpauthUri, qrSvg}`; `POST /admin/auth/mfa/enroll/confirm` `{challengeId, code}` → `{recoveryCodes[10], accessToken}` + cookie; `POST /admin/auth/mfa/verify` `{challengeId, code | recoveryCode}` → `{accessToken}` + cookie; step-up `{code}`; `POST /admin/me/recovery-codes/regenerate` (step-up).
 
 ### 4.2 Dashboard & search
 `GET /admin/dashboard?range=today|7d|30d` [dashboard:read] → `{revenue, orders, aov, newCustomers, salesSeries[], ordersByStatus, pendingActions:{toConfirm, toPack, toShip, returnsToDecide, openExceptions, restockRequests, messages}, lowStock[], topProducts[]}`.
@@ -380,9 +384,13 @@ CRUD `/admin/product-types`, `/admin/categories`, `/admin/techniques` (image med
 | `/auth/login`, `/admin/auth/login` | 10/min/IP; 5 failures → 15-min account lock |
 | `/admin/auth/mfa/*` | 5 attempts per challenge; 20/min/IP |
 | `/auth/otp/request`, `/orders/:n/access/request` | 5/hour/target, 20/hour/IP, 30 s cooldown |
+| `/auth/signup`, `/auth/password/forgot` | Share the 20/hour/IP email-sending budget with `/auth/otp/request` (each sends an email) |
+| `/auth/signup/verify`, `/auth/otp/verify`, `/auth/password/reset`, `/auth/set-password` | 30/min/IP (in addition to per-code attempt caps) |
 | OTP verify | 5 attempts per code |
-| `/auth/refresh` | 30/min/session |
+| `/auth/refresh` | 30/min/session (session found from the cookie's hash; unknown cookies count against the IP) |
 | `/checkout/*`, `/orders/:n/payment/retry` | 20/min/cart |
 | `/contact`, `/custom-work`, `/newsletter/subscribe`, `/uploads/presign` | 5/min/IP |
 | `/search/suggest` | 60/min/IP |
 | Default | 300/min/IP; admin 600/min/user |
+
+Fixed windows counted in Redis (`rl:<bucket>:<key>`); IPv6 clients are keyed by /64. 429 `RATE_LIMITED` carries `Retry-After` and `details.retryAfterSeconds`; every limited response has `RateLimit-Limit/-Remaining/-Reset`. If Redis is unavailable requests are allowed (logged): the account lockout and OTP caps in PostgreSQL still apply.

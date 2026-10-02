@@ -24,5 +24,10 @@ Read `docs/README.md` first; `docs/tasklist.md` is the plan and `docs/architectu
 
 ## Architecture guard-rails
 - `apps/web` is frontend only: no `app/api/**` route handlers, no `"use server"` (enforced by `pnpm lint:boundaries`).
-- All money/stock transactions go through the `aq_*` database functions in `docs/database.md` §6b.
+- All money/stock transactions go through the `aq_*` database functions in `docs/database.md` §6b, called via the typed
+  wrappers in `apps/api/src/db/functions.ts` (one wrapper per function, no logic; enforced by `test/db-artifacts.test.ts`).
+- Database changes: the initial schema and migrations `0001`–`0003` are generated from `docs/database.md`
+  (`pnpm --filter @artq/api db:from-docs`; `pnpm lint` fails on drift). Later changes are new migrations `0004+`, additive
+  only (expand → migrate → contract, architecture.md §12); destructive SQL needs a `-- contract-phase: <reason>` line or
+  `pnpm lint` fails.
 - Pinned toolchain: see `docs/compatibility.md` (Node 24, pnpm 10.34.6, TypeScript 6.0.3, Prisma 6.19.3).

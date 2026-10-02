@@ -1,9 +1,22 @@
 import { PrismaClient } from '@prisma/client';
+import { Queue } from 'bullmq';
 import { Redis } from 'ioredis';
 import { pino } from 'pino';
 import { createApp } from './app.js';
+import { createAdminRouter } from './admin/router.js';
+import { adminAuthRouter } from './auth/admin-routes.js';
+import { authRouter } from './auth/routes.js';
+import { DEFAULT_AUTH_TIMINGS, AuthService } from './auth/service.js';
+import { RedisSessionCache } from './auth/session-cache.js';
 import { ConfigError, loadEnv } from './config/env.js';
 import { makeReadinessChecks } from './lib/readiness.js';
+import { RedisRateLimiter } from './middleware/rateLimit.js';
+import { jobId } from './jobs/ids.js';
+import { QUEUE } from './jobs/registry.js';
+import { mediaServiceFromEnv } from './media/factory.js';
+import { customerMediaRouter, registerAdminMediaRoutes } from './media/routes.js';
+import { razorpayProvider } from './webhooks/provider.js';
+import { WEBHOOK_QUEUE, webhookRouter } from './webhooks/inbox.js';
 
 let env;
 try { env = loadEnv(); }
@@ -17,17 +30,47 @@ const prisma = new PrismaClient({ datasourceUrl: env.DATABASE_URL });
 const redis = new Redis(env.REDIS_URL, { lazyConnect: true, maxRetriesPerRequest: 1 });
 redis.on('error', (err) => log.warn({ err: err.message }, 'redis connection error'));
 
+const jwt = { secret: new TextEncoder().encode(env.AUTH_JWT_SECRET), issuer: env.AUTH_JWT_ISSUER };
+const cache = new RedisSessionCache(redis, 60, (op, err) => log.warn({ op, err: String(err) }, 'session cache unavailable'));
+const service = new AuthService(prisma, cache, {
+  ...DEFAULT_AUTH_TIMINGS, jwt, otpPepper: env.AUTH_OTP_PEPPER, linkSecret: env.AUTH_LINK_SECRET, webUrl: env.WEB_URL,
+});
+
+const limiter = new RedisRateLimiter(redis);
+const onRateLimitError = (err: unknown) => log.warn({ err: String(err) }, 'rate limiter unavailable; request allowed');
+
+// Admin feature modules (Phase 2+) register on admin.routes; auth, rate limit and audit are wired by the factory.
+const admin = createAdminRouter({ prisma, cache, jwt, limiter, onRateLimitError, log, hasRecentStepUp: (sid) => service.hasRecentStepUp(sid) });
+
+const ru = new URL(env.REDIS_URL);
+const webhookQueue = new Queue(WEBHOOK_QUEUE, { connection: { host: ru.hostname, port: Number(ru.port || 6379), ...(ru.password ? { password: decodeURIComponent(ru.password) } : {}), maxRetriesPerRequest: 1, enableOfflineQueue: false } });
+webhookQueue.on('error', (err) => log.warn({ err: err.message }, 'webhook queue connection error'));
+const mediaQueue = new Queue(QUEUE.mediaProcess, { connection: webhookQueue.opts.connection });
+mediaQueue.on('error', (err) => log.warn({ err: err.message }, 'media queue connection error'));
+// A unique job id per enqueue: processing is claimed by a status transition, so a duplicate job is harmless.
+const media = mediaServiceFromEnv(env, prisma, async (id) => { await mediaQueue.add('media.process', { id }, { jobId: jobId('media', id, Date.now()), attempts: 3, backoff: { type: 'exponential', delay: 10_000 }, removeOnComplete: true }); });
+registerAdminMediaRoutes(admin, media, prisma);
+
 const app = createApp({
   version: env.APP_VERSION,
-  corsOrigins: env.CORS_ORIGINS,
+  origins: { storefront: env.STOREFRONT_ORIGINS, admin: env.ADMIN_ORIGINS },
   log,
   readiness: makeReadinessChecks(prisma, redis),
+  rateLimiter: limiter,
+  onRateLimitError,
+  routes: [
+    authRouter({ prisma, cache, jwt, service, env: env.NODE_ENV, refreshMaxAgeS: DEFAULT_AUTH_TIMINGS.refreshIdleS, limiter, onRateLimitError }),
+    adminAuthRouter({ prisma, cache, jwt, service, env: env.NODE_ENV, limiter, onRateLimitError }),
+    customerMediaRouter({ prisma, cache, jwt }, media),
+    webhookRouter({ prisma, queue: webhookQueue, providers: [razorpayProvider(env.RAZORPAY_WEBHOOK_SECRET || undefined)], log }),
+    admin.router,
+  ],
 });
 
 const server = app.listen(env.PORT, () => log.info({ port: env.PORT }, 'api listening'));
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {
   process.on(sig, () => {
     log.info({ sig }, 'shutting down');
-    server.close(async () => { await prisma.$disconnect(); redis.disconnect(); process.exit(0); });
+    server.close(async () => { await mediaQueue.close(); await webhookQueue.close(); await prisma.$disconnect(); redis.disconnect(); process.exit(0); });
   });
 }

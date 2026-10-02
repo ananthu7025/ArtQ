@@ -3,8 +3,12 @@ import { ConfigError, loadEnv } from '../src/config/env.js';
 
 const base = {
   NODE_ENV: 'development', DATABASE_URL: 'postgresql://artq:artq@localhost:5432/artq',
-  REDIS_URL: 'redis://localhost:6379', CORS_ORIGINS: 'http://localhost:3000, http://localhost:5173',
+  REDIS_URL: 'redis://localhost:6379', STOREFRONT_ORIGINS: 'http://localhost:3000, http://127.0.0.1:3000', ADMIN_ORIGINS: 'http://localhost:5173',
+  AUTH_JWT_SECRET: 'dev-insecure-jwt-secret-0123456789abcdef', AUTH_OTP_PEPPER: 'dev-insecure-otp-pepper-0123',
+  AUTH_LINK_SECRET: 'dev-insecure-link-secret-0123456789abcdef', WEB_URL: 'http://localhost:3000',
+  S3_ENDPOINT: 'http://localhost:9090', S3_ACCESS_KEY_ID: 'local', S3_SECRET_ACCESS_KEY: 'local', S3_BUCKET_PUBLIC: 'artq-public', S3_BUCKET_PRIVATE: 'artq-private',
 };
+const prodSecrets = { AUTH_JWT_SECRET: 'p'.repeat(40), AUTH_OTP_PEPPER: 'q'.repeat(20), AUTH_LINK_SECRET: 'r'.repeat(40), WEB_URL: 'https://artq.in', EMAIL_TRANSPORT: 'resend', RESEND_API_KEY: 're_test', S3_ENDPOINT: 'https://acct.r2.cloudflarestorage.com' };
 const fails = (over: Record<string, string | undefined>) => {
   try { loadEnv({ ...base, ...over }); } catch (e) { expect(e).toBeInstanceOf(ConfigError); return (e as ConfigError).message; }
   throw new Error('expected ConfigError');
@@ -15,7 +19,8 @@ describe('loadEnv', () => {
     const env = loadEnv(base);
     expect(env.PORT).toBe(4000);
     expect(env.APP_VERSION).toBe('dev');
-    expect(env.CORS_ORIGINS).toEqual(['http://localhost:3000', 'http://localhost:5173']);
+    expect(env.STOREFRONT_ORIGINS).toEqual(['http://localhost:3000', 'http://127.0.0.1:3000']);
+    expect(env.ADMIN_ORIGINS).toEqual(['http://localhost:5173']);
   });
   it('coerces PORT', () => { expect(loadEnv({ ...base, PORT: '8080' }).PORT).toBe(8080); });
   it('names every missing variable', () => {
@@ -27,12 +32,74 @@ describe('loadEnv', () => {
   it('rejects a non-redis URL', () => { expect(fails({ REDIS_URL: 'http://localhost:6379' })).toContain('redis'); });
   it('rejects an out-of-range port', () => { expect(fails({ PORT: '70000' })).toContain('PORT'); });
   it('rejects CORS entries that are not bare origins', () => {
-    expect(fails({ CORS_ORIGINS: 'http://localhost:3000/path' })).toContain('CORS_ORIGINS');
-    expect(fails({ CORS_ORIGINS: '*' })).toContain('CORS_ORIGINS');
-    expect(fails({ CORS_ORIGINS: '' })).toContain('CORS_ORIGINS');
+    expect(fails({ STOREFRONT_ORIGINS: 'http://localhost:3000/path' })).toContain('STOREFRONT_ORIGINS');
+    expect(fails({ ADMIN_ORIGINS: '*' })).toContain('ADMIN_ORIGINS');
+    expect(fails({ STOREFRONT_ORIGINS: '' })).toContain('STOREFRONT_ORIGINS');
   });
   it('rejects plain-http origins in production', () => {
-    expect(fails({ NODE_ENV: 'production', CORS_ORIGINS: 'http://artq.in' })).toContain('https');
-    expect(loadEnv({ ...base, NODE_ENV: 'production', CORS_ORIGINS: 'https://artq.in,https://admin.artq.in' }).CORS_ORIGINS).toHaveLength(2);
+    expect(fails({ ...prodSecrets, NODE_ENV: 'production', STOREFRONT_ORIGINS: 'http://artq.in', ADMIN_ORIGINS: 'https://admin.artq.in' })).toContain('STOREFRONT_ORIGINS: production origins must use https://');
+    expect(fails({ ...prodSecrets, NODE_ENV: 'production', STOREFRONT_ORIGINS: 'https://artq.in', ADMIN_ORIGINS: 'http://admin.artq.in' })).toContain('ADMIN_ORIGINS: production origins must use https://');
+    expect(loadEnv({ ...base, ...prodSecrets, NODE_ENV: 'production', STOREFRONT_ORIGINS: 'https://artq.in,https://www.artq.in', ADMIN_ORIGINS: 'https://admin.artq.in' }).STOREFRONT_ORIGINS).toHaveLength(2);
+  });
+
+  describe('auth settings', () => {
+    it('defaults the issuer per environment', () => {
+      expect(loadEnv(base).AUTH_JWT_ISSUER).toBe('artq-development');
+      expect(loadEnv({ ...base, AUTH_JWT_ISSUER: 'custom' }).AUTH_JWT_ISSUER).toBe('custom');
+    });
+    it.each(['AUTH_JWT_SECRET', 'AUTH_OTP_PEPPER', 'AUTH_LINK_SECRET', 'WEB_URL'])('requires %s', (k) => {
+      expect(fails({ [k]: undefined })).toContain(k);
+    });
+    it('rejects short secrets and a non-origin WEB_URL', () => {
+      expect(fails({ AUTH_JWT_SECRET: 'short' })).toContain('AUTH_JWT_SECRET');
+      expect(fails({ AUTH_OTP_PEPPER: 'short' })).toContain('AUTH_OTP_PEPPER');
+      expect(fails({ WEB_URL: 'http://localhost:3000/path' })).toContain('WEB_URL');
+    });
+    it('rejects the same secret for JWTs and links', () => {
+      expect(fails({ AUTH_LINK_SECRET: base.AUTH_JWT_SECRET })).toContain('must differ');
+    });
+    it.each(['staging', 'production'])('refuses development placeholders and http WEB_URL in %s', (NODE_ENV) => {
+      const msg = fails({ NODE_ENV, STOREFRONT_ORIGINS: 'https://artq.in', ADMIN_ORIGINS: 'https://admin.artq.in', WEB_URL: 'http://artq.in' });
+      for (const k of ['AUTH_JWT_SECRET', 'AUTH_OTP_PEPPER', 'AUTH_LINK_SECRET', 'WEB_URL']) expect(msg).toContain(k);
+      expect(loadEnv({ ...base, ...prodSecrets, NODE_ENV, STOREFRONT_ORIGINS: 'https://artq.in', ADMIN_ORIGINS: 'https://admin.artq.in' }).AUTH_JWT_ISSUER).toBe(`artq-${NODE_ENV}`);
+    });
+  });
+
+  it('requires both origin lists and keeps them disjoint', () => {
+    expect(fails({ STOREFRONT_ORIGINS: undefined })).toContain('STOREFRONT_ORIGINS');
+    expect(fails({ ADMIN_ORIGINS: undefined })).toContain('ADMIN_ORIGINS');
+    expect(fails({ ADMIN_ORIGINS: 'http://localhost:5173,http://localhost:3000' })).toContain('must not overlap');
+  });
+
+  describe('email settings', () => {
+    it('defaults to SMTP on localhost:1025', () => {
+      expect(loadEnv(base)).toMatchObject({ EMAIL_TRANSPORT: 'smtp', SMTP_HOST: 'localhost', SMTP_PORT: 1025 });
+    });
+    it('resend needs an API key', () => {
+      expect(fails({ EMAIL_TRANSPORT: 'resend' })).toContain('RESEND_API_KEY');
+      expect(fails({ EMAIL_TRANSPORT: 'resend', RESEND_API_KEY: '' })).toContain('RESEND_API_KEY');
+      expect(loadEnv({ ...base, EMAIL_TRANSPORT: 'resend', RESEND_API_KEY: 're_x' }).EMAIL_TRANSPORT).toBe('resend');
+    });
+    it('production refuses SMTP (no idempotency keys); unknown transports are rejected', () => {
+      const prod = { ...prodSecrets, NODE_ENV: 'production', STOREFRONT_ORIGINS: 'https://artq.in', ADMIN_ORIGINS: 'https://admin.artq.in' };
+      expect(fails({ ...prod, EMAIL_TRANSPORT: 'smtp' })).toContain('EMAIL_TRANSPORT: production must use');
+      expect(loadEnv({ ...base, ...prod, EMAIL_TRANSPORT: 'resend', RESEND_API_KEY: 're_x' }).NODE_ENV).toBe('production');
+      expect(fails({ EMAIL_TRANSPORT: 'carrier-pigeon' })).toContain('EMAIL_TRANSPORT');
+    });
+  });
+
+  describe('object storage settings', () => {
+    it('defaults region, path style and the public base URL', () => {
+      expect(loadEnv(base)).toMatchObject({ S3_REGION: 'auto', S3_FORCE_PATH_STYLE: true, MEDIA_PUBLIC_BASE_URL: 'http://localhost:9090/artq-public' });
+      expect(loadEnv({ ...base, S3_FORCE_PATH_STYLE: 'false', MEDIA_PUBLIC_BASE_URL: 'https://media.artq.in' })).toMatchObject({ S3_FORCE_PATH_STYLE: false, MEDIA_PUBLIC_BASE_URL: 'https://media.artq.in' });
+    });
+    it.each(['S3_ENDPOINT', 'S3_ACCESS_KEY_ID', 'S3_SECRET_ACCESS_KEY', 'S3_BUCKET_PUBLIC', 'S3_BUCKET_PRIVATE'])('requires %s', (k) => {
+      expect(fails({ [k]: undefined })).toContain(k);
+    });
+    it('rejects one bucket for both, a bad path-style flag and plain http in production', () => {
+      expect(fails({ S3_BUCKET_PRIVATE: 'artq-public' })).toContain('must differ from S3_BUCKET_PUBLIC');
+      expect(fails({ S3_FORCE_PATH_STYLE: 'yes' })).toContain('S3_FORCE_PATH_STYLE');
+      expect(fails({ ...prodSecrets, NODE_ENV: 'production', STOREFRONT_ORIGINS: 'https://artq.in', ADMIN_ORIGINS: 'https://admin.artq.in', S3_ENDPOINT: 'http://r2.example' })).toContain('S3_ENDPOINT: production must use https://');
+    });
   });
 });

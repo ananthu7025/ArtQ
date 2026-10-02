@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -8,7 +9,7 @@ import { envSchema, loadEnv } from '../src/config/env.js';
 const root = join(import.meta.dirname, '..', '..', '..');
 const compose = parse(readFileSync(join(root, 'docker-compose.yml'), 'utf8')) as { services: Record<string, { image: string; command?: string[]; environment?: Record<string, string>; ports?: string[] }> };
 const exampleEnv = Object.fromEntries(readFileSync(join(root, '.env.example'), 'utf8').split('\n')
-  .filter((l) => l.trim() && !l.startsWith('#')).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]));
+  .filter((l) => l.trim() && !l.startsWith('#')).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1).replace(/^"(.*)"$/, '$1')]));
 
 describe('docker-compose.yml', () => {
   it('defines the four local services', () => {
@@ -36,6 +37,11 @@ describe('.env.example', () => {
   });
   it('is a valid API configuration as-is', () => {
     expect(() => loadEnv(exampleEnv)).not.toThrow();
+  });
+  it('can be sourced by a POSIX shell (`set -a; . ./.env.example`) with the same values', () => {
+    const out = execFileSync('sh', ['-c', 'set -a; . ./.env.example; set +a; env'], { cwd: root, env: {} }).toString();
+    const shellEnv = Object.fromEntries(out.split('\n').filter((l) => l.includes('=')).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]));
+    for (const [k, v] of Object.entries(exampleEnv)) expect(shellEnv[k], k).toBe(v);
   });
   it('points the API at the compose services', () => {
     expect(exampleEnv.DATABASE_URL).toContain('localhost:55432');

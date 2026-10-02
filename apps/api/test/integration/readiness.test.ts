@@ -14,7 +14,7 @@ const appWith = (dbUrl: string, redisUrl: string) => {
   const prisma = new PrismaClient({ datasourceUrl: dbUrl });
   const redis = new Redis(redisUrl, { lazyConnect: true, maxRetriesPerRequest: 0, retryStrategy: () => null });
   redis.on('error', () => {});
-  const app = createApp({ version: 'it', corsOrigins: ['http://localhost:3000'], readiness: makeReadinessChecks(prisma, redis), readinessTimeoutMs: 3000 });
+  const app = createApp({ version: 'it', origins: { storefront: ['http://localhost:3000'], admin: ['http://localhost:5173'] }, readiness: makeReadinessChecks(prisma, redis), readinessTimeoutMs: 3000 });
   return { app, close: async () => { await prisma.$disconnect(); redis.disconnect(); } };
 };
 

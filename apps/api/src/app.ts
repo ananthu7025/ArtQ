@@ -5,12 +5,18 @@ import { pino, type Logger } from 'pino';
 import { pinoHttp } from 'pino-http';
 import { errorHandler, notFound } from './middleware/errorHandler.js';
 import { jsonOnly } from './middleware/jsonOnly.js';
+import { originPolicy, type OriginLists } from './middleware/originGuard.js';
+import { RATE_LIMITS, rateLimit, type RateLimiter } from './middleware/rateLimit.js';
 import { requestId } from './middleware/requestId.js';
 import { healthRouter, type ReadinessChecks } from './routes/health.js';
 
 export type AppDeps = {
   version: string;
-  corsOrigins: readonly string[];
+  /** Allowed browser origins: storefront routes vs `/v1/admin/*` (architecture.md §5.5). CORS allows their union. */
+  origins: OriginLists;
+  /** Enables the default per-IP limit (api.md §6); routes add their own limits with the same limiter. */
+  rateLimiter?: RateLimiter;
+  onRateLimitError?: (e: unknown) => void;
   readiness: ReadinessChecks;
   readinessTimeoutMs?: number;
   log?: Logger;
@@ -18,10 +24,10 @@ export type AppDeps = {
   routes?: Router[];
 };
 
-// Middleware order follows architecture.md §4. Auth, rate limiting, cart token and idempotency arrive with their tasks.
+// Middleware order follows architecture.md §4. Cart token and idempotency arrive with their tasks.
 export function createApp(deps: AppDeps): Express {
   const log = deps.log ?? pino({ level: 'silent' });
-  const allowed = new Set(deps.corsOrigins);
+  const allowed = new Set([...deps.origins.storefront, ...deps.origins.admin]);
   const app = express();
   app.disable('x-powered-by');
   app.set('trust proxy', 1);
@@ -34,8 +40,16 @@ export function createApp(deps: AppDeps): Express {
     credentials: true,
     maxAge: 600,
   }));
+  app.use(originPolicy(deps.origins));
+  if (deps.rateLimiter) {
+    const limiter = deps.rateLimiter;
+    const onError = deps.onRateLimitError;
+    const byIp = rateLimit({ limiter, name: 'default', rule: RATE_LIMITS.default, ...(onError ? { onError } : {}) });
+    app.use((req, res, next) => (req.path.startsWith('/health') ? next() : byIp(req, res, next)));
+  }
   app.use(jsonOnly);
-  app.use(express.json({ limit: '1mb', type: 'application/json' }));
+  // The raw bytes are kept for webhook signature checks (HMAC over exactly what the provider sent).
+  app.use(express.json({ limit: '1mb', type: 'application/json', verify: (req, _res, buf) => { (req as express.Request).rawBody = buf; } }));
   app.use(healthRouter(deps.version, deps.readiness, deps.readinessTimeoutMs));
   for (const r of deps.routes ?? []) app.use('/v1', r);
   app.use(notFound);
