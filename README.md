@@ -32,6 +32,7 @@ docker compose up -d --wait          # PostgreSQL 16 :55432, Redis 7 :56379, S3M
 cp .env.example apps/api/.env
 pnpm --filter @artq/api migrate:deploy             # apply prisma/migrations to the compose database
 pnpm --filter @artq/api db:seed --postal-codes prisma/seed-data/postal-codes.sample.csv   # zones, states, settings (add SEED_ADMIN_EMAIL/SEED_ADMIN_PASSWORD for the first super admin)
+pnpm --filter @artq/api db:seed:demo               # local demo data: the client's workbook via the real import (types, categories, 64 draft products) + sample contact; re-runnable, local databases only
 pnpm --filter @artq/api test:compose               # smoke tests against the running stack
 pnpm --filter @artq/api test:compose:integration   # integration suites against the containers
 docker compose down                  # (add -v to delete data)
