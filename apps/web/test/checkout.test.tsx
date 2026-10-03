@@ -59,7 +59,7 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 let keys: number;
-const flowDeps = (pay: FlowDeps['pay'] = async () => ({ kind: 'dismissed' }), pollForMs = 60): FlowDeps => { keys = 0; return { pay, newKey: () => `key-${++keys}`, pollMs: 5, pollForMs }; };
+const flowDeps = (pay: FlowDeps['pay'] = async () => ({ kind: 'dismissed' }), pollForMs = 60): FlowDeps => { keys = 0; return { pay, newKey: () => `key-${++keys}`, pollMs: 5, pollForMs, inProgressMs: 5 }; };
 const page = (deps = flowDeps(), session?: StoreSession) => render(
   session
     ? <AuthProvider session={session}><ShopProvider><CheckoutPage flowDeps={deps} /><SiteToaster /></ShopProvider></AuthProvider>
@@ -173,6 +173,28 @@ describe('placing and paying', () => {
       shippingAddress: { fullName: 'Hema R', phone: '9847012345', line1: '12 Rose Villa', line2: null, landmark: null, city: 'Ernakulam', stateId: 32, pincode: '682011', label: 'HOME', save: false },
       billingSameAsShipping: true, billingAddress: null, gstin: null, businessName: null, paymentMethod: 'COD', customerNote: null, expectedTotal: 58_900, acceptTerms: true,
     });
+  });
+
+  it('changing the payment method disables Place order until the new quote arrives (never a stale total)', async () => {
+    const u = userEvent.setup();
+    page();
+    await fillGuest(u);
+    expect((screen.getByRole('button', { name: 'Place order · ₹549' }) as HTMLButtonElement).disabled).toBe(false);
+    await u.click(screen.getByLabelText(/^Cash on delivery/));
+    expect((screen.getByRole('button', { name: /^Place order/ }) as HTMLButtonElement).disabled).toBe(true);
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Place order · ₹589' }) as HTMLButtonElement).disabled).toBe(false));
+  });
+
+  it('409 REQUEST_IN_PROGRESS (the first request is still running) → the same key again until the answer', async () => {
+    const u = userEvent.setup();
+    let n = 0;
+    routes['POST /checkout/initiate'] = () => (++n < 3 ? apiError(409, 'REQUEST_IN_PROGRESS', 'Still processing') : json({ orderNumber: 'AQ9', status: 'PLACED', total: 58_900 }, 201));
+    page();
+    await fillGuest(u);
+    await u.click(screen.getByLabelText(/^Cash on delivery/));
+    await u.click(await screen.findByRole('button', { name: 'Place order · ₹589' }));
+    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/checkout/success/AQ9'));
+    expect(sent('POST', '/checkout/initiate').map((c) => c.headers['Idempotency-Key'])).toEqual(['key-1', 'key-1', 'key-1']);
   });
 
   it('online: Razorpay paid → verified → placed', async () => {

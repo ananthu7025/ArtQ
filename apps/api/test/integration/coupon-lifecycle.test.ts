@@ -139,3 +139,34 @@ describe('over-limit (late capture after the last use was taken)', () => {
     expect(await counts(c)).toEqual({ reserved_count: 0, redeemed_count: 1 });
   });
 });
+
+describe('aq_place_cod_order (migration 0007)', () => {
+  const cod = async (o: OrderFixture) => { await prisma.$executeRawUnsafe(`UPDATE orders SET payment_method = 'COD' WHERE id = $1`, o.orderId); return o; };
+  const place = (o: OrderFixture) => tx(prisma, (t) => fn.placeCodOrder(t, o.orderId, 'CUSTOMER'));
+  it('PLACED + COD_PENDING once: coupon redeemed, sold counted, history and order.placed; a repeat is DUPLICATE and changes nothing', async () => {
+    const c = await coupon(5, null);
+    const [o] = await orders(1) as [OrderFixture];
+    await cod(o);
+    await reserve(o, c);
+    expect(await place(o)).toBe('PLACED');
+    expect(await place(o)).toBe('DUPLICATE');
+    expect(await one(prisma, `SELECT status, payment_status, expires_at FROM orders WHERE id = $1`, o.orderId)).toEqual({ status: 'PLACED', payment_status: 'COD_PENDING', expires_at: null });
+    expect(await redemption(o.orderId)).toEqual({ status: 'REDEEMED', over_limit: false });
+    expect(await counts(c)).toEqual({ reserved_count: 0, redeemed_count: 1 });
+    expect(await one(prisma, `SELECT count(*)::int AS n FROM order_status_history WHERE order_id = $1`, o.orderId)).toEqual({ n: 2 });
+    expect(await one(prisma, `SELECT count(*)::int AS n FROM outbox_events WHERE event_type = 'order.placed' AND aggregate_id = $1`, o.orderNumber)).toEqual({ n: 1 });
+    expect(await one(prisma, `SELECT p.sold_count FROM products p JOIN order_items oi ON oi.product_id = p.id WHERE oi.order_id = $1`, o.orderId)).toEqual({ sold_count: 1 });
+    expect(await one(prisma, `SELECT status FROM inventory_reservations WHERE order_id = $1`, o.orderId)).toEqual({ status: 'ACTIVE' });   // held until dispatch
+  });
+  it('refuses an online order, an expired one, and an order without its reservations', async () => {
+    const [online, expired] = await orders(2) as [OrderFixture, OrderFixture];
+    await expect(place(online)).rejects.toThrow('INVALID_TRANSITION');
+    await cod(expired); await expire(expired);
+    await expect(place(expired)).rejects.toThrow('INVALID_TRANSITION');
+    const cat = await catalog(prisma, [[{ price: 10_000, onHand: 5 }]]);
+    const unreserved = await tx(prisma, (t) => order(t, { lines: [{ variantId: cat.products[0]!.variantIds[0]!, qty: 1 }], reserve: false }));
+    await cod(unreserved);
+    await expect(place(unreserved)).rejects.toThrow('INVARIANT');
+    await expect(tx(prisma, (t) => fn.placeCodOrder(t, 999_999, 'CUSTOMER'))).rejects.toThrow('NOT_FOUND');
+  });
+});

@@ -299,7 +299,7 @@ Every transaction acquires row locks in this order and only in this order. Expli
 | From | To | Trigger | Notes |
 |------|----|---------|-------|
 | — | `PENDING_PAYMENT` | prepaid checkout initiated | reservations + coupon `RESERVED`; `expires_at = now + 30 min` |
-| — | `PLACED` | COD checkout | `payment_status = COD_PENDING`; coupon `REDEEMED` |
+| — | `PLACED` | COD checkout (`aq_place_cod_order`, migration `0007`) | `payment_status = COD_PENDING`; coupon `REDEEMED` |
 | `PENDING_PAYMENT` | `PLACED` | captured payment applied | `payment_status = PAID`; coupon `REDEEMED` |
 | `PENDING_PAYMENT` | `EXPIRED` | expiry job, **after** pre-expiry provider check finds no authorized/captured payment | reservations `RELEASED`; coupon `RELEASED` |
 | `PENDING_PAYMENT` | `CANCELLED` | customer abandons ("cancel and edit cart") / admin | same releases; any later capture → refund (§4.6) |
@@ -2626,6 +2626,7 @@ critical is left to comments. Behaviour is exercised by checks C03–C13 (review
 | `aq_adjust_on_hand`, `aq_edit_variants`, `aq_refresh_products` | Inventory page/import, catalogue editor | lock-ordered stock and catalogue writes |
 | `aq_import_initial_stock` (migration `0004`) | catalogue import | initial `on_hand` of a variant the import just created (`IMPORT_INITIAL`, stays uncounted); refuses a variant with stock or history (`STOCK_ALREADY_SET`), so retried batches never double stock; caller refreshes aggregates after locking the batch's variants |
 | `aq_reverse_coupon` (migration `0006`) | order cancellation (D-14) | a CANCELLED order's REDEEMED coupon use → `REVERSED`, `redeemed_count − 1` unless over-limit; repeated calls return false; refuses an order that is not `CANCELLED` (`INVARIANT`) |
+| `aq_place_cod_order` (migration `0007`) | checkout TX1 (COD), payment retry → COD | pending COD order → `PLACED` + `COD_PENDING`: open attempts `CLOSED`, sold counts, coupon `RESERVED → REDEEMED` (gated), cart `CONVERTED`, history, `order.placed`; `DUPLICATE` if already placed; `INVALID_TRANSITION` otherwise |
 | `aq_process_search_queue` | search worker | deferred search rebuild |
 | `aq_webhook_claim/begin/renew/complete/fail` | webhook worker + sweeper | fenced inbox leases |
 | `aq_emit`, `aq_outbox_claim`, `aq_outbox_mark_published`, `aq_outbox_publish_failed`, `aq_outbox_begin_consume`, `aq_outbox_complete` | domain functions, dispatcher, consumers | outbox deliveries |
@@ -3621,6 +3622,7 @@ END $$ LANGUAGE plpgsql;
 | `0004_import_initial_stock` | 2.7 | `aq_import_initial_stock(p_variant, p_quantity, p_import, p_actor)`: locks the variant, refuses stock already set or any movement (`STOCK_ALREADY_SET`), sets `on_hand` (never `inventory_counted_at`), inserts the `IMPORT_INITIAL` movement. Wrapper `importInitialStock` |
 | `0005_refresh_products_lock_first` | 2.8 | Replaces `aq_refresh_products`: locks each product (`FOR NO KEY UPDATE`) in one statement and computes its aggregates in the next. The `0003` version computed inside the `UPDATE` that waited for the lock, so under READ COMMITTED two transactions changing **different variants of the same product** (a stock count and a checkout, which lock only their own variants) could write aggregates missing the other's committed change (`product_aggregate_drift`). Found by the task 2.8 concurrency test; regression test in `inventory.test.ts` |
 | `0006_coupon_reverse` | 4.3 | `aq_reverse_coupon(p_order)`: locks the order (must be `CANCELLED`), moves its `REDEEMED` redemption to `REVERSED` and, unless over-limit, locks the coupon and decrements `redeemed_count` (D-14). Gated by the row transition, so a retry changes nothing. Wrapper `reverseCoupon` |
+| `0007_place_cod_order` | 4.7 | `aq_place_cod_order(p_order, p_actor)`: the COD placement step (§5 COD row) as one gated function mirroring the APPLIED branch of `aq_apply_provider_payment` without a payment; refuses an order with an authorized/captured payment or an item without an active reservation. Wrapper `placeCodOrder` |
 
 ---
 

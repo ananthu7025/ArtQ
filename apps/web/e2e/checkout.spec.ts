@@ -1,6 +1,7 @@
 // ✅ Task 4.6 in a real browser against the real API: the checkout form validates with the shared rules (messages under
 // the fields), the pincode fills in state and city, delivery and shipping come from POST /checkout/quote with the
-// seeded Kerala rates, and cash on delivery adds its fee. Placing the order (POST /checkout/initiate) arrives with 4.7.
+// seeded Kerala rates, and cash on delivery adds its fee; then a real COD order is placed (task 4.7). The e2e API has no
+// Razorpay keys, so paying online is off and the page offers cash on delivery.
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Page } from '@playwright/test';
 
@@ -37,5 +38,28 @@ test('guest checkout: errors under the fields; pincode → place and delivery; s
   await cod.check();
   await expect.poll(total).toBe(online + 40);   // the seeded ₹40 COD fee
   await expect(place).toHaveText(`Place order · ₹${(online + 40).toLocaleString('en-IN')}`);
+  await axeClean(page);
+});
+
+test('guest places a cash-on-delivery order: confirmation page, the cart is empty afterwards', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: /^Add .+ to cart$/ }).first().click();
+  await page.getByRole('dialog', { name: 'Added to your cart' }).getByRole('link', { name: 'Checkout' }).click();
+  const main = page.getByRole('main');
+  await main.getByLabel('Email', { exact: true }).fill(`e2e-cod-${Date.now()}@example.com`);
+  await main.getByLabel('Mobile number').fill('98470 12345');
+  await main.getByLabel('Full name').fill('Hema R');
+  await main.getByLabel('Phone for delivery').fill('9847012345');
+  await main.getByLabel('Pincode').fill('682011');
+  await expect(main.getByLabel('City / town')).toHaveValue('Ernakulam');
+  await main.getByLabel('House / flat, building and street').fill('12 Rose Villa');
+  await expect(main.getByText(/^We deliver here/)).toBeVisible();
+  await expect(main.getByLabel(/^Pay online/)).toBeDisabled();             // no Razorpay keys in e2e
+  await expect(main.getByLabel(/^Cash on delivery/)).toBeChecked();
+  await main.getByLabel(/I agree to the/).check();
+  await main.getByRole('button', { name: /^Place order · ₹/ }).click();
+  await expect(page).toHaveURL(/\/checkout\/success\/AQ\d+$/);
+  await expect(page.getByRole('heading', { name: 'Thank you! Your order is placed.' })).toBeVisible();
+  await expect(page.getByRole('banner').getByRole('link', { name: /^Cart, \d+ items?$/ })).toHaveAccessibleName('Cart, 0 items');
   await axeClean(page);
 });

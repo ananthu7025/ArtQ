@@ -31,6 +31,8 @@ export type FlowDeps = {
   newKey?: () => string;
   pollMs?: number;
   pollForMs?: number;
+  /** Wait before repeating a request the server says is still in progress (its Retry-After). */
+  inProgressMs?: number;
 };
 
 export function useCheckoutFlow(deps: FlowDeps = {}) {
@@ -43,6 +45,7 @@ export function useCheckoutFlow(deps: FlowDeps = {}) {
   const pay = deps.pay ?? payWithRazorpay;
   const pollMs = deps.pollMs ?? POLL_MS;
   const pollForMs = deps.pollForMs ?? POLL_FOR_MS;
+  const inProgressMs = deps.inProgressMs ?? 2000;
 
   const placed = useCallback((orderNumber: string) => { reloadCart(); setState({ step: 'placed', orderNumber }); }, [reloadCart]);
 
@@ -89,12 +92,21 @@ export function useCheckoutFlow(deps: FlowDeps = {}) {
   /** Follows an initiate/retry answer, repeating the request with the same key while the payment is starting. */
   const follow = useCallback(async (send: (key: string) => Promise<InitiateResult>) => {
     const key = (deps.newKey ?? (() => crypto.randomUUID()))();
-    let r = await send(key);
-    for (let i = 0; r.status === 'PAYMENT_STARTING' && i < 10 && alive.current; i++) { await sleep(Math.max(1, r.retryAfter) * 1000); r = await send(key); }
+    // The same key until there is an answer: 409 REQUEST_IN_PROGRESS means the first request is still running.
+    const sendOnce = async (): Promise<InitiateResult> => {
+      for (let i = 0; ; i++) {
+        try { return await send(key); } catch (e) {
+          if (!(e instanceof ApiError && e.code === 'REQUEST_IN_PROGRESS') || i >= 10 || !alive.current) throw e;
+          await sleep(inProgressMs);
+        }
+      }
+    };
+    let r = await sendOnce();
+    for (let i = 0; r.status === 'PAYMENT_STARTING' && i < 10 && alive.current; i++) { await sleep(Math.max(1, r.retryAfter) * 1000); r = await sendOnce(); }
     if (r.status === 'PLACED') { placed(r.orderNumber); return; }
     if (r.status === 'PAYMENT_STARTING') { await poll(r.orderNumber); return; }
     await payOnline(r.orderNumber, r.razorpay);
-  }, [deps.newKey, payOnline, placed, poll]);
+  }, [deps.newKey, inProgressMs, payOnline, placed, poll]);
 
   /** Place order; refusals (price changed, out of stock, validation) are thrown for the form to show. */
   const place = useCallback(async (body: unknown) => {

@@ -80,7 +80,7 @@ function CheckoutForm({ placing, place, onCod }: { placing: boolean; place: (bod
   const signedIn = user !== null;
   const [addresses, setAddresses] = useState<AddressView[] | null>(signedIn ? null : []);
   const [states, setStates] = useState<StateOption[]>([]);
-  const [quote, setQuote] = useState<CheckoutQuote | null>(null);
+  const [quote, setQuote] = useState<(CheckoutQuote & { forKey: string }) | null>(null);
   const [quoting, setQuoting] = useState(false);
   const [problem, setProblem] = useState<ReactNode>(null);
   const expected = quote?.cart.totals.total ?? 0;
@@ -110,7 +110,7 @@ function CheckoutForm({ placing, place, onCod }: { placing: boolean; place: (bod
     const t = setTimeout(() => {
       setQuoting(true);
       api<CheckoutQuote>('POST', '/checkout/quote', { ...quoteFor, paymentMethod: method })
-        .then((q) => { if (live) { setQuote(q); onCod({ allowed: q.cod.available, fee: q.cod.fee }); } })
+        .then((q) => { if (live) { setQuote({ ...q, forKey: quoteKey }); onCod({ allowed: q.cod.available, fee: q.cod.fee }); } })
         .catch((e: unknown) => { if (live) setProblem(errorText(e)); })
         .finally(() => { if (live) setQuoting(false); });
     }, 250);
@@ -118,11 +118,16 @@ function CheckoutForm({ placing, place, onCod }: { placing: boolean; place: (bod
   }, [quoteKey, requote]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const shown = quoteFor ? quote : null;
+  // Place order waits for the quote of exactly what is chosen now (address, payment method, cart): no stale total.
+  const settled = shown !== null && shown.forKey === quoteKey && !quoting;
   const c = shown?.cart ?? cart!;
   const ship = c.totals.shipping;
   const cod = shown?.cod ?? null;
   // A choice that is no longer possible switches back to paying online.
-  useEffect(() => { if (method === 'COD' && cod && !cod.available && cod.reason !== 'NO_DESTINATION') setValue('paymentMethod', 'RAZORPAY'); }, [cod, method, setValue]);
+  useEffect(() => {
+    if (method === 'COD' && cod && !cod.available && cod.reason !== 'NO_DESTINATION') setValue('paymentMethod', 'RAZORPAY');
+    if (method === 'RAZORPAY' && shown?.onlineEnabled === false && cod?.available) setValue('paymentMethod', 'COD');   // online payments are off
+  }, [cod, method, shown?.onlineEnabled, setValue]);
   const blocking = (shown?.blocking ?? ['DESTINATION_REQUIRED']).filter((b) => !b.startsWith('UNAVAILABLE') && !b.startsWith('INSUFFICIENT_STOCK'));
   const unavailable = c.items.some((i) => !i.available);
   const shipProblem = ship.problem ? SHIPPING_PROBLEM[ship.problem] : null;
@@ -130,8 +135,9 @@ function CheckoutForm({ placing, place, onCod }: { placing: boolean; place: (bod
   const submit = handleSubmit(async (body) => {
     setProblem(null);
     if (!shown) { setProblem('Add your delivery address.'); return; }
+    if (!settled) return;   // a new quote is on its way; the button is disabled meanwhile
     try {
-      await place(body);   // the shared schema's output: normalised mobile, trimmed lines, the quoted total
+      await place({ ...(body as object), expectedTotal: shown.cart.totals.total });   // the shared schema's output, with the latest quoted total
     } catch (e) {
       if (applyServerErrors(e, setError, CHECKOUT_FIELDS as unknown as Path<CheckoutValues>[])) return;
       if (e instanceof ApiError) {
@@ -254,7 +260,7 @@ function CheckoutForm({ placing, place, onCod }: { placing: boolean; place: (bod
         {unavailable && <FormAlert>Some items in your cart are no longer available. <Link href="/cart" className="underline">Review your cart</Link></FormAlert>}
         {!unavailable && shown && blocking.length > 0 && !blocking.every((b) => PLACE_PROBLEM[b] === undefined) && <p className="text-sm text-danger-700">{blocking.map((b) => PLACE_PROBLEM[b]).filter(Boolean).join(' ')}</p>}
         {problem && <FormAlert>{problem}</FormAlert>}
-        <button type="submit" disabled={placing || unavailable} className={`${primaryButton} w-full`}>{placing ? 'Placing your order…' : `Place order · ${formatINR(c.totals.total)}`}</button>
+        <button type="submit" disabled={placing || unavailable || (shown !== null && !settled)} className={`${primaryButton} w-full`}>{placing ? 'Placing your order…' : `Place order · ${formatINR(c.totals.total)}`}</button>
         <p className="text-center text-xs text-ink-500">Your items are held for 30 minutes while you pay.</p>
       </aside>
     </form>

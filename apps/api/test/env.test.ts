@@ -71,6 +71,24 @@ describe('loadEnv', () => {
     expect(fails({ ADMIN_ORIGINS: 'http://localhost:5173,http://localhost:3000' })).toContain('must not overlap');
   });
 
+  describe('Razorpay keys (task 4.7)', () => {
+    it('optional (online payments off); both or neither; the id must look like a Razorpay key', () => {
+      expect(loadEnv(base).RAZORPAY_KEY_ID).toBeUndefined();
+      expect(loadEnv({ ...base, RAZORPAY_KEY_ID: '', RAZORPAY_KEY_SECRET: '' }).RAZORPAY_KEY_ID).toBeUndefined();   // empty = not set
+      expect(loadEnv({ ...base, RAZORPAY_KEY_ID: 'rzp_test_AbC123', RAZORPAY_KEY_SECRET: 'secret-12' }).RAZORPAY_KEY_ID).toBe('rzp_test_AbC123');
+      expect(fails({ RAZORPAY_KEY_ID: 'rzp_test_AbC123' })).toContain('set both RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET');
+      expect(fails({ RAZORPAY_KEY_SECRET: 'secret-12' })).toContain('set both');
+      expect(fails({ RAZORPAY_KEY_ID: 'key_123', RAZORPAY_KEY_SECRET: 'secret-12' })).toContain('rzp_test_');
+    });
+    it('live keys only in production, test keys never in production', () => {
+      expect(fails({ RAZORPAY_KEY_ID: 'rzp_live_AbC123', RAZORPAY_KEY_SECRET: 'secret-12' })).toContain('live keys are only allowed in production');
+      expect(fails({ NODE_ENV: 'staging', ...prodSecrets, RAZORPAY_KEY_ID: 'rzp_live_AbC123', RAZORPAY_KEY_SECRET: 'secret-12' })).toContain('live keys are only allowed in production');
+      const prod = { ...prodSecrets, NODE_ENV: 'production', STOREFRONT_ORIGINS: 'https://artq.in', ADMIN_ORIGINS: 'https://admin.artq.in' };
+      expect(fails({ ...prod, RAZORPAY_KEY_ID: 'rzp_test_AbC123', RAZORPAY_KEY_SECRET: 'secret-12' })).toContain('production must use live keys');
+      expect(loadEnv({ ...base, ...prod, RAZORPAY_KEY_ID: 'rzp_live_AbC123', RAZORPAY_KEY_SECRET: 'secret-12' }).RAZORPAY_KEY_ID).toBe('rzp_live_AbC123');
+    });
+  });
+
   describe('email settings', () => {
     it('defaults to SMTP on localhost:1025', () => {
       expect(loadEnv(base)).toMatchObject({ EMAIL_TRANSPORT: 'smtp', SMTP_HOST: 'localhost', SMTP_PORT: 1025 });

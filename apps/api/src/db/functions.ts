@@ -170,6 +170,11 @@ export function reverseCoupon(db: Db, orderId: number) {
   return scalar<boolean>(db, Prisma.sql`SELECT aq_reverse_coupon(${orderId}::int) AS r`);
 }
 
+/** Migration 0007: a pending COD order → PLACED + COD_PENDING (coupon redeemed, cart converted, order.placed); 'DUPLICATE' if already. Raises INVALID_TRANSITION. */
+export function placeCodOrder(db: Db, orderId: number, actor: ActorType) {
+  return scalar<'PLACED' | 'DUPLICATE'>(db, Prisma.sql`SELECT aq_place_cod_order(${orderId}::int, ${actor}) AS r`);
+}
+
 // ── Payments ─────────────────────────────────────────────────────────────
 
 export function reassessOrderPayment(db: Db, orderId: number, actor: ActorType) {

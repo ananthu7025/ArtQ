@@ -18,7 +18,7 @@ export const newToken = () => randomBytes(32).toString('base64url');
 type Row = {
   item_id: number; variant_id: number; quantity: number; added_price: number; sku: string; label: string; price: number | null; mrp: number | null;
   available: number; variant_active: boolean; variant_deleted: boolean; product_id: number; product_slug: string; product_name: string; product_live: boolean;
-  type_id: number | null; category_id: number | null; gst_rate: string | null; weight_g: number | null; length_cm: string | null; width_cm: string | null; height_cm: string | null;
+  type_id: number | null; category_id: number | null; gst_rate: string | null; hsn_code: string | null; weight_g: number | null; length_cm: string | null; width_cm: string | null; height_cm: string | null;
   shipping_class: 'STANDARD' | 'BULKY' | 'SURFACE_ONLY'; image_media_id: number | null;
 };
 
@@ -36,6 +36,15 @@ export class CartService {
   }
 
   /** The account's active cart (the same on every device), or null. */
+  /**
+   * The cart a checkout retry refers to, in any state: the guest cart of this cookie, or the account's latest cart. A
+   * repeated initiate for an order already placed (its cart is CONVERTED) must still reach its stored answer.
+   */
+  async latest(token: string | undefined, userId: number | null): Promise<{ id: number } | null> {
+    if (userId !== null) return this.prisma.cart.findFirst({ where: { userId }, orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }], select: { id: true } });
+    return token ? this.prisma.cart.findFirst({ where: { tokenHash: hashToken(token), userId: null }, select: { id: true } }) : null;
+  }
+
   async forUser(userId: number): Promise<{ id: number } | null> {
     return this.prisma.cart.findFirst({ where: { userId, status: 'ACTIVE' }, orderBy: { lastActivityAt: 'desc' }, select: { id: true } });
   }
@@ -116,7 +125,7 @@ export class CartService {
     const rows = cartId === null ? [] : await this.prisma.$queryRaw<Row[]>`
       SELECT ci.id AS item_id, ci.variant_id, ci.quantity, ci.added_price, v.sku, v.label, v.price, v.mrp, GREATEST(v.on_hand - v.reserved, 0)::int AS available,
              v.is_active AS variant_active, v.deleted_at IS NOT NULL AS variant_deleted, p.id AS product_id, p.slug AS product_slug, p.name AS product_name,
-             (p.status = 'ACTIVE' AND p.deleted_at IS NULL) AS product_live, p.type_id, p.category_id, p.gst_rate::text, v.weight_g,
+             (p.status = 'ACTIVE' AND p.deleted_at IS NULL) AS product_live, p.type_id, p.category_id, p.gst_rate::text, p.hsn_code, v.weight_g,
              v.length_cm::text, v.width_cm::text, v.height_cm::text, v.shipping_class::text AS shipping_class,
              coalesce(v.image_media_id, (SELECT pi.media_id FROM product_images pi WHERE pi.product_id = p.id ORDER BY pi.is_cover DESC, pi.sort_order, pi.id LIMIT 1)) AS image_media_id
       FROM cart_items ci JOIN product_variants v ON v.id = ci.variant_id JOIN products p ON p.id = v.product_id
@@ -161,7 +170,7 @@ export class CartService {
     const changed = rows.filter((r) => r.price !== null && r.price !== r.added_price).map((r) => r.item_id);
     for (const id of changed) { const r = rows.find((x) => x.item_id === id)!; await this.prisma.cartItem.update({ where: { id }, data: { addedPrice: r.price! } }); }
 
-    return { items, lines, variants, warnings, onlineEnabled: pay.razorpayEnabled, settings: { shipping: ship, payment: { codEnabled: pay.codEnabled, codFee: pay.codFee, codMin: pay.codMin, codMax: pay.codMax } } };
+    return { rows, media, items, lines, variants, warnings, onlineEnabled: pay.razorpayEnabled, pendingExpiryMinutes: pay.pendingExpiryMinutes, settings: { shipping: ship, payment: { codEnabled: pay.codEnabled, codFee: pay.codFee, codMin: pay.codMin, codMax: pay.codMax } } };
   }
 
   /** Who the coupon checks are for: the account, or the email given at checkout. */
@@ -181,7 +190,7 @@ export class CartService {
 
   /** The cart priced for an optional pincode and payment method, with the pricing engine's full output. */
   private async compute(cartId: number | null, pincode: string | null, paymentMethod: CheckoutPaymentMethod | null) {
-    const { items, lines, variants, warnings, settings, onlineEnabled } = await this.load(cartId);
+    const { rows, media, items, lines, variants, warnings, settings, onlineEnabled, pendingExpiryMinutes } = await this.load(cartId);
     const { couponId, who } = cartId === null ? { couponId: null, who: { userId: null, email: null } } : await this.customerOf(cartId);
     const coupon = couponId === null ? null : await this.coupons.findById(couponId);
     if (couponId !== null && !coupon) await this.prisma.cart.update({ where: { id: cartId! }, data: { couponId: null } });   // deleted meanwhile
@@ -227,7 +236,12 @@ export class CartService {
     };
     // Why the order cannot be placed as it stands: the engine's reasons, with the real delivery problem when known.
     const blocking = [...(shipProblem ? [shipProblem] : []), ...priced.blocking.filter((b) => !(shipProblem && b === 'DESTINATION_REQUIRED'))];
-    return { view, priced, settings, onlineEnabled, blocking };
+    return { view, priced, settings, onlineEnabled, blocking, rows, media, pendingExpiryMinutes, dest, coupon: couponView?.applied ? coupon : null };
+  }
+
+  /** Checkout initiate (task 4.7): the cart priced exactly as the order will be, with the rows to snapshot. */
+  priceForCheckout(cartId: number, pincode: string, paymentMethod: CheckoutPaymentMethod) {
+    return this.compute(cartId, pincode, paymentMethod);
   }
 
   /**
