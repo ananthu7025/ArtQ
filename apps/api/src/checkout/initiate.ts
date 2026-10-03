@@ -17,7 +17,9 @@ import * as fn from '../db/functions.js';
 import type { IdempotencyContext, IdempotentResult } from '../idempotency/idempotency.js';
 import { AppError } from '../lib/errors.js';
 import { ProviderError, type PaymentProvider } from '../payments/razorpay.js';
-import { mediaRef, type MediaUrl } from '../storefront/home.js';
+import { applySnapshot } from '../payments/apply.js';
+import { destinationFor } from '../shipping/destination.js';
+import { mediaRef, setting, type MediaUrl } from '../storefront/home.js';
 
 type Body = z.output<typeof checkoutInitiateBody>;
 type Tx = Prisma.TransactionClient;
@@ -202,6 +204,70 @@ export class CheckoutService {
     if (found.length) return this.adopt(run, o, found[0]!.id, status);   // several (duplicate receipts): the earliest
     if (Date.now() - o.attempt.createdAt.getTime() < (this.d.lookupGraceMs ?? 120_000)) return this.starting(o.orderNumber, 5);
     return this.startPayment(run, ctx, o, status);
+  }
+
+  /**
+   * POST /orders/:n/payment/retry (task 4.8, architecture.md §7.3): pay a pending order again, online or by switching to
+   * cash on delivery. First any payment already made on its open attempts is applied (never take money twice); then,
+   * in one fenced transaction, the open attempts are CLOSED and either a new attempt is created (receipt AQA_<id>_<n>,
+   * the hold extended by up to 15 minutes, at most 60 minutes in all) or the order becomes COD (fee added) and placed.
+   */
+  async retryPayment(ctx: IdempotencyContext, orderNumber: string, method: 'RAZORPAY' | 'COD'): Promise<IdempotentResult> {
+    const run: Run = (work) => ctx.tx(work);
+    if (ctx.resume?.resourceType === 'order') return this.resume(run, ctx, ctx.resume.resourceId, 200);
+    const o = await this.d.prisma.order.findUnique({ where: { orderNumber }, include: { paymentAttempts: { orderBy: { id: 'asc' } } } });
+    if (!o) throw new AppError(404, 'NOT_FOUND', 'Order not found');
+    const placedAnswer = (): IdempotentResult => ({ status: 200, body: { orderNumber, status: 'PLACED', total: o.total } satisfies InitiateResult, resource: { type: 'order', id: orderNumber } });
+    if (['PLACED', 'CONFIRMED', 'COMPLETED'].includes(o.status)) return placedAnswer();
+    if (o.status !== 'PENDING_PAYMENT' || !o.expiresAt || o.expiresAt <= new Date()) throw new AppError(409, 'ORDER_EXPIRED', 'This order has expired. Please check out again.', { orderNumber });
+    if (method === 'RAZORPAY') void this.provider;
+
+    // Money first: a payment already made on an open attempt is applied, not paid again.
+    if (this.d.provider) {
+      for (const a of o.paymentAttempts.filter((x) => ['CREATED', 'CREATING', 'PROVIDER_UNKNOWN'].includes(x.status))) {
+        try {
+          const ids = a.providerOrderId ? [a.providerOrderId] : (await this.d.provider.findOrdersByReceipt(a.receipt)).map((x) => x.id);
+          for (const id of ids) for (const p of await this.d.provider.orderPayments(id)) if (p.status !== 'created' && p.status !== 'failed') await applySnapshot(this.d.prisma, p, 'CUSTOMER');
+        } catch (e) {
+          if (e instanceof ProviderError) throw new AppError(503, 'PAYMENT_PROVIDER_UNAVAILABLE', 'We couldn’t check your last payment just now. Please try again in a minute.');
+          throw e;
+        }
+      }
+    }
+    const now = await this.d.prisma.order.findUniqueOrThrow({ where: { id: o.id } });
+    if (['PLACED', 'CONFIRMED', 'COMPLETED'].includes(now.status)) return placedAnswer();
+    if (now.paymentStatus === 'PROCESSING') throw new AppError(409, 'PAYMENT_IN_PROGRESS', 'We’re still confirming your last payment. Please wait a moment.');
+
+    const cod = method === 'COD' ? await this.codFor(now) : null;
+    const next = await run(async (tx) => {
+      const [locked] = await tx.$queryRaw<{ status: string; payment_status: string; expires_at: Date | null }[]>`SELECT status, payment_status, expires_at FROM orders WHERE id = ${o.id} FOR NO KEY UPDATE`;
+      if (locked?.status !== 'PENDING_PAYMENT' || locked.payment_status !== 'UNPAID' || !locked.expires_at || locked.expires_at <= new Date()) throw new AppError(409, 'ORDER_EXPIRED', 'This order can no longer be paid. Please check out again.', { orderNumber });
+      await tx.paymentAttempt.updateMany({ where: { orderId: o.id, status: { in: ['CREATING', 'CREATED', 'PROVIDER_UNKNOWN', 'CREATION_FAILED'] } }, data: { status: 'CLOSED' } });
+      await ctx.attach(tx, 'order', orderNumber);
+      if (cod) {
+        await tx.order.update({ where: { id: o.id }, data: { paymentMethod: 'COD', codFee: cod.fee, total: now.total - now.codFee + cod.fee, version: { increment: 1 } } });
+        await fn.placeCodOrder(tx, o.id, 'CUSTOMER');
+        return null;
+      }
+      const n = await tx.paymentAttempt.count({ where: { orderId: o.id } });
+      const limit = new Date(now.createdAt.getTime() + 60 * 60_000);
+      const extended = new Date(Math.min(locked.expires_at.getTime() + 15 * 60_000, limit.getTime()));
+      const order = await tx.order.update({ where: { id: o.id }, data: { expiresAt: extended > locked.expires_at ? extended : locked.expires_at } });
+      const attempt = await tx.paymentAttempt.create({ data: { orderId: o.id, receipt: `AQA_${o.id}_${n + 1}`, amount: now.total } });
+      return { ...order, attempt };
+    });
+    if (!next) return { status: 200, body: { orderNumber, status: 'PLACED', total: now.total - now.codFee + cod!.fee } satisfies InitiateResult, resource: { type: 'order', id: orderNumber } };
+    return this.startPayment(run, ctx, next, 200);
+  }
+
+  /** Switching a pending online order to COD: allowed by the settings and the pincode, the new total within limits. */
+  private async codFor(o: { shipPincode: string; total: number; codFee: number }): Promise<{ fee: number }> {
+    const [d, pay] = await Promise.all([destinationFor(this.d.prisma, o.shipPincode), setting(this.d.prisma, 'PAYMENT')]);
+    const total = o.total - o.codFee + pay.codFee;
+    if (!pay.codEnabled || !d.serviceability.codAvailable || total < pay.codMin || total > pay.codMax) {
+      throw new AppError(422, 'COD_NOT_AVAILABLE', 'Cash on delivery isn’t available for this order. Please pay online.');
+    }
+    return { fee: pay.codFee };
   }
 
   /** The reconciler's entry (AT-03, scheduled with task 4.9): resolve one unfinished attempt without a client. */

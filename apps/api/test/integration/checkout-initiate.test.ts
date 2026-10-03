@@ -31,7 +31,7 @@ const apps = new Map<string, Express>();
 function app(provider: 'fake' | 'none' = 'fake'): Express {
   const key = `${provider}-${grace}`;
   if (!apps.has(key)) {
-    const p: PaymentProvider | null = provider === 'fake' ? { keyId: 'rzp_test_fake', createOrder: (o) => fake.createOrder(o), findOrdersByReceipt: (r) => fake.findOrdersByReceipt(r) } : null;
+    const p: PaymentProvider | null = provider === 'fake' ? { keyId: 'rzp_test_fake', createOrder: (o) => fake.createOrder(o), findOrdersByReceipt: (r) => fake.findOrdersByReceipt(r), fetchPayment: (id) => fake.fetchPayment(id), orderPayments: (id) => fake.orderPayments(id), verifySignature: (o, pid, sig) => fake.verifySignature(o, pid, sig) } : null;
     apps.set(key, createApp({ version: 't', origins: { storefront: [WEB], admin: ['http://localhost:5173'] }, readiness: { database: async () => {}, redis: async () => {} },
       routes: [cartRouter({ prisma, env: 'test', mediaUrl, checkout: { provider: p, storeName: 'ArtQ', log: pino({ level: 'silent' }), lockSeconds: 1, lookupGraceMs: grace } })] } as Parameters<typeof createApp>[0]));
   }

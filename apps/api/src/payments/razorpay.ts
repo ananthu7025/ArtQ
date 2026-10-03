@@ -4,7 +4,16 @@
 // Task 4.0: an order created moments ago is not yet found by receipt (seen within ~20 s); duplicate receipts are
 // allowed; unknown ids answer 400 BAD_REQUEST_ERROR (no 404).
 
+import { createHmac, timingSafeEqual } from 'node:crypto';
+
 export type ProviderOrder = { id: string; amount: number; currency: string; receipt: string; createdAt: number };
+/** A payment as Razorpay reports it (the authoritative snapshot passed to aq_apply_provider_payment). */
+export type ProviderPayment = {
+  id: string; orderId: string | null; amount: number; currency: string; status: 'created' | 'authorized' | 'captured' | 'refunded' | 'failed';
+  amountRefunded: number; method: string | null; createdAt: number; raw: unknown;
+};
+type RawPayment = { id: string; order_id: string | null; amount: number; currency: string; status: ProviderPayment['status']; amount_refunded?: number; method?: string | null; created_at: number };
+const toPayment = (r: RawPayment): ProviderPayment => ({ id: r.id, orderId: r.order_id, amount: r.amount, currency: r.currency, status: r.status, amountRefunded: r.amount_refunded ?? 0, method: r.method ?? null, createdAt: r.created_at, raw: r });
 
 export class ProviderError extends Error {
   constructor(readonly kind: 'DEFINITIVE' | 'UNKNOWN', message: string, readonly httpStatus: number | null = null) {
@@ -19,6 +28,19 @@ export interface PaymentProvider {
   createOrder(o: { amount: number; receipt: string; notes: Record<string, string> }): Promise<ProviderOrder>;
   /** Orders with this receipt, oldest first (the earliest is adopted when several exist). */
   findOrdersByReceipt(receipt: string): Promise<ProviderOrder[]>;
+  /** One payment (unknown ids: DEFINITIVE, Razorpay answers 400). */
+  fetchPayment(paymentId: string): Promise<ProviderPayment>;
+  /** Every payment attempt on a provider order (created, failed, authorized, captured…). */
+  orderPayments(providerOrderId: string): Promise<ProviderPayment[]>;
+  /** Checkout signature: HMAC-SHA256("<provider order id>|<payment id>", key secret), compared in constant time. */
+  verifySignature(providerOrderId: string, paymentId: string, signature: string): boolean;
+}
+
+/** HMAC-SHA256 hex of "<order id>|<payment id>" (Razorpay Checkout), compared in constant time. */
+export function checkoutSignatureMatches(secret: string, providerOrderId: string, paymentId: string, signature: string): boolean {
+  if (!/^[0-9a-f]{64}$/i.test(signature)) return false;
+  const expected = createHmac('sha256', secret).update(`${providerOrderId}|${paymentId}`).digest();
+  return timingSafeEqual(expected, Buffer.from(signature, 'hex'));
 }
 
 type Fetch = typeof fetch;
@@ -26,7 +48,7 @@ const BASE = 'https://api.razorpay.com/v1';
 
 export class RazorpayClient implements PaymentProvider {
   private readonly auth: string;
-  constructor(readonly keyId: string, secret: string, private readonly fetchImpl: Fetch = fetch, private readonly timeoutMs = 10_000) {
+  constructor(readonly keyId: string, private readonly secret: string, private readonly fetchImpl: Fetch = fetch, private readonly timeoutMs = 10_000) {
     this.auth = `Basic ${Buffer.from(`${keyId}:${secret}`).toString('base64')}`;
   }
 
@@ -50,9 +72,21 @@ export class RazorpayClient implements PaymentProvider {
     try { return JSON.parse(text) as T; } catch { throw new ProviderError('UNKNOWN', 'Razorpay sent an unreadable response', res.status); }
   }
 
+  verifySignature(providerOrderId: string, paymentId: string, signature: string): boolean {
+    return checkoutSignatureMatches(this.secret, providerOrderId, paymentId, signature);
+  }
+
   async createOrder(o: { amount: number; receipt: string; notes: Record<string, string> }): Promise<ProviderOrder> {
     const r = await this.call<{ id: string; amount: number; currency: string; receipt: string; created_at: number }>('POST', '/orders', { amount: o.amount, currency: 'INR', receipt: o.receipt, notes: o.notes });
     return { id: r.id, amount: r.amount, currency: r.currency, receipt: r.receipt, createdAt: r.created_at };
+  }
+
+  async fetchPayment(paymentId: string): Promise<ProviderPayment> {
+    return toPayment(await this.call<RawPayment>('GET', `/payments/${encodeURIComponent(paymentId)}`));
+  }
+
+  async orderPayments(providerOrderId: string): Promise<ProviderPayment[]> {
+    return (await this.call<{ items: RawPayment[] }>('GET', `/orders/${encodeURIComponent(providerOrderId)}/payments`)).items.map(toPayment);
   }
 
   async findOrdersByReceipt(receipt: string): Promise<ProviderOrder[]> {
@@ -85,6 +119,38 @@ export class FakeRazorpay implements PaymentProvider {
     if (mode === 'created-then-unknown') throw new ProviderError('UNKNOWN', 'Razorpay unreachable: TimeoutError');   // created, but the answer was lost
     if (mode === 'created-then-crash') throw new Error('process killed after the provider created the order');   // AT-03
     return order;
+  }
+
+  static readonly SECRET = 'fake-razorpay-secret';
+  /** The signature Razorpay Checkout would hand the browser for this payment. */
+  sign(providerOrderId: string, paymentId: string): string {
+    return createHmac('sha256', FakeRazorpay.SECRET).update(`${providerOrderId}|${paymentId}`).digest('hex');
+  }
+  verifySignature(providerOrderId: string, paymentId: string, signature: string): boolean {
+    return checkoutSignatureMatches(FakeRazorpay.SECRET, providerOrderId, paymentId, signature);
+  }
+
+  /** Payments the test "made" (see pay()). */
+  readonly payments: ProviderPayment[] = [];
+  fetchFails = false;
+  /** A customer paying `order` in the Razorpay window (status as the test wants it). */
+  pay(providerOrderId: string, o: Partial<Omit<ProviderPayment, 'id' | 'orderId'>> = {}): ProviderPayment {
+    const order = this.orders.find((x) => x.id === providerOrderId);
+    const p: ProviderPayment = { id: `pay_fake${++FakeRazorpay.seq}`, orderId: providerOrderId, amount: order?.amount ?? 0, currency: 'INR', status: 'captured', amountRefunded: 0, method: 'upi', createdAt: Math.floor(Date.now() / 1000), raw: {}, ...o };
+    this.payments.push(p);
+    return p;
+  }
+
+  async fetchPayment(paymentId: string): Promise<ProviderPayment> {
+    if (this.fetchFails) throw new ProviderError('UNKNOWN', 'Razorpay unreachable: TimeoutError');
+    const p = this.payments.find((x) => x.id === paymentId);
+    if (!p) throw new ProviderError('DEFINITIVE', 'Razorpay 400: The id provided does not exist', 400);
+    return { ...p };
+  }
+
+  async orderPayments(providerOrderId: string): Promise<ProviderPayment[]> {
+    if (this.fetchFails) throw new ProviderError('UNKNOWN', 'Razorpay unreachable: TimeoutError');
+    return this.payments.filter((x) => x.orderId === providerOrderId).map((x) => ({ ...x }));
   }
 
   async findOrdersByReceipt(receipt: string): Promise<ProviderOrder[]> {

@@ -1,7 +1,8 @@
 // Task 4.7: the Razorpay client classifies failures for the failure matrix (DEFINITIVE vs UNKNOWN) and never leaks the
 // secret; the receipt lookup returns only that receipt's orders, oldest first.
 import { describe, expect, it, vi } from 'vitest';
-import { FakeRazorpay, ProviderError, RazorpayClient } from '../src/payments/razorpay.js';
+import { createHmac } from 'node:crypto';
+import { checkoutSignatureMatches, FakeRazorpay, ProviderError, RazorpayClient } from '../src/payments/razorpay.js';
 
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 const client = (f: (url: string, init: RequestInit) => Promise<Response>) => new RazorpayClient('rzp_test_abc', 'very-secret', f as unknown as typeof fetch, 50);
@@ -34,6 +35,25 @@ describe('RazorpayClient', () => {
     ] }));
     expect((await client(f).findOrdersByReceipt('AQA_7')).map((o) => o.id)).toEqual(['order_a', 'order_b']);
     expect((f.mock.calls[0] as unknown as [string])[0]).toBe('https://api.razorpay.com/v1/orders?receipt=AQA_7');
+  });
+});
+
+describe('checkout signature', () => {
+  it('HMAC-SHA256 of "<order>|<payment>" with the key secret; anything else fails', () => {
+    const sig = createHmac('sha256', 'very-secret').update('order_1|pay_1').digest('hex');
+    const c = client(async () => json(200, {}));
+    expect(c.verifySignature('order_1', 'pay_1', sig)).toBe(true);
+    expect(c.verifySignature('order_2', 'pay_1', sig)).toBe(false);
+    expect(c.verifySignature('order_1', 'pay_2', sig)).toBe(false);
+    expect(checkoutSignatureMatches('other-secret', 'order_1', 'pay_1', sig)).toBe(false);
+    expect(c.verifySignature('order_1', 'pay_1', 'not-hex')).toBe(false);
+    expect(c.verifySignature('order_1', 'pay_1', sig.toUpperCase())).toBe(true);
+  });
+  it('payments: fetched one, and an order\'s list', async () => {
+    const raw = { id: 'pay_1', order_id: 'order_1', amount: 100, currency: 'INR', status: 'captured', amount_refunded: 0, method: 'upi', created_at: 7 };
+    expect(await client(async () => json(200, raw)).fetchPayment('pay_1')).toEqual({ id: 'pay_1', orderId: 'order_1', amount: 100, currency: 'INR', status: 'captured', amountRefunded: 0, method: 'upi', createdAt: 7, raw });
+    expect((await client(async () => json(200, { items: [raw] })).orderPayments('order_1')).map((p) => p.id)).toEqual(['pay_1']);
+    expect(await kind(client(async () => json(400, { error: { description: 'The id provided does not exist' } })).fetchPayment('pay_x'))).toEqual(['DEFINITIVE', 400]);
   });
 });
 
