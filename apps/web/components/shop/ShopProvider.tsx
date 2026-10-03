@@ -16,6 +16,9 @@ type Shop = {
   toggleWishlist: (productId: number) => boolean;
   /** Adds and confirms with a toast; returns the error message instead of throwing (shown in the sheet). */
   addToCart: (variantId: number, quantity: number, name: string) => Promise<{ ok: true } | { ok: false; message: string; code: string }>;
+  /** The product the floating WhatsApp button pre-fills (set by the product page). */
+  whatsappTopic: string | null;
+  setWhatsappTopic: (topic: string | null) => void;
 };
 
 const ShopContext = createContext<Shop | null>(null);
@@ -51,6 +54,7 @@ export function errorText(e: unknown): string {
 
 export function ShopProvider({ children }: { children: ReactNode }) {
   const [cartCount, setCartCount] = useState(0);
+  const [whatsappTopic, setWhatsappTopic] = useState<string | null>(null);
   const wishlist = useSyncExternalStore(subscribeWishlist, readWishlist, () => EMPTY);
 
   useEffect(() => {
@@ -77,11 +81,11 @@ export function ShopProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const value = useMemo(() => ({ cartCount, wishlist, toggleWishlist, addToCart }), [cartCount, wishlist, toggleWishlist, addToCart]);
+  const value = useMemo(() => ({ cartCount, wishlist, toggleWishlist, addToCart, whatsappTopic, setWhatsappTopic }), [cartCount, wishlist, toggleWishlist, addToCart, whatsappTopic]);
   return <ShopContext.Provider value={value}>{children}</ShopContext.Provider>;
 }
 
 /** The shop context; outside a provider (tests of single components) counts are 0 and actions are no-ops. */
 export function useShop(): Shop {
-  return useContext(ShopContext) ?? { cartCount: 0, wishlist: EMPTY, toggleWishlist: () => false, addToCart: async () => ({ ok: false, message: 'Not available', code: 'INTERNAL' }) };
+  return useContext(ShopContext) ?? { cartCount: 0, wishlist: EMPTY, toggleWishlist: () => false, addToCart: async () => ({ ok: false, message: 'Not available', code: 'INTERNAL' }), whatsappTopic: null, setWhatsappTopic: () => {} };
 }

@@ -20,5 +20,8 @@ await prisma.productType.create({ data: { name: STOREFRONT_FIXTURE.hiddenType, s
 await prisma.setting.update({ where: { key: 'ANNOUNCEMENT_BAR' }, data: { value: { enabled: true, messages: [...STOREFRONT_FIXTURE.announcement] } } });
 await prisma.setting.update({ where: { key: 'STORE_INFO' }, data: { value: { ...DEFAULT_SETTINGS.STORE_INFO, whatsapp: STOREFRONT_FIXTURE.whatsapp } } });
 await prisma.setting.update({ where: { key: 'SOCIAL' }, data: { value: { ...DEFAULT_SETTINGS.SOCIAL, instagram: STOREFRONT_FIXTURE.instagram } } });
+// One real pincode for the product page's delivery check (the full India Post directory is loaded at deploy).
+const kerala = await prisma.state.findFirstOrThrow({ where: { gstCode: '32' } });
+await prisma.postalCode.upsert({ where: { pincode_officeName: { pincode: '682011', officeName: 'ERNAKULAM H.O' } }, update: {}, create: { pincode: '682011', officeName: 'ERNAKULAM H.O', district: 'ERNAKULAM', stateId: kerala.id } });
 await prisma.$disconnect();
 console.log('storefront e2e data ready');

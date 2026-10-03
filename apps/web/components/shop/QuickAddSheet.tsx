@@ -9,21 +9,20 @@ import { formatINR, notifyMeBody, type Availability, type ProductDetail, type Pu
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as Dialog from '@radix-ui/react-dialog';
 import { Minus, Plus, X } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import type { z } from 'zod';
 import { ApiError, clientRequest } from '../../lib/api';
 import { applyServerErrors, FormAlert, TextField } from '../form/fields';
 import { Img } from '../Img';
 import { errorText, useShop } from './ShopProvider';
+import { OptionPicker, startVariant, stockMap, useVariantPicker, type Stock } from './variant-picker';
 
-type Dim = 'size' | 'color' | 'thickness';
-const DIMS: { key: Dim; label: string }[] = [{ key: 'size', label: 'Size' }, { key: 'color', label: 'Colour' }, { key: 'thickness', label: 'Thickness' }];
-type Loaded = { product: ProductDetail; stock: Map<number, Availability['variants'][number]> };
+type Loaded = { product: ProductDetail; stock: Stock };
 
 const notifyForm = notifyMeBody.pick({ email: true });
 
-function NotifyForm({ slug, variant }: { slug: string; variant: PublicVariant }) {
+export function NotifyForm({ slug, variant }: { slug: string; variant: PublicVariant }) {
   const [done, setDone] = useState<string | null>(null);
   const [alert, setAlert] = useState<string | null>(null);
   const { register, handleSubmit, setError, formState: { errors, isSubmitting } } = useForm<z.input<typeof notifyForm>, unknown, z.output<typeof notifyForm>>({ resolver: zodResolver(notifyForm), defaultValues: { email: '' } });
@@ -54,10 +53,12 @@ export function QuickAddSheet({ slug, name, open, onOpenChange, onClosed }: { sl
   const { addToCart } = useShop();
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [failed, setFailed] = useState(false);
-  const [pick, setPick] = useState<Partial<Record<Dim, string>>>({});
   const [qty, setQty] = useState(1);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+
+  const picker = useVariantPicker(loaded?.product ?? null, loaded?.stock ?? null);
+  const { selected, live, max } = picker;
 
   useEffect(() => {
     if (!open) return;
@@ -65,38 +66,14 @@ export function QuickAddSheet({ slug, name, open, onOpenChange, onClosed }: { sl
     Promise.all([clientRequest<ProductDetail>('GET', `/products/${slug}`), clientRequest<Availability>('GET', `/products/${slug}/availability`)])
       .then(([product, availability]) => {
         if (!live) return;
-        const stock = new Map(availability.variants.map((v) => [v.id, v]));
-        // Start on the cheapest size in stock (or the cheapest at all).
-        const first = product.variants.find((v) => (stock.get(v.id)?.maxQuantity ?? 0) > 0) ?? product.variants[0];
+        const stock = stockMap(availability);
         setLoaded({ product, stock });
-        setPick(first ? { size: first.size ?? undefined, color: first.color ?? undefined, thickness: first.thickness ?? undefined } : {});
+        picker.reset(startVariant(product, stock));   // the cheapest size in stock (or the cheapest at all)
         setQty(1); setFailed(false); setProblem(null);
       })
       .catch(() => { if (live) { setLoaded(null); setFailed(true); } });
     return () => { live = false; };
-  }, [open, slug]);
-
-  const offered = useMemo(() => (loaded ? DIMS.filter((d) => (d.key === 'color' ? loaded.product.options.color.length : loaded.product.options[d.key].length) > 0) : []), [loaded]);
-  const values = (d: Dim): string[] => (loaded ? (d === 'color' ? loaded.product.options.color.map((c) => c.name) : loaded.product.options[d]) : []);
-  const matches = (v: PublicVariant, sel: Partial<Record<Dim, string>>) => offered.every((d) => sel[d.key] === undefined || v[d.key] === sel[d.key]);
-  const selected = loaded?.product.variants.find((v) => matches(v, pick) && offered.every((d) => pick[d.key] !== undefined)) ?? (offered.length === 0 ? loaded?.product.variants[0] : undefined);
-  const live = selected ? loaded!.stock.get(selected.id) : undefined;
-  const max = live?.maxQuantity ?? 0;
-  const inStock = (v: PublicVariant) => (loaded!.stock.get(v.id)?.maxQuantity ?? 0) > 0;
-  /** With the other current choices: 'missing' (no such variant), 'soldout' (exists, none in stock) or 'ok'. */
-  const status = (d: Dim, value: string): 'ok' | 'soldout' | 'missing' => {
-    const combos = loaded!.product.variants.filter((v) => matches(v, { ...pick, [d]: value }));
-    return combos.length === 0 ? 'missing' : combos.some(inStock) ? 'ok' : 'soldout';
-  };
-  const choose = (d: Dim, value: string) => {
-    const next = { ...pick, [d]: value };
-    if (!loaded!.product.variants.some((v) => matches(v, next))) {
-      // No such combination: keep this choice and move the others to the best variant that has it.
-      const best = [...loaded!.product.variants].filter((v) => v[d] === value).sort((a, b) => Number(inStock(b)) - Number(inStock(a)) || a.price - b.price)[0];
-      if (best) for (const o of offered) next[o.key] = best[o.key] ?? undefined;
-    }
-    setPick(next); setQty(1); setProblem(null);
-  };
+  }, [open, slug]);   // eslint-disable-line react-hooks/exhaustive-deps -- reload only when opened for a product
 
   const add = async () => {
     if (!selected || max === 0) return;
@@ -133,27 +110,7 @@ export function QuickAddSheet({ slug, name, open, onOpenChange, onClosed }: { sl
                   )
                   : <p className="text-sm text-ink-700" aria-live="polite">Choose the options below.</p>}
               </div>
-              {offered.map((d) => (
-                <fieldset key={d.key}>
-                  <legend className="mb-2 text-[13px] font-medium text-ink-900">{d.label}{pick[d.key] ? `: ${pick[d.key]}` : ''}</legend>
-                  <div className="flex flex-wrap gap-2">
-                    {values(d.key).map((value) => {
-                      const on = pick[d.key] === value;
-                      const st = status(d.key, value);
-                      const hex = d.key === 'color' ? loaded.product.options.color.find((c) => c.name === value)?.hex : null;
-                      const note = st === 'soldout' ? 'sold out' : st === 'missing' ? 'other options will change' : null;
-                      return (
-                        <button key={value} type="button" aria-pressed={on} aria-label={note ? `${value}, ${note}` : undefined} title={st === 'missing' ? `Not available with your other choices; they will change` : st === 'soldout' ? 'Sold out: choose it to be told when it is back' : undefined}
-                          onClick={() => choose(d.key, value)}
-                          className={`inline-flex min-h-10 min-w-16 items-center justify-center gap-2 rounded-md px-3 text-sm ${on ? 'border-2 border-brand-700 bg-brand-50 font-semibold text-brand-800' : `border ${st === 'missing' ? 'border-dashed' : ''} border-border-input text-ink-900 hover:bg-surface-100`} ${st !== 'ok' ? 'text-ink-500' : ''} ${st === 'soldout' ? 'line-through' : ''}`}>
-                          {hex && <span aria-hidden className="h-5 w-5 rounded-full border border-border-input" style={{ background: hex }} />}
-                          {value}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </fieldset>
-              ))}
+              <OptionPicker picker={picker} onChoose={() => { setQty(1); setProblem(null); }} />
               {selected && max > 0 && (
                 <>
                   <div className="flex items-center gap-3">

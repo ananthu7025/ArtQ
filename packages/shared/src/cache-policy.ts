@@ -4,11 +4,12 @@
 export const PUBLIC_CACHE_CONTROL = 'public, max-age=0, s-maxage=60, stale-while-revalidate=60';
 export const NO_STORE = 'private, no-store';
 
-/** Paths relative to `/v1`. `/products/:slug/availability` is deliberately not matched (live stock, never cached). */
+/** Paths relative to `/v1`. `/products/:slug/availability` is deliberately not matched (live stock, never cached);
+ * `/products/:slug/related` is (public cards, task 3.6). */
 export const PUBLIC_CACHE_PATTERNS: readonly RegExp[] = [
   /^\/home$/, /^\/navigation$/, /^\/settings\/public$/,
   /^\/types(\/[^/]+)*$/, /^\/categories(\/[^/]+)*$/, /^\/techniques(\/[^/]+)*$/,
-  /^\/products$/, /^\/products\/[^/]+$/,
+  /^\/products$/, /^\/products\/[^/]+$/, /^\/products\/[^/]+\/related$/,
   /^\/pages\/[^/]+$/, /^\/faqs$/, /^\/testimonials$/, /^\/reels$/, /^\/seo(\/[^/]+)+$/,
 ];
 

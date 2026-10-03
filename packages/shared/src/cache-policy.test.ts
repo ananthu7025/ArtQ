@@ -4,7 +4,7 @@ import { isPublicCacheable, PUBLIC_CACHE_CONTROL } from './cache-policy.js';
 describe('public cache allow-list (architecture.md §6.1)', () => {
   it.each([
     '/home', '/navigation', '/settings/public', '/types', '/types/resins', '/types/resins/categories', '/categories', '/categories/mica-powder',
-    '/techniques', '/techniques/coasters', '/products', '/products?type=pigments&page=2', '/products/epoxy-resin-21', '/pages/about',
+    '/techniques', '/techniques/coasters', '/products', '/products?type=pigments&page=2', '/products/epoxy-resin-21', '/products/epoxy-resin-21/related', '/products/by-ids?ids=1,2', '/pages/about',
     '/faqs', '/testimonials', '/reels', '/seo/sitemap-entries', '/seo/resolve?path=/old',
     '/NAVIGATION', '/products/', '/navigation#x',
   ])('%s is publicly cacheable', (p) => { expect(isPublicCacheable(p)).toBe(true); });

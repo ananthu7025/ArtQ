@@ -1,10 +1,14 @@
-// Floating WhatsApp button (product.md §4.4). Hidden until the owner enters a number in Settings. A product page passes
-// the product name so the chat starts with it.
+'use client';
+// Floating WhatsApp button (product.md §4.4). Hidden until the owner enters a number in Settings. On a product page the
+// chat starts with the product's name (set through the shop context).
 import { whatsappHref } from '@artq/shared';
 import { MessageCircle } from 'lucide-react';
+import { useShop } from '../shop/ShopProvider';
 
 export function WhatsAppButton({ number, productName }: { number: string | null; productName?: string }) {
-  const href = whatsappHref(number, productName ? `Hi ArtQ, I have a question about ${productName}` : undefined);
+  const shop = useShop();
+  const topic = productName ?? shop.whatsappTopic;
+  const href = whatsappHref(number, topic ? `Hi ArtQ, I have a question about ${topic}` : undefined);
   if (!href) return null;
   return (
     <a href={href} target="_blank" rel="noopener noreferrer"

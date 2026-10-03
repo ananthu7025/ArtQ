@@ -253,7 +253,9 @@ describe('product detail and live availability', () => {
     expect(res.body.variants.map((v: { label: string }) => v.label)).toEqual(['10 gm / Gold', '10 gm / Silver', '50 gm / Gold']);
     expect(res.body.variants[2]).toMatchObject({ mrp: 59_000, discountPercent: 17 });
     expect(res.body.images).toHaveLength(2);
-    expect(JSON.stringify(res.body)).not.toMatch(/onHand|reserved|available|stock/i);
+    // No counts or live stock in the cached detail (only the yes/no summary cards also show): those come from /availability.
+    expect(JSON.stringify(res.body)).not.toMatch(/onHand|reserved|available|stockStatus|maxQuantity|lowStock/i);
+    expect(typeof res.body.inStock).toBe('boolean');
   });
 
   it('availability: IN/LOW/OUT per variant (low = at or below its threshold), max quantity capped at 50; never cached', async () => {

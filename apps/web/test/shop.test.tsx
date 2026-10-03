@@ -21,6 +21,7 @@ const MICA: ProductDetail = {
   variants: [v(21, '10 gm', 'Gold', 19_000), v(22, '10 gm', 'Silver', 19_000), v(23, '50 gm', 'Gold', 49_000), v(24, '50 gm', 'Silver', 49_000)],
   options: { size: ['10 gm', '50 gm'], color: [{ name: 'Gold', hex: '#D4AF37' }, { name: 'Silver', hex: '#C0C0C0' }], thickness: [] },
   fromPrice: 19_000, maxPrice: 49_000, isNew: false, isTrending: false,
+  productDetails: [], specificationsCare: [], howToUse: null, specifications: [], techniques: [], video: null, metaTitle: null, metaDescription: null, inStock: true,
 };
 // 10 gm Gold sold out; 50 gm Silver sold out; 10 gm Silver 3 left.
 const MICA_STOCK: Availability = { variants: [

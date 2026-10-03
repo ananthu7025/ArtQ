@@ -108,6 +108,24 @@ export type ProductDetail = {
   /** Option dimensions with more than one value, in selector order (Size → Colour → Thickness). */
   options: { size: string[]; color: { name: string; hex: string | null }[]; thickness: string[] };
   fromPrice: number; maxPrice: number; isNew: boolean; isTrending: boolean;
+  /** Content sections (product.md §5.3 accordions). `description` is HTML sanitised when saved in the admin. */
+  productDetails: string[]; specificationsCare: string[]; howToUse: string | null; specifications: { label: string; value: string }[];
+  techniques: { slug: string; name: string }[];
+  video: VideoRef | null;
+  metaTitle: string | null; metaDescription: string | null;
+  /** Any active variant has stock (aggregate, may be up to a minute old; the page shows live stock from /availability). */
+  inStock: boolean;
+};
+export type RelatedProducts = { frequentlyBoughtTogether: ProductCard[]; similar: ProductCard[] };
+
+/** A pincode as entered on the product page and at checkout. */
+export const pincodeField = z.string().trim().regex(/^[1-9][0-9]{5}$/, 'Enter a 6-digit pincode');
+export const pincodeForm = z.strictObject({ pincode: pincodeField });
+/** GET /v1/pincodes/:pincode/serviceability (no-store). */
+export type PincodeCheck = {
+  pincode: string; place: { district: string; state: string } | null;
+  serviceable: boolean; codAvailable: boolean; surfaceOnly: boolean; estimatedDays: { min: number; max: number } | null;
+  reason: 'UNKNOWN_PINCODE' | 'NOT_SERVICEABLE' | null;
 };
 export type Availability = { variants: { id: number; price: number; mrp: number | null; discountPercent: number | null; stockStatus: StockStatus; maxQuantity: number }[] };
 

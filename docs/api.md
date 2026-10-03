@@ -127,7 +127,7 @@ type OrderView = {
 ### 3.2 Uncached public utilities
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/pincodes/:pincode/serviceability` | `{serviceable, codAvailable, surfaceOnly, estimatedDays:{min,max}}`, from `pincode_serviceability` or the default policy |
+| GET | `/pincodes/:pincode/serviceability` | `PincodeCheck` `{pincode, place:{district,state}\|null, serviceable, codAvailable, surfaceOnly, estimatedDays:{min,max}\|null, reason:'UNKNOWN_PINCODE'\|'NOT_SERVICEABLE'\|null}`: an explicit `pincode_serviceability` row, else the default policy (D-6); a pincode in neither the postal directory nor the rules → `UNKNOWN_PINCODE` (probably mistyped). 400 "Enter a 6-digit pincode" (`pincodeField`) |
 | POST | `/newsletter/subscribe` | `{email, source?:'footer'|'checkout'|'account'}` (`newsletterSubscribeBody`) → `201 {status:'SUBSCRIBED'}` (new, or previously unsubscribed) / `200 {status:'ALREADY_SUBSCRIBED'}`; email case-insensitive; 5/min per IP (task 3.1) |
 | GET | `/newsletter/unsubscribe?token=` | Unsubscribe |
 | POST | `/contact` | `{name, email, phone?, subject, message, orderNumber?}` |
@@ -145,8 +145,8 @@ Return photos are uploaded under the order routes so the order-scoped cookie (`P
 | GET | `/products/:slug` | `ProductDetail` (`@artq/shared`): active variants with a price (cheapest first), `options` only for dimensions with more than one value (Size → Colour → Thickness), images; **no stock** (cacheable). `{redirectTo}` for old slugs; 404 for DRAFT/ARCHIVED |
 | POST | `/products/:slug/notify` | "Notify me" `{variantId, email}` (`notifyMeBody`) → `201 SUBSCRIBED` / `200 ALREADY_SUBSCRIBED` (one pending request per size and email); 409 `IN_STOCK` while that size can be bought; 5/min per IP |
 | GET | `/products/:slug/availability` | **no-store**: `{variants:[{id, price, mrp, discountPercent, stockStatus, maxQuantity}]}`; `LOW_STOCK` when available ≤ the variant's low-stock threshold; `maxQuantity` = min(available, 50) |
-| GET | `/products/:slug/related` | `{frequentlyBoughtTogether[], similar[]}` |
-| GET | `/products/by-ids?ids=` | Cards (recently viewed, guest wishlist) |
+| GET | `/products/:slug/related` | `{frequentlyBoughtTogether[], similar[]}`: products in the same paid orders (most often first, ≤ 4) and live products of the same category, then the same type (≤ 8); cacheable |
+| GET | `/products/by-ids?ids=` | Cards in the order asked (`ids` = up to 24 comma-separated ids; only live products) |
 | GET | `/search?q=…`, `/search/suggest?q=` | Search (logged) |
 
 `GET /products` parameters: `type`, `category`, `technique` (slug lists), `q`, `minPrice`, `maxPrice`, `size`, `color`, `thickness` (lists), `inStock=1`, `sale=1`, `isNew=1`, `isTrending=1`, `sort` (`featured|newest|price_asc|price_desc|name_asc|best_selling|relevance`), `page`, `limit`.

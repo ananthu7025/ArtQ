@@ -3,7 +3,7 @@
 //   personal response can never be baked into a page that is cached and served to everyone.
 // - clientRequest: in the browser, with the customer's cookies (cart, session), never cached.
 // If the API cannot be reached, layout data falls back to the default settings and an empty menu.
-import { DEFAULT_PUBLIC_SETTINGS, isPublicCacheable, type HomeView, type Navigation, type ProductList, type PublicSettings, type TaxonomyPage } from '@artq/shared';
+import { DEFAULT_PUBLIC_SETTINGS, isPublicCacheable, type HomeView, type Navigation, type ProductDetail, type ProductList, type PublicSettings, type RelatedProducts, type TaxonomyPage } from '@artq/shared';
 
 export const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/v1').replace(/\/$/, '');
 
@@ -75,4 +75,16 @@ export async function loadTaxonomy(kind: TaxonomyPage['kind'], slug: string, fet
   const base = kind === 'type' ? 'types' : kind === 'category' ? 'categories' : 'techniques';
   try { return await publicGet<TaxonomyPage | { redirectTo: string }>(`/${base}/${encodeURIComponent(slug)}`, fetchImpl); }
   catch (e) { return e instanceof ApiError && e.status === 404 ? 'missing' : 'unavailable'; }
+}
+
+/** A product page: the product, a move to its new slug, 'missing' (404) or 'unavailable' (API down). */
+export async function loadProduct(slug: string, fetchImpl: Fetch = fetch): Promise<ProductDetail | { redirectTo: string } | 'missing' | 'unavailable'> {
+  try { return await publicGet<ProductDetail | { redirectTo: string }>(`/products/${encodeURIComponent(slug)}`, fetchImpl); }
+  catch (e) { return e instanceof ApiError && e.status === 404 ? 'missing' : 'unavailable'; }
+}
+
+/** Related products; an empty set when they cannot be loaded (an optional section). */
+export async function loadRelated(slug: string, fetchImpl: Fetch = fetch): Promise<RelatedProducts> {
+  try { return await publicGet<RelatedProducts>(`/products/${encodeURIComponent(slug)}/related`, fetchImpl); }
+  catch { return { frequentlyBoughtTogether: [], similar: [] }; }
 }

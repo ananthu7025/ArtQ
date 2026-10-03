@@ -14,7 +14,7 @@ import { RedisRateLimiter } from './middleware/rateLimit.js';
 import { RedisAppCache } from './lib/app-cache.js';
 import { redisConnection } from './lib/redis-url.js';
 import { jobId } from './jobs/ids.js';
-import { QUEUE } from './jobs/registry.js';
+import { BULLMQ_BASE, QUEUE } from './jobs/registry.js';
 import { mediaServiceFromEnv } from './media/factory.js';
 import { customerMediaRouter, registerAdminMediaRoutes } from './media/routes.js';
 import { registerAuditRoutes } from './admin/audit-routes.js';
@@ -57,9 +57,9 @@ const onRateLimitError = (err: unknown) => log.warn({ err: String(err) }, 'rate 
 // Admin feature modules (Phase 2+) register on admin.routes; auth, rate limit and audit are wired by the factory.
 const admin = createAdminRouter({ prisma, cache, jwt, limiter, onRateLimitError, log, hasRecentStepUp: (sid) => service.hasRecentStepUp(sid) });
 
-const webhookQueue = new Queue(WEBHOOK_QUEUE, { connection: { ...redisConnection(env.REDIS_URL), maxRetriesPerRequest: 1, enableOfflineQueue: false } });
+const webhookQueue = new Queue(WEBHOOK_QUEUE, { ...BULLMQ_BASE, connection: { ...redisConnection(env.REDIS_URL), maxRetriesPerRequest: 1, enableOfflineQueue: false } });
 webhookQueue.on('error', (err) => log.warn({ err: err.message }, 'webhook queue connection error'));
-const mediaQueue = new Queue(QUEUE.mediaProcess, { connection: webhookQueue.opts.connection });
+const mediaQueue = new Queue(QUEUE.mediaProcess, { ...BULLMQ_BASE, connection: webhookQueue.opts.connection });
 mediaQueue.on('error', (err) => log.warn({ err: err.message }, 'media queue connection error'));
 // A unique job id per enqueue: processing is claimed by a status transition, so a duplicate job is harmless.
 const media = mediaServiceFromEnv(env, prisma, async (id) => { await mediaQueue.add('media.process', { id }, { jobId: jobId('media', id, Date.now()), attempts: 3, backoff: { type: 'exponential', delay: 10_000 }, removeOnComplete: true }); });
@@ -68,8 +68,8 @@ registerAuditRoutes(admin, prisma);
 registerStaffRoutes(admin, prisma, service);
 registerCatalogRoutes(admin, new CatalogService(prisma, (m) => media.view(m)));
 registerTaxonomyRoutes(admin, prisma, (m) => media.view(m), appCache);
-const importValidateQueue = new Queue(QUEUE.importValidate, { connection: webhookQueue.opts.connection });
-const importApplyQueue = new Queue(QUEUE.importApply, { connection: webhookQueue.opts.connection });
+const importValidateQueue = new Queue(QUEUE.importValidate, { ...BULLMQ_BASE, connection: webhookQueue.opts.connection });
+const importApplyQueue = new Queue(QUEUE.importApply, { ...BULLMQ_BASE, connection: webhookQueue.opts.connection });
 for (const q of [importValidateQueue, importApplyQueue]) q.on('error', (err) => log.warn({ err: err.message, queue: q.name }, 'import queue connection error'));
 registerInventoryRoutes(admin, prisma);
 registerImportRoutes(admin, prisma, new ImportService({ prisma, readFile: (m) => media.read(m), enqueue: importEnqueue(importValidateQueue, importApplyQueue) }));

@@ -2,12 +2,13 @@
 // allow-list (architecture.md §6.1; headers set by middleware/cachePolicy.ts) and kept in the Redis app cache.
 import { randomBytes } from 'node:crypto';
 import type { PrismaClient } from '@prisma/client';
-import { DEFAULT_SETTINGS, newsletterSubscribeBody, notifyMeBody, storefrontListQuery, type StorefrontListQuery, PUBLIC_SETTING_KEYS, settingSchemas, toPublicSettings, type Navigation, type PublicSettings, type SettingKey, type SettingValue } from '@artq/shared';
+import { DEFAULT_SETTINGS, newsletterSubscribeBody, notifyMeBody, pincodeField, storefrontListQuery, type StorefrontListQuery, PUBLIC_SETTING_KEYS, settingSchemas, toPublicSettings, type Navigation, type PublicSettings, type SettingKey, type SettingValue } from '@artq/shared';
 import { Router, type RequestHandler, type Response } from 'express';
 import { z } from 'zod';
 import { noAppCache, type AppCache } from '../lib/app-cache.js';
 import { loadHome, type MediaUrl } from './home.js';
-import { findLiveProduct, loadAvailability, loadProductDetail } from './products.js';
+import { cardsByIds, findLiveProduct, loadAvailability, loadProductDetail, loadRelated } from './products.js';
+import { checkPincode } from './pincodes.js';
 import { listProducts, loadTaxonomyPage } from './listing.js';
 import { AppError } from '../lib/errors.js';
 import { RATE_LIMITS, rateLimit, type RateLimiter } from '../middleware/rateLimit.js';
@@ -67,6 +68,20 @@ export function storefrontRouter(d: StorefrontDeps): Router {
       res.json(page);
     });
   }
+  // Before /products/:slug, so "by-ids" is never read as a slug.
+  const idsQuery = z.strictObject({ ids: z.string().regex(/^\d{1,9}(,\d{1,9}){0,23}$/, 'Up to 24 product ids, comma-separated') });
+  r.get('/products/by-ids', validate({ query: idsQuery }), async (req, res) => {
+    const ids = [...new Set((req.query as unknown as { ids: string }).ids.split(',').map(Number))];
+    res.json({ data: await cardsByIds(d.prisma, ids, d.mediaUrl) });
+  });
+  r.get('/products/:slug/related', validate({ params: slugParam }), async (req, res) => {
+    const id = await live(String(req.params.slug), res);
+    if (id !== null) res.json(await loadRelated(d.prisma, id, d.mediaUrl));
+  });
+  const pincodeParam = z.strictObject({ pincode: pincodeField });
+  r.get('/pincodes/:pincode/serviceability', validate({ params: pincodeParam }), async (req, res) => {
+    res.json(await checkPincode(d.prisma, (req.params as unknown as { pincode: string }).pincode));
+  });
   r.get('/products/:slug', validate({ params: slugParam }), async (req, res) => {
     const id = await live(String(req.params.slug), res);
     if (id === null) return;

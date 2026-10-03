@@ -1,9 +1,9 @@
 // Public product detail (GET /v1/products/:slug, cacheable) and live availability (GET …/availability, no-store) — api.md
 // §3.3. Only ACTIVE products; only active variants with a price. Stock is never in the cached detail: pages ask for
 // availability in the browser, so a cached page can never promise stock that is gone.
-import { discountPercent, MAX_CART_QUANTITY, type Availability, type ProductDetail, type PublicVariant, type StockStatus } from '@artq/shared';
-import type { Prisma, PrismaClient } from '@prisma/client';
-import { mediaRef, type MediaUrl } from './home.js';
+import { discountPercent, MAX_CART_QUANTITY, type Availability, type ProductCard, type ProductDetail, type PublicVariant, type RelatedProducts, type StockStatus } from '@artq/shared';
+import { Prisma, type PrismaClient } from '@prisma/client';
+import { mediaRef, productCards, videoRef, type MediaUrl } from './home.js';
 
 const sellableVariants = { isActive: true, deletedAt: null, price: { not: null } } satisfies Prisma.ProductVariantWhereInput;
 
@@ -26,7 +26,8 @@ export async function loadProductDetail(prisma: PrismaClient, id: number, url: M
   const p = await prisma.product.findFirst({
     where: { id, status: 'ACTIVE', deletedAt: null },
     include: {
-      type: true, category: true,
+      type: true, category: true, video: true,
+      techniques: { where: { technique: { isActive: true } }, include: { technique: true }, orderBy: { technique: { sortOrder: 'asc' } } },
       images: { where: { media: { status: 'READY', visibility: 'PUBLIC', kind: 'IMAGE', deletedAt: null } }, include: { media: true }, orderBy: [{ isCover: 'desc' }, { sortOrder: 'asc' }, { id: 'asc' }] },
       variants: { where: sellableVariants, include: { image: true }, orderBy: [{ price: 'asc' }, { id: 'asc' }] },
     },
@@ -53,7 +54,40 @@ export async function loadProductDetail(prisma: PrismaClient, id: number, url: M
     },
     fromPrice: Math.min(...variants.map((v) => v.price)), maxPrice: Math.max(...variants.map((v) => v.price)),
     isNew: p.isNewArrival, isTrending: p.isTrending,
+    productDetails: p.productDetails, specificationsCare: p.specificationsCare, howToUse: p.howToUse,
+    // Stored as a jsonb object, which does not keep the admin's order: shown alphabetically until it becomes a list.
+    specifications: Object.entries((p.specifications ?? {}) as Record<string, unknown>).filter(([, v]) => typeof v === 'string' && v.trim())
+      .map(([label, value]) => ({ label, value: String(value) })).sort((a, b) => a.label.localeCompare(b.label, 'en')),
+    techniques: p.techniques.map((t) => ({ slug: t.technique.slug, name: t.technique.name })),
+    video: videoRef(p.video, url),
+    metaTitle: p.metaTitle, metaDescription: p.metaDescription,
+    inStock: p.availableQty > 0,
   };
+}
+
+const CARD_LIMIT = 8;
+
+/** "Frequently bought together" (other products in the same paid orders, most often first) and "Similar" (same category, then same type). */
+export async function loadRelated(prisma: PrismaClient, id: number, url: MediaUrl): Promise<RelatedProducts> {
+  const p = await prisma.product.findFirst({ where: { id, status: 'ACTIVE', deletedAt: null }, select: { typeId: true, categoryId: true } });
+  if (!p) return { frequentlyBoughtTogether: [], similar: [] };
+  const together = await prisma.$queryRaw<{ product_id: number }[]>`
+    SELECT oi2.product_id FROM order_items oi JOIN orders o ON o.id = oi.order_id JOIN order_items oi2 ON oi2.order_id = oi.order_id AND oi2.product_id <> oi.product_id
+    WHERE oi.product_id = ${id} AND o.payment_status IN ('PAID', 'PARTIALLY_REFUNDED', 'COD_COLLECTED', 'COD_REMITTED')
+    GROUP BY oi2.product_id ORDER BY count(DISTINCT oi.order_id) DESC, oi2.product_id LIMIT 4`;
+  const ids = together.map((r) => Number(r.product_id));
+  const [frequentlyBoughtTogether, similar] = await Promise.all([
+    ids.length ? productCards(prisma, Prisma.sql`p.id = ANY(${ids})`, Prisma.sql`array_position(${ids}::int[], p.id)`, 4, url) : Promise.resolve([]),
+    productCards(prisma, Prisma.sql`p.id <> ${id} AND (p.category_id = ${p.categoryId} OR p.type_id = ${p.typeId})`,
+      Prisma.sql`(p.category_id = ${p.categoryId}) DESC, p.is_featured DESC, p.published_at DESC NULLS LAST, p.id DESC`, CARD_LIMIT, url),
+  ]);
+  return { frequentlyBoughtTogether, similar: similar.filter((c) => !ids.includes(c.id)) };
+}
+
+/** Cards for ids in the given order (recently viewed); anything not live is skipped. */
+export async function cardsByIds(prisma: PrismaClient, ids: number[], url: MediaUrl): Promise<ProductCard[]> {
+  if (ids.length === 0) return [];
+  return productCards(prisma, Prisma.sql`p.id = ANY(${ids})`, Prisma.sql`array_position(${ids}::int[], p.id)`, ids.length, url);
 }
 
 export async function loadAvailability(prisma: PrismaClient, id: number): Promise<Availability> {

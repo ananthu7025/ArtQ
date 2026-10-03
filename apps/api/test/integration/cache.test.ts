@@ -50,7 +50,7 @@ function standIns(): Router {
   // /home, /products/:slug and its /availability are real routes (storefront router) and answer first.
   // /types/:slug, /categories/:slug, /techniques/:slug and /products are real too (task 3.5).
   for (const p of ['/types', '/techniques', '/pages/:slug', '/faqs', '/testimonials', '/reels', '/seo/sitemap-entries']) r.get(p, echo(p));
-  for (const p of ['/me', '/me/orders', '/cart', '/checkout', '/orders/:n', '/uploads/:id', '/pincodes/:p/serviceability']) r.get(p, echo(p));
+  for (const p of ['/me', '/me/orders', '/cart', '/checkout', '/orders/:n', '/uploads/:id']) r.get(p, echo(p));
   r.get('/reels-broken', () => { throw new Error('boom'); });
   return r;
 }
@@ -120,7 +120,8 @@ describe('✅ cache headers for every route group', () => {
   it('personal and live routes are never shared-cacheable, even as a 200 GET', async () => {
     const live = await liveProduct(prisma, { name: 'Availability Check' });
     expectNoStore(await request(app).get(`/v1/products/${live.slug}/availability`).set('Cookie', 'aq_cart=c1'));   // live stock: real route
-    for (const p of ['/me', '/me/orders', '/cart', '/checkout', '/orders/AQ1001', '/uploads/9', '/pincodes/682001/serviceability']) {
+    expectNoStore(await request(app).get('/v1/pincodes/682001/serviceability'));   // real route (task 3.6)
+    for (const p of ['/me', '/me/orders', '/cart', '/checkout', '/orders/AQ1001', '/uploads/9']) {
       const res = await request(app).get(`/v1${p}`).set('Cookie', 'aq_cart=c1');
       expect([200, 401], p).toContain(res.status);                    // /me is the real customer route (401 without a token)
       expectNoStore(res);
