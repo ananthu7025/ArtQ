@@ -166,6 +166,7 @@ Reconciliation, refund safety, authorization and inventory correctness are **MVP
 
 ## Phase 4: Purchase flow (20 d) → **M2**
 - [ ] **4.0 Razorpay spike** (0.5 d): on the test account confirm fetch-by-receipt, order payments list, capture, refunds with receipt, event-id header, late authorization behaviour, auto-capture setting.
+  _In progress 2026-10-03:_ orders part done (receipt lookup works with ~20 s lag; duplicate receipts allowed; 400 for unknown ids) — findings and fallbacks in architecture.md §7 "Provider contracts". Waiting for one browser test payment (capture, auto-capture, refunds); event-id header on staging.
   ✅ Findings recorded; any gap has a documented fallback.
 - [ ] **4.1 Cart backend** (1.5 d): token cookie, re-pricing, clamping, merge. *(Cookie, add/update/remove, re-pricing and clamping done in 3.4; left: merge on login, abandoned-cart cleanup.)*
 - [ ] **4.2 Storefront auth & account basics** (2.5 d): login/signup/OTP/forgot/reset/set-password pages; **refresh coordinator** (Web Locks + BroadcastChannel); profile, email change, addresses, wishlist.
