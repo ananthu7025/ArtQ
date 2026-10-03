@@ -165,6 +165,11 @@ export function reserveCoupon(db: Db, a: { orderId: number; couponId: number; us
   return exec(db, Prisma.sql`SELECT aq_reserve_coupon(${a.orderId}::int, ${a.couponId}::int, ${a.userId}::int, ${a.email}, ${a.phone}::text, ${a.discount}::int)`);
 }
 
+/** Migration 0006 (D-14): REDEEMED → REVERSED and redeemed_count − 1 for a CANCELLED order; false when nothing to reverse. */
+export function reverseCoupon(db: Db, orderId: number) {
+  return scalar<boolean>(db, Prisma.sql`SELECT aq_reverse_coupon(${orderId}::int) AS r`);
+}
+
 // ── Payments ─────────────────────────────────────────────────────────────
 
 export function reassessOrderPayment(db: Db, orderId: number, actor: ActorType) {

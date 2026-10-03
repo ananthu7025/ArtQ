@@ -25,6 +25,7 @@ import { registerTaxonomyRoutes } from './catalog/taxonomy-routes.js';
 import { importEnqueue } from './imports/queues.js';
 import { registerImportRoutes } from './imports/routes.js';
 import { registerInventoryRoutes } from './inventory/routes.js';
+import { registerCouponRoutes } from './coupons/admin-routes.js';
 import { ImportService } from './imports/service.js';
 import { razorpayProvider } from './webhooks/provider.js';
 import { storefrontRouter } from './storefront/routes.js';
@@ -74,6 +75,7 @@ const importValidateQueue = new Queue(QUEUE.importValidate, { ...BULLMQ_BASE, co
 const importApplyQueue = new Queue(QUEUE.importApply, { ...BULLMQ_BASE, connection: webhookQueue.opts.connection });
 for (const q of [importValidateQueue, importApplyQueue]) q.on('error', (err) => log.warn({ err: err.message, queue: q.name }, 'import queue connection error'));
 registerInventoryRoutes(admin, prisma);
+registerCouponRoutes(admin, prisma);
 registerImportRoutes(admin, prisma, new ImportService({ prisma, readFile: (m) => media.read(m), enqueue: importEnqueue(importValidateQueue, importApplyQueue) }));
 
 const app = createApp({
@@ -87,7 +89,7 @@ const app = createApp({
     authRouter({ prisma, cache, jwt, service, env: env.NODE_ENV, refreshMaxAgeS: DEFAULT_AUTH_TIMINGS.refreshIdleS, limiter, onRateLimitError, onSignedIn: claimGuestCartOnSignIn({ prisma, env: env.NODE_ENV, mediaUrl }) }),
     adminAuthRouter({ prisma, cache, jwt, service, env: env.NODE_ENV, limiter, onRateLimitError }),
     customerMediaRouter({ prisma, cache, jwt }, media),
-    cartRouter({ prisma, cache, jwt, env: env.NODE_ENV, mediaUrl }),
+    cartRouter({ prisma, cache, jwt, env: env.NODE_ENV, mediaUrl, limiter, onRateLimitError }),
     accountRouter({ prisma, cache, jwt, service, env: env.NODE_ENV, mediaUrl, limiter, onRateLimitError }),
     storefrontRouter({ prisma, cache: appCache, mediaUrl, limiter, onRateLimitError, onInvalidSetting: (key) => log.warn({ key }, 'stored setting is invalid; serving the default'), onSearchLogError: (err) => log.warn({ err: String(err) }, 'search log not written') }),
     webhookRouter({ prisma, queue: webhookQueue, providers: [razorpayProvider(env.RAZORPAY_WEBHOOK_SECRET || undefined)], log }),

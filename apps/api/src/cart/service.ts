@@ -1,10 +1,12 @@
 // Cart (api.md §3.7, task 4.1 core brought forward for quick add in 3.4). A cart is identified by a random token in an
 // HttpOnly cookie; only its SHA-256 is stored (architecture.md §5.1). Carts never reserve stock: adding checks what is
 // available now, and every read re-prices from the database, lowers quantities above current stock and flags price
-// changes. Totals come from the shared pricing engine (§6.4); coupon, shipping and COD arrive with checkout (Phase 4).
+// changes. Totals come from the shared pricing engine (§6.4) with the cart's coupon (task 4.3); shipping and COD arrive with
+// checkout.
 import { createHash, randomBytes } from 'node:crypto';
-import { formatINR, freeShippingRemaining, MAX_CART_QUANTITY, priceCart, type CartView, type PricingVariant } from '@artq/shared';
+import { formatINR, freeShippingRemaining, MAX_CART_QUANTITY, priceCart, type CartView, type PricingVariant, type PublicCoupon } from '@artq/shared';
 import type { PrismaClient } from '@prisma/client';
+import { CouponService, couponMessage, summaryOf, toPricingCoupon, type CouponCustomer } from '../coupons/service.js';
 import { AppError } from '../lib/errors.js';
 import { mediaRef, setting, type MediaUrl } from '../storefront/home.js';
 
@@ -20,7 +22,8 @@ type Row = {
 };
 
 export class CartService {
-  constructor(private readonly prisma: PrismaClient, private readonly mediaUrl: MediaUrl) {}
+  private readonly coupons: CouponService;
+  constructor(private readonly prisma: PrismaClient, private readonly mediaUrl: MediaUrl) { this.coupons = new CouponService(prisma); }
 
   /**
    * The active GUEST cart for a cookie token, or null. A cart that belongs to an account is never reachable by its
@@ -106,8 +109,8 @@ export class CartService {
     await this.prisma.cartItem.deleteMany({ where: { cartId } });
   }
 
-  /** The cart as the customer sees it now: re-priced, quantities lowered to what is in stock, changes explained. */
-  async view(cartId: number | null): Promise<CartView> {
+  /** The cart's lines re-read from the database: quantities lowered to what is in stock, changes explained. */
+  private async load(cartId: number | null) {
     const [ship, pay] = await Promise.all([setting(this.prisma, 'SHIPPING'), setting(this.prisma, 'PAYMENT')]);
     const rows = cartId === null ? [] : await this.prisma.$queryRaw<Row[]>`
       SELECT ci.id AS item_id, ci.variant_id, ci.quantity, ci.added_price, v.sku, v.label, v.price, v.mrp, GREATEST(v.on_hand - v.reserved, 0)::int AS available,
@@ -157,15 +160,99 @@ export class CartService {
     const changed = rows.filter((r) => r.price !== null && r.price !== r.added_price).map((r) => r.item_id);
     for (const id of changed) { const r = rows.find((x) => x.item_id === id)!; await this.prisma.cartItem.update({ where: { id }, data: { addedPrice: r.price! } }); }
 
-    const priced = priceCart({ lines, variants, coupon: null, destination: null, paymentMethod: null, settings: { shipping: ship, payment: { codEnabled: pay.codEnabled, codFee: pay.codFee, codMin: pay.codMin, codMax: pay.codMax } } });
+    return { items, lines, variants, warnings, settings: { shipping: ship, payment: { codEnabled: pay.codEnabled, codFee: pay.codFee, codMin: pay.codMin, codMax: pay.codMax } } };
+  }
+
+  /** Who the coupon checks are for: the account, or the email given at checkout. */
+  private async customerOf(cartId: number): Promise<{ couponId: number | null; who: CouponCustomer }> {
+    const c = await this.prisma.cart.findUnique({ where: { id: cartId }, select: { couponId: true, userId: true, contactEmail: true, user: { select: { email: true } } } });
+    return { couponId: c?.couponId ?? null, who: { userId: c?.userId ?? null, email: c?.contactEmail ?? c?.user?.email ?? null } };
+  }
+
+  /**
+   * The cart as the customer sees it now: re-priced, with its coupon re-checked. A coupon that stops qualifying (an item
+   * removed, the coupon used up or expired) stays on the cart with the reason and no discount, and applies again by
+   * itself once the cart qualifies.
+   */
+  async view(cartId: number | null): Promise<CartView> {
+    const { items, lines, variants, warnings, settings } = await this.load(cartId);
+    const { couponId, who } = cartId === null ? { couponId: null, who: { userId: null, email: null } } : await this.customerOf(cartId);
+    const coupon = couponId === null ? null : await this.coupons.findById(couponId);
+    if (couponId !== null && !coupon) await this.prisma.cart.update({ where: { id: cartId! }, data: { couponId: null } });   // deleted meanwhile
+    const check = coupon ? await this.coupons.check(coupon, who) : null;
+    const priced = priceCart({ lines, variants, coupon: coupon && check?.ok ? toPricingCoupon(coupon) : null, destination: null, paymentMethod: null, settings });
+    let couponView: CartView['coupon'] = null;
+    if (coupon) {
+      let problem: NonNullable<CartView['coupon']>['problem'] = null;
+      if (check && !check.ok) problem = { code: check.code, message: check.message };
+      else if (lines.length === 0) problem = { code: 'COUPON_NOT_ELIGIBLE', message: couponMessage.empty };
+      else if (priced.coupon && !priced.coupon.applied) {
+        problem = priced.coupon.error === 'COUPON_MIN_ORDER'
+          ? { code: 'COUPON_MIN_ORDER', message: couponMessage.minOrder(priced.coupon.shortBy), shortBy: priced.coupon.shortBy }
+          : { code: 'COUPON_NOT_ELIGIBLE', message: couponMessage.scope };
+      }
+      couponView = {
+        code: coupon.code, title: coupon.title, summary: summaryOf(coupon), type: coupon.type, applied: problem === null,
+        discount: problem === null ? priced.couponDiscount : 0, freeShipping: problem === null && coupon.type === 'FREE_SHIPPING', problem,
+      };
+    }
+    const ship = settings.shipping;
+    const couponDiscount = couponView?.applied ? priced.couponDiscount : 0;
+    const freeApplied = priced.subtotal > 0 && (couponView?.freeShipping === true || priced.subtotal - couponDiscount >= ship.freeThreshold);
     return {
-      items, coupon: null, warnings,
+      items, coupon: couponView, warnings,
       totals: {
-        itemCount: lines.reduce((s, l) => s + l.quantity, 0), subtotal: priced.subtotal, mrpTotal: priced.mrpTotal, mrpDiscount: priced.mrpDiscount, couponDiscount: 0,
-        shipping: { amount: null, estimated: true, freeApplied: priced.subtotal > 0 && priced.subtotal >= ship.freeThreshold },
-        codFee: 0, total: priced.subtotal, savings: priced.mrpDiscount,
-        freeShippingThreshold: ship.freeThreshold, freeShippingRemaining: priced.subtotal === 0 ? ship.freeThreshold : freeShippingRemaining(priced.subtotal, 0, ship.freeThreshold),
+        itemCount: lines.reduce((s, l) => s + l.quantity, 0), subtotal: priced.subtotal, mrpTotal: priced.mrpTotal, mrpDiscount: priced.mrpDiscount, couponDiscount,
+        shipping: { amount: null, estimated: true, freeApplied },
+        codFee: 0, total: priced.subtotal - couponDiscount, savings: priced.mrpDiscount + couponDiscount,
+        freeShippingThreshold: ship.freeThreshold,
+        freeShippingRemaining: priced.subtotal === 0 ? ship.freeThreshold : freeApplied ? 0 : freeShippingRemaining(priced.subtotal, couponDiscount, ship.freeThreshold),
       },
     };
+  }
+
+  /**
+   * POST /cart/coupon: puts the coupon on the cart only if it applies now (one coupon per cart: it replaces the last
+   * one). Refused with the first failing check of product.md §8.4. Nothing is reserved until checkout.
+   */
+  async applyCoupon(cartId: number | null, code: string): Promise<CartView> {
+    const coupon = await this.coupons.findByCode(code);
+    if (!coupon) throw new AppError(422, 'COUPON_INVALID', couponMessage.invalid);
+    if (cartId === null) throw new AppError(422, 'COUPON_NOT_ELIGIBLE', couponMessage.empty);
+    const { couponId: before } = await this.customerOf(cartId);
+    await this.prisma.cart.update({ where: { id: cartId }, data: { couponId: coupon.id, lastActivityAt: new Date() } });
+    const view = await this.view(cartId);
+    const problem = view.coupon?.problem;
+    if (problem) {
+      await this.prisma.cart.update({ where: { id: cartId }, data: { couponId: before } });
+      throw new AppError(422, problem.code, problem.message, problem.shortBy !== undefined ? { shortBy: problem.shortBy } : undefined);
+    }
+    return view;
+  }
+
+  async removeCoupon(cartId: number | null): Promise<CartView> {
+    if (cartId !== null) await this.prisma.cart.update({ where: { id: cartId }, data: { couponId: null } });
+    return this.view(cartId);
+  }
+
+  /** GET /cart/coupons: the public coupons, each with whether this cart qualifies now (and why not). */
+  async publicCoupons(cartId: number | null): Promise<PublicCoupon[]> {
+    const list = await this.coupons.listPublic();
+    if (list.length === 0) return [];
+    const { lines, variants, settings } = await this.load(cartId);
+    const { who } = cartId === null ? { who: { userId: null, email: null } } : await this.customerOf(cartId);
+    const out: PublicCoupon[] = [];
+    for (const c of list) {
+      const check = await this.coupons.check(c, who);
+      let reason: string | null = check.ok ? null : check.message;
+      if (!reason && lines.length === 0) reason = couponMessage.empty;
+      if (!reason) {
+        const outcome = priceCart({ lines, variants, coupon: toPricingCoupon(c), destination: null, paymentMethod: null, settings }).coupon;
+        if (outcome && !outcome.applied) reason = outcome.error === 'COUPON_MIN_ORDER' ? couponMessage.minOrder(outcome.shortBy) : couponMessage.scope;
+      }
+      out.push({ code: c.code, title: c.title, description: c.description, type: c.type, value: c.value, maxDiscount: c.maxDiscount, minOrderValue: c.minOrderValue,
+        endsAt: c.endsAt?.toISOString() ?? null, eligible: reason === null, reason });
+    }
+    return out;
   }
 }

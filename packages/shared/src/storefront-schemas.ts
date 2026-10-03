@@ -129,13 +129,17 @@ export type PincodeCheck = {
 };
 export type Availability = { variants: { id: number; price: number; mrp: number | null; discountPercent: number | null; stockStatus: StockStatus; maxQuantity: number }[] };
 
-/** GET /v1/cart (api.md §2 CartView; coupon, shipping and COD arrive with checkout). */
+/** GET /v1/cart (api.md §2 CartView; shipping and COD arrive with checkout). */
 export type CartView = {
   items: {
     id: number; variantId: number; productSlug: string; productName: string; variantLabel: string; image: MediaRef | null;
     unitPrice: number; unitMrp: number | null; quantity: number; lineTotal: number; maxQuantity: number; available: boolean; priceChanged: boolean; warning?: string;
   }[];
-  coupon: null;
+  /** The cart's coupon; `applied: false` with the reason while the cart does not qualify (it stays on the cart). */
+  coupon: {
+    code: string; title: string; summary: string; type: 'PERCENT' | 'FLAT' | 'FREE_SHIPPING'; applied: boolean; discount: number; freeShipping: boolean;
+    problem: { code: 'COUPON_INVALID' | 'COUPON_EXPIRED' | 'COUPON_USAGE_EXCEEDED' | 'COUPON_NOT_ELIGIBLE' | 'COUPON_MIN_ORDER'; message: string; shortBy?: number } | null;
+  } | null;
   totals: {
     itemCount: number; subtotal: number; mrpTotal: number; mrpDiscount: number; couponDiscount: number;
     shipping: { amount: number | null; estimated: boolean; freeApplied: boolean };

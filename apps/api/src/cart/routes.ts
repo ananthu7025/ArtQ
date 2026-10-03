@@ -1,19 +1,20 @@
-// /v1/cart (api.md §3.7). The cart cookie is created on the first add; reading without a cart returns an empty cart and
+// /v1/cart (api.md §3.7) and the cart's coupon (task 4.3). The cart cookie is created on the first add; reading without a cart returns an empty cart and
 // sets nothing. Every response is the re-priced CartView (no-store via the cache policy).
-import { cartAddBody, cartUpdateBody } from '@artq/shared';
+import { cartAddBody, cartCouponBody, cartUpdateBody } from '@artq/shared';
 import type { PrismaClient } from '@prisma/client';
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import { cookieSpec, parseCookies, setCookie, type DeployEnv } from '../auth/cookies.js';
 import { optionalCustomer, type AuthDeps } from '../auth/middleware.js';
 import { AppError } from '../lib/errors.js';
+import { RATE_LIMITS, rateLimit, type RateLimiter } from '../middleware/rateLimit.js';
 import { validate } from '../middleware/validate.js';
 import type { MediaUrl } from '../storefront/home.js';
 import { CART_TTL_S, CartService } from './service.js';
 
 const itemParam = z.strictObject({ itemId: z.coerce.number().int().positive() });
 
-export function cartRouter(d: AuthDeps & { env: DeployEnv; mediaUrl: MediaUrl }): Router {
+export function cartRouter(d: AuthDeps & { env: DeployEnv; mediaUrl: MediaUrl; limiter?: RateLimiter; onRateLimitError?: (e: unknown) => void }): Router {
   const r = Router();
   r.use('/cart', optionalCustomer(d));
   const spec = cookieSpec('cart', d.env);
@@ -58,6 +59,13 @@ export function cartRouter(d: AuthDeps & { env: DeployEnv; mediaUrl: MediaUrl })
     await carts.remove(id, (req.params as unknown as { itemId: number }).itemId);
     res.json(await carts.view(id));
   });
+  // Coupons (task 4.3): checked now, reserved only at checkout. Applying is rate limited per IP so codes cannot be guessed.
+  const couponLimit = d.limiter ? rateLimit({ limiter: d.limiter, name: 'cart-coupon', rule: RATE_LIMITS.couponApply, ...(d.onRateLimitError ? { onError: d.onRateLimitError } : {}) }) : (_q: Request, _s: Response, n: () => void) => n();
+  r.post('/cart/coupon', couponLimit, validate({ body: cartCouponBody }), async (req, res) => {
+    res.json(await carts.applyCoupon(await cartFor(req, res, false), (req.body as { code: string }).code));
+  });
+  r.delete('/cart/coupon', async (req, res) => { res.json(await carts.removeCoupon(await cartFor(req, res, false))); });
+  r.get('/cart/coupons', async (req, res) => { res.json({ data: await carts.publicCoupons(await cartFor(req, res, false)) }); });
   r.delete('/cart', async (req, res) => {
     const id = await cartFor(req, res, false);
     if (id !== null) await carts.clear(id);
