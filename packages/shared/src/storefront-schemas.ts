@@ -189,6 +189,17 @@ export type TaxonomyPage = {
   children: { slug: string; name: string }[];
 };
 
+// ── Search (api.md §3.3 /search, /search/suggest; task 3.7) ──
+export const SUGGEST_MIN = 2;
+export const searchSuggestQuery = z.strictObject({ q: z.string().trim().min(SUGGEST_MIN, `Type at least ${SUGGEST_MIN} characters`).max(SEARCH_QUERY_MAX, `Use at most ${SEARCH_QUERY_MAX} characters`) });
+export type SearchSuggestions = {
+  products: { id: number; slug: string; name: string; image: MediaRef | null; fromPrice: number }[];
+  categories: { slug: string; name: string; typeName: string }[];
+  types: { slug: string; name: string; href: string }[];
+};
+/** GET /v1/search: a listing plus, when nothing matched, the closest product name ("Did you mean …"). */
+export type SearchResults = ProductList & { query: string; suggestion: string | null };
+
 /** WhatsApp chat link for a stored number ("+91 98470 12345", "919847012345", "09847012345"); null when it is not a usable Indian or international number. */
 export function whatsappHref(number: string | null | undefined, text?: string): string | null {
   if (!number) return null;

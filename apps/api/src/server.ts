@@ -86,7 +86,7 @@ const app = createApp({
     adminAuthRouter({ prisma, cache, jwt, service, env: env.NODE_ENV, limiter, onRateLimitError }),
     customerMediaRouter({ prisma, cache, jwt }, media),
     cartRouter({ prisma, env: env.NODE_ENV, mediaUrl: (key) => `${env.MEDIA_PUBLIC_BASE_URL.replace(/\/$/, '')}/${key}` }),
-    storefrontRouter({ prisma, cache: appCache, mediaUrl: (key) => `${env.MEDIA_PUBLIC_BASE_URL.replace(/\/$/, '')}/${key}`, limiter, onRateLimitError, onInvalidSetting: (key) => log.warn({ key }, 'stored setting is invalid; serving the default') }),
+    storefrontRouter({ prisma, cache: appCache, mediaUrl: (key) => `${env.MEDIA_PUBLIC_BASE_URL.replace(/\/$/, '')}/${key}`, limiter, onRateLimitError, onInvalidSetting: (key) => log.warn({ key }, 'stored setting is invalid; serving the default'), onSearchLogError: (err) => log.warn({ err: String(err) }, 'search log not written') }),
     webhookRouter({ prisma, queue: webhookQueue, providers: [razorpayProvider(env.RAZORPAY_WEBHOOK_SECRET || undefined)], log }),
     admin.router,
   ],

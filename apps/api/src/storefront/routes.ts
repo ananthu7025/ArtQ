@@ -2,7 +2,7 @@
 // allow-list (architecture.md §6.1; headers set by middleware/cachePolicy.ts) and kept in the Redis app cache.
 import { randomBytes } from 'node:crypto';
 import type { PrismaClient } from '@prisma/client';
-import { DEFAULT_SETTINGS, newsletterSubscribeBody, notifyMeBody, pincodeField, storefrontListQuery, type StorefrontListQuery, PUBLIC_SETTING_KEYS, settingSchemas, toPublicSettings, type Navigation, type PublicSettings, type SettingKey, type SettingValue } from '@artq/shared';
+import { DEFAULT_SETTINGS, newsletterSubscribeBody, notifyMeBody, pincodeField, searchSuggestQuery, storefrontListQuery, type StorefrontListQuery, PUBLIC_SETTING_KEYS, settingSchemas, toPublicSettings, type Navigation, type PublicSettings, type SettingKey, type SettingValue } from '@artq/shared';
 import { Router, type RequestHandler, type Response } from 'express';
 import { z } from 'zod';
 import { noAppCache, type AppCache } from '../lib/app-cache.js';
@@ -10,11 +10,12 @@ import { loadHome, type MediaUrl } from './home.js';
 import { cardsByIds, findLiveProduct, loadAvailability, loadProductDetail, loadRelated } from './products.js';
 import { checkPincode } from './pincodes.js';
 import { listProducts, loadTaxonomyPage } from './listing.js';
+import { search, suggest } from './search.js';
 import { AppError } from '../lib/errors.js';
 import { RATE_LIMITS, rateLimit, type RateLimiter } from '../middleware/rateLimit.js';
 import { validate } from '../middleware/validate.js';
 
-export type StorefrontDeps = { prisma: PrismaClient; cache?: AppCache; mediaUrl: MediaUrl; limiter?: RateLimiter; onRateLimitError?: (e: unknown) => void; onInvalidSetting?: (key: SettingKey) => void };
+export type StorefrontDeps = { onSearchLogError?: (e: unknown) => void; prisma: PrismaClient; cache?: AppCache; mediaUrl: MediaUrl; limiter?: RateLimiter; onRateLimitError?: (e: unknown) => void; onInvalidSetting?: (key: SettingKey) => void };
 
 /** Menu: active types with "show in menu", their active categories; a tile link override replaces the type page. */
 export async function loadNavigation(prisma: PrismaClient): Promise<Navigation> {
@@ -60,6 +61,18 @@ export function storefrontRouter(d: StorefrontDeps): Router {
     if ('redirectTo' in found) { res.json({ redirectTo: found.redirectTo }); return null; }
     return found.id;
   };
+  // Search (task 3.7): the listing with a required query, logged; suggestions for the header box (60/min per IP).
+  const suggestLimit: RequestHandler = d.limiter
+    ? rateLimit({ limiter: d.limiter, name: 'search-suggest', rule: RATE_LIMITS.searchSuggest, ...(d.onRateLimitError ? { onError: d.onRateLimitError } : {}) })
+    : (_req, _res, next) => next();
+  r.get('/search', validate({ query: storefrontListQuery }), async (req, res) => {
+    const q = req.query as unknown as StorefrontListQuery;
+    if (!q.q) throw new AppError(400, 'VALIDATION_ERROR', 'Request validation failed', [{ location: 'query', path: 'q', message: 'Type what you are looking for' }]);
+    res.json(await search(d.prisma, { ...q, q: q.q }, d.mediaUrl, d.onSearchLogError));
+  });
+  r.get('/search/suggest', suggestLimit, validate({ query: searchSuggestQuery }), async (req, res) => {
+    res.json(await suggest(d.prisma, (req.query as unknown as { q: string }).q, d.mediaUrl));
+  });
   r.get('/products', validate({ query: storefrontListQuery }), async (req, res) => { res.json(await listProducts(d.prisma, req.query as unknown as StorefrontListQuery, d.mediaUrl)); });
   for (const [kind, path] of [['type', '/types/:slug'], ['category', '/categories/:slug'], ['technique', '/techniques/:slug']] as const) {
     r.get(path, validate({ params: slugParam }), async (req, res) => {

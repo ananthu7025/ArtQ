@@ -2,20 +2,24 @@
 // the interactive listing. Server-rendered from the URL so the first page is in the HTML (and indexable).
 import type { MediaRef, ProductList } from '@artq/shared';
 import Link from 'next/link';
-import { apiListPath, parseListing, type ListingFixed, type SearchParams } from '../../lib/listing';
-import { loadListing } from '../../lib/api';
+import { loadListing, loadSearch } from '../../lib/api';
+import { apiListPath, listingSearch, parseListing, type ListingFixed, type SearchParams } from '../../lib/listing';
 import { Img } from '../Img';
 import { ListingView } from './ListingView';
 
 type Crumb = { name: string; href?: string };
 type ListKey = 'type' | 'category' | 'technique' | 'size' | 'color' | 'thickness';
 
-export async function ListingPage({ searchParams, fixed, title, eyebrow, description, banner, crumbs, chips, hide = [] }: {
+export async function ListingPage({ searchParams, fixed, title, eyebrow, description, banner, crumbs, chips, hide = [], search = false }: {
   searchParams: SearchParams; fixed: ListingFixed; title: string; eyebrow?: string; description?: string | null; banner?: MediaRef | null;
   crumbs: Crumb[]; chips?: { name: string; href: string }[]; hide?: ListKey[];
+  /** Results come from /search (logged, with "Did you mean …") instead of /products. */
+  search?: boolean;
 }) {
   const state = parseListing(searchParams);
-  const list: ProductList | null = await loadListing(apiListPath(state, fixed, { pages: state.page }));
+  const path = apiListPath(state, fixed, { pages: state.page });
+  const results = search ? await loadSearch(path.replace(/^\/products\?/, '/search?')) : null;
+  const list: ProductList | null = search ? results : await loadListing(path);
   return (
     <div className="mx-auto max-w-[1320px] px-4 pb-16 pt-6 md:px-6 lg:px-8">
       <nav aria-label="Breadcrumb" className="mb-4 text-sm text-ink-700">
@@ -43,7 +47,11 @@ export async function ListingPage({ searchParams, fixed, title, eyebrow, descrip
           </ul>
         </nav>
       )}
-      <ListingView list={list} state={state} fixed={fixed} hide={hide} />
+      {results?.suggestion && (
+        <p className="mb-4 text-ink-700">Did you mean{' '}
+          <Link href={`/search${listingSearch({ ...state, q: results.suggestion, page: 1 })}`} className="font-semibold text-brand-700 underline">{results.suggestion}</Link>?</p>
+      )}
+      <ListingView list={list} state={state} fixed={fixed} hide={hide} {...(search ? { emptyTitle: `No products match “${state.q}”` } : {})} />
     </div>
   );
 }

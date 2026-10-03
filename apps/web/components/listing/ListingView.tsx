@@ -25,7 +25,7 @@ function Skeletons() {
   );
 }
 
-export function ListingView({ list, state: current, fixed, hide }: { list: ProductList | null; state: ListingState; fixed: ListingFixed; hide: ListKey[] }) {
+export function ListingView({ list, state: current, fixed, hide, emptyTitle }: { list: ProductList | null; state: ListingState; fixed: ListingFixed; hide: ListKey[]; emptyTitle?: string }) {
   const router = useRouter();
   const pathname = usePathname();
   const [pending, startTransition] = useTransition();
@@ -112,8 +112,8 @@ export function ListingView({ list, state: current, fixed, hide }: { list: Produ
         <div aria-busy={pending || undefined}>
           {pending ? <Skeletons /> : list.meta.total === 0 ? (
             <div className="rounded-lg border border-surface-200 bg-white px-6 py-12 text-center">
-              <p className="font-display text-xl font-semibold text-ink-900">No products match {chosen > 0 ? 'these filters' : 'here yet'}</p>
-              <p className="mt-2 text-sm text-ink-700">{chosen > 0 ? 'Try removing a filter or two.' : 'New products are on their way. Have a look at everything else meanwhile.'}</p>
+              <p className="font-display text-xl font-semibold text-ink-900">{chosen > 0 ? 'No products match these filters' : emptyTitle ?? 'No products match here yet'}</p>
+              <p className="mt-2 text-sm text-ink-700">{chosen > 0 ? 'Try removing a filter or two.' : emptyTitle ? 'Check the spelling or try a shorter word.' : 'New products are on their way. Have a look at everything else meanwhile.'}</p>
               {chosen > 0 && <button type="button" onClick={() => go({ ...EMPTY_STATE, q: state.q })} className="mt-6 h-11 rounded-md bg-brand-700 px-6 text-sm font-semibold uppercase tracking-[0.06em] text-white hover:bg-brand-800">Clear filters</button>}
             </div>
           ) : (

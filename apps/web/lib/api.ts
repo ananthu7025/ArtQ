@@ -3,7 +3,7 @@
 //   personal response can never be baked into a page that is cached and served to everyone.
 // - clientRequest: in the browser, with the customer's cookies (cart, session), never cached.
 // If the API cannot be reached, layout data falls back to the default settings and an empty menu.
-import { DEFAULT_PUBLIC_SETTINGS, isPublicCacheable, type HomeView, type Navigation, type ProductDetail, type ProductList, type PublicSettings, type RelatedProducts, type TaxonomyPage } from '@artq/shared';
+import { DEFAULT_PUBLIC_SETTINGS, isPublicCacheable, type HomeView, type Navigation, type ProductDetail, type ProductList, type PublicSettings, type RelatedProducts, type SearchResults, type TaxonomyPage } from '@artq/shared';
 
 export const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/v1').replace(/\/$/, '');
 
@@ -87,4 +87,16 @@ export async function loadProduct(slug: string, fetchImpl: Fetch = fetch): Promi
 export async function loadRelated(slug: string, fetchImpl: Fetch = fetch): Promise<RelatedProducts> {
   try { return await publicGet<RelatedProducts>(`/products/${encodeURIComponent(slug)}/related`, fetchImpl); }
   catch { return { frequentlyBoughtTogether: [], similar: [] }; }
+}
+
+/** Server-side GET that must not be cached (search is logged per request); still without cookies. */
+async function freshGet<T>(path: string, fetchImpl: Fetch, timeoutMs = 3000): Promise<T> {
+  const res = await fetchImpl(`${API_URL}${path}`, { cache: 'no-store', signal: AbortSignal.timeout(timeoutMs), credentials: 'omit', headers: { Accept: 'application/json' } });
+  if (!res.ok) throw new ApiError(res.status, 'HTTP', `${path} → ${res.status}`);
+  return (await res.json()) as T;
+}
+
+/** Search results (task 3.7); null when the API cannot be reached. */
+export async function loadSearch(path: string, fetchImpl: Fetch = fetch): Promise<SearchResults | null> {
+  try { return await freshGet<SearchResults>(path, fetchImpl); } catch { return null; }
 }

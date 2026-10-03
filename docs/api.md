@@ -147,7 +147,7 @@ Return photos are uploaded under the order routes so the order-scoped cookie (`P
 | GET | `/products/:slug/availability` | **no-store**: `{variants:[{id, price, mrp, discountPercent, stockStatus, maxQuantity}]}`; `LOW_STOCK` when available ≤ the variant's low-stock threshold; `maxQuantity` = min(available, 50) |
 | GET | `/products/:slug/related` | `{frequentlyBoughtTogether[], similar[]}`: products in the same paid orders (most often first, ≤ 4) and live products of the same category, then the same type (≤ 8); cacheable |
 | GET | `/products/by-ids?ids=` | Cards in the order asked (`ids` = up to 24 comma-separated ids; only live products) |
-| GET | `/search?q=…`, `/search/suggest?q=` | Search (logged) |
+| GET | `/search?q=…`, `/search/suggest?q=` | `/search`: the listing parameters with a required `q`; `SearchResults` = `ProductList` + `{query, suggestion}` (closest product name by trigram word similarity when nothing matched); page 1 logged in `search_logs` (query, normalised, result count; a logging failure never fails the search); no-store. `/search/suggest` (`q` 2–100 chars, 60/min per IP): `{products ≤ 6 (word prefix, name or close spelling), types ≤ 3, categories ≤ 3}` (only with live products) |
 
 `GET /products` parameters: `type`, `category`, `technique` (slug lists), `q`, `minPrice`, `maxPrice`, `size`, `color`, `thickness` (lists), `inStock=1`, `sale=1`, `isNew=1`, `isTrending=1`, `sort` (`featured|newest|price_asc|price_desc|name_asc|best_selling|relevance`), `page`, `limit`.
 **Variant filters (size, color, thickness, price, inStock, sale) must all be satisfied by the same variant** (architecture.md §6.2). Response: `{data: ProductCard[], meta, facets:{types, categories, techniques, sizes, colors, thicknesses, price:{min,max}}}`.
