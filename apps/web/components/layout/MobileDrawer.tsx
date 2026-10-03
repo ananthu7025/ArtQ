@@ -7,8 +7,10 @@ import { ChevronDown, X } from 'lucide-react';
 import Link from 'next/link';
 import { useState } from 'react';
 import { NAV_LINKS } from './links';
+import { useAuth } from '../account/AuthProvider';
 
 export function MobileDrawer({ open, onOpenChange, navigation, returnFocus }: { open: boolean; onOpenChange: (o: boolean) => void; navigation: Navigation; returnFocus?: () => void }) {
+  const { user } = useAuth();
   const [expanded, setExpanded] = useState<number | null>(null);
   const row = 'flex min-h-12 w-full items-center justify-between px-5 text-left text-[15px] text-ink-900 hover:bg-surface-100';
   return (
@@ -53,7 +55,9 @@ export function MobileDrawer({ open, onOpenChange, navigation, returnFocus }: { 
             </ul>
           </nav>
           <div className="border-t border-surface-200 p-5">
-            <Link href="/login" className="flex h-12 w-full items-center justify-center rounded-md bg-brand-700 text-sm font-semibold uppercase tracking-[0.06em] text-white hover:bg-brand-800">Log in / Sign up</Link>
+            {user
+              ? <Link href="/account" className="flex h-12 w-full items-center justify-center rounded-md border-[1.5px] border-ink-900 text-sm font-semibold uppercase tracking-[0.06em] text-ink-900 hover:bg-ink-900 hover:text-white">My account</Link>
+              : <Link href="/login" className="flex h-12 w-full items-center justify-center rounded-md bg-brand-700 text-sm font-semibold uppercase tracking-[0.06em] text-white hover:bg-brand-800">Log in / Sign up</Link>}
           </div>
         </Dialog.Content>
       </Dialog.Portal>

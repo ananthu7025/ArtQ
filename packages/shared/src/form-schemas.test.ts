@@ -24,10 +24,18 @@ describe('passwords', () => {
     ['staff reset', (p: string) => adminResetPasswordBody.safeParse({ token: 't'.repeat(43), password: p }), STAFF_PASSWORD_MIN],
     ['customer reset', (p: string) => resetPasswordBody.safeParse({ token: 't'.repeat(43), password: p }), CUSTOMER_PASSWORD_MIN],
   ])('%s: exactly min and 128 pass; one less / one more fail', (_l, parse, min) => {
-    expect(parse('p'.repeat(min)).success).toBe(true);
-    expect(parse('p'.repeat(PASSWORD_MAX)).success).toBe(true);
-    expect(messages(parse('p'.repeat(min - 1)))).toEqual([`password: Use at least ${min} characters`]);
-    expect(messages(parse('p'.repeat(PASSWORD_MAX + 1)))).toEqual([`password: Use at most ${PASSWORD_MAX} characters`]);
+    const pw = (n: number) => `${'p'.repeat(n - 1)}1`;
+    expect(parse(pw(min)).success).toBe(true);
+    expect(parse(pw(PASSWORD_MAX)).success).toBe(true);
+    expect(messages(parse(pw(min - 1)))).toEqual([`password: Use at least ${min} characters`]);
+    expect(messages(parse(pw(PASSWORD_MAX + 1)))).toEqual([`password: Use at most ${PASSWORD_MAX} characters`]);
+  });
+
+  it('a new customer password needs a letter and a number (product.md §5.9); login does not', () => {
+    const reset = (p: string) => resetPasswordBody.safeParse({ token: 't'.repeat(43), password: p });
+    for (const ok of ['abcdefg1', '1234567a', 'ಕನ್ನಡ1234']) expect(reset(ok).success, ok).toBe(true);
+    for (const bad of ['abcdefgh', '12345678', '--------']) expect(messages(reset(bad)), bad).toEqual(['password: Use at least one letter and one number']);
+    expect(adminLoginBody.safeParse({ email: 'a@artq.in', password: 'abcdefgh' }).success).toBe(true);
   });
 
   it('login and step-up accept any non-empty password up to 128 (no minimum: old passwords still log in)', () => {
@@ -50,7 +58,7 @@ describe('staff', () => {
   });
 
   it('signup reuses the same name/email/password fields', () => {
-    expect(signupBody.safeParse({ name: 'A', email: emailOf(EMAIL_MAX), password: 'p'.repeat(CUSTOMER_PASSWORD_MIN) }).success).toBe(true);
-    expect(signupBody.safeParse({ name: 'A', email: emailOf(EMAIL_MAX + 1), password: 'p'.repeat(CUSTOMER_PASSWORD_MIN) }).success).toBe(false);
+    expect(signupBody.safeParse({ name: 'A', email: emailOf(EMAIL_MAX), password: `${'p'.repeat(CUSTOMER_PASSWORD_MIN - 1)}1` }).success).toBe(true);
+    expect(signupBody.safeParse({ name: 'A', email: emailOf(EMAIL_MAX + 1), password: `${'p'.repeat(CUSTOMER_PASSWORD_MIN - 1)}1` }).success).toBe(false);
   });
 });

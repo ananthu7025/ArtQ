@@ -324,9 +324,9 @@ describe('admin forgot / reset password (/admin/auth/password/*)', () => {
     await request(app).post('/v1/auth/password/forgot').set('Origin', WEB).send({ email: staff.email });
     const link = new URL(String((await lastMail(staff.email, 'password_reset'))!.link));
     const token = link.searchParams.get('token')!;
-    const short = await request(app).post('/v1/auth/password/reset').set('Origin', WEB).send({ token, password: 'eight-ch' });
+    const short = await request(app).post('/v1/auth/password/reset').set('Origin', WEB).send({ token, password: 'eight-c1' });
     expect([short.status, short.body.error.details[0].path]).toEqual([400, 'password']);
-    expect((await request(app).post('/v1/auth/password/reset').set('Origin', WEB).send({ token, password: 'twelve-chars-ok' })).status).toBe(200);
+    expect((await request(app).post('/v1/auth/password/reset').set('Origin', WEB).send({ token, password: 'twelve-char1' })).status).toBe(200);
   });
 });
 

@@ -156,7 +156,7 @@ Implemented in task 3.5 (`storefrontListQuery` in `@artq/shared`, strict: unknow
 ### 3.4 Customer auth (launch: email only)
 | Method | Path | Body → Response |
 |--------|------|-----------------|
-| POST | `/auth/signup` | `{name, email, phone?, password, marketingOptIn}` → `201 {otpSentTo:"e***@gmail.com"}` (always the same shape, even if the email exists: an existing verified account instead receives a "someone tried to sign up" email) |
+| POST | `/auth/signup` | `{name, email, phone?, password (≥ 8 with a letter and a number, as every new customer password: reset, set-password, change), marketingOptIn}` → `201 {otpSentTo:"e***@gmail.com"}` (always the same shape, even if the email exists: an existing verified account instead receives a "someone tried to sign up" email) |
 | POST | `/auth/signup/verify` | `{email, code}` → `{accessToken, user}` + refresh cookie; links verified-email guest orders; merges cart & wishlist |
 | POST | `/auth/login` | `{email, password}` → `{accessToken, user}` + cookie. `INVALID_CREDENTIALS` (same response for unknown email and wrong password), `ACCOUNT_LOCKED` (`details.retryAfterSeconds`), `NOT_VERIFIED` / `ACCOUNT_BLOCKED` (only after a correct password) |
 | POST | `/auth/otp/request` | `{email, purpose:'LOGIN'}` → always `{sent:true, resendAfter:30}` |

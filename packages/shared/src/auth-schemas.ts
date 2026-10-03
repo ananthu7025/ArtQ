@@ -23,7 +23,9 @@ export const nameField = z.string().trim().min(1, 'Enter a name').max(NAME_MAX, 
 export const currentPasswordField = z.string().min(1, 'Enter your password').max(PASSWORD_MAX, `Use at most ${PASSWORD_MAX} characters`);
 
 const newPassword = (min: number) => z.string().min(min, `Use at least ${min} characters`).max(PASSWORD_MAX, `Use at most ${PASSWORD_MAX} characters`);
-export const customerPasswordField = newPassword(CUSTOMER_PASSWORD_MIN);
+/** A new customer password (product.md §5.9): at least 8 characters with a letter and a number. */
+export const customerPasswordField = newPassword(CUSTOMER_PASSWORD_MIN)
+  .refine((p) => /\p{L}/u.test(p) && /\d/.test(p), 'Use at least one letter and one number');
 export const staffPasswordField = newPassword(STAFF_PASSWORD_MIN);
 
 export const otpCodeField = z.string().regex(/^\d{6}$/, 'Enter the 6-digit code');
@@ -85,3 +87,12 @@ export type AddressInput = z.input<typeof addressBody>;
 export const WISHLIST_MAX = 100;
 export const wishlistToggleBody = z.strictObject({ productId: z.number().int().positive() });
 export const wishlistMergeBody = z.strictObject({ productIds: z.array(z.number().int().positive()).max(WISHLIST_MAX, `At most ${WISHLIST_MAX} products`) });
+
+/** GET /me/addresses (newest default first). */
+export type AddressView = {
+  id: number; label: (typeof ADDRESS_LABELS)[number]; fullName: string; phone: string; line1: string; line2: string | null; landmark: string | null;
+  city: string; state: { id: number; name: string }; pincode: string; isDefault: boolean;
+};
+/** GET /states (active Indian states, by name) and GET /pincodes/:pincode (address autofill). */
+export type StateOption = { id: number; name: string; code: string };
+export type PincodePlace = { pincode: string; district: string; state: { id: number; name: string } };

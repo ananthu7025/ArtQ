@@ -219,6 +219,7 @@ HTTP codes: 400 validation, 401 unauthenticated, 403 forbidden/origin rejected, 
 - After a successful refresh, the tab broadcasts `{type:'token', accessToken, exp}` on a `BroadcastChannel('aq-auth')`; other tabs adopt it instead of refreshing.
 - Logout broadcasts `{type:'logout'}`; all tabs clear memory state.
 - On page load (or reload) the app calls refresh once to obtain an access token; a 401 on any API call triggers one coordinated refresh and one retry.
+- **Storefront:** the load-time refresh runs only when this browser has signed in before (`aq_signed_in` flag in localStorage, set at sign-in and cleared at logout or when a refresh is refused). Guests therefore never call refresh, so they get no 401 per page and do not spend the per-IP refresh budget (30/min, shared by everyone behind one carrier NAT). The flag is only a hint: the HttpOnly cookie still decides. If the flag is lost (storage cleared), the visitor simply logs in again. A 401 on a cart call when the session cannot be refreshed retries once as a guest (the cart works without an account). Implemented in `apps/web/lib/session.ts` (task 4.2).
 - If Web Locks is unavailable, the server-side 30 s grace window (§5.2) still prevents false reuse detection.
 
 ### 5.4 Session revocation and account changes
