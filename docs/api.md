@@ -86,13 +86,16 @@ type Variant = {
 };
 
 type CartView = {
-  items: { id: number; variantId: number; productSlug: string; productName: string; variantLabel: string;
+  items: { id: number; variantId: number; productId: number; productSlug: string; productName: string; variantLabel: string;
            image: MediaRef | null; unitPrice: Money; unitMrp: Money | null; quantity: number; lineTotal: Money;
            maxQuantity: number; available: boolean; priceChanged: boolean; warning?: string }[];
-  coupon: { code: string; title: string; discount: Money } | null;
+  coupon: { code: string; title: string; summary: string; type: 'PERCENT' | 'FLAT' | 'FREE_SHIPPING'; applied: boolean;
+            discount: Money; freeShipping: boolean; problem: { code: string; message: string; shortBy?: Money } | null } | null;
   totals: { itemCount: number; subtotal: Money; mrpTotal: Money; mrpDiscount: Money; couponDiscount: Money;
+            // With ?pincode=: amount (included in total) or problem (UNKNOWN_PINCODE | NO_ZONE | PINCODE_NOT_SERVICEABLE |
+            // SHIPPING_RESTRICTED | DIMENSIONS_REQUIRED | NO_RATE); without: amount null, estimated true.
             shipping: { amount: Money | null; estimated: boolean; freeApplied: boolean; heavySurcharge: Money;
-                        actualWeightG: number; chargeableWeightG: number };
+                        pincode: string | null; problem: string | null };
             codFee: Money; total: Money; savings: Money;
             freeShippingThreshold: Money; freeShippingRemaining: Money };
   warnings: string[];
@@ -203,7 +206,7 @@ Implemented in task 4.2 (bodies in `@artq/shared` auth-schemas, shared with the 
 ### 3.7 Cart (cart cookie; Bearer optional)
 | Method | Path | Notes |
 |--------|------|-------|
-| GET | `/cart` | `CartView` (re-priced live, quantities clamped to available) |
+| GET | `/cart` | `CartView` (re-priced live, quantities clamped to available). Every cart call accepts `?pincode=` (6 digits; other query keys → 400): the shipping for that pincode through the one algorithm is quoted and added to `total` (task 4.5) |
 | POST | `/cart/items` | `{variantId, quantity 1–50}` (`cartAddBody`); the first add creates the cart and its cookie. Merges with the same variant; 409 `OUT_OF_STOCK` `{available, inCart}` (available = on hand − reserved; carts never reserve); 422 `QUANTITY_LIMIT` above 50 per line; 404 for drafts/inactive/unknown. Every cart response is the re-priced `CartView`: quantities above stock are lowered and saved with a warning, sold-out and unpublished lines stay listed but are not counted, a price change is flagged once (task 3.4; merge on login with 4.2) |
 | PATCH / DELETE | `/cart/items/:itemId` | quantity 0 = remove |
 | DELETE | `/cart` | Clear |

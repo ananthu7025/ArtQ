@@ -48,6 +48,8 @@ test.describe('desktop', () => {
     await expect(page.getByRole('group').filter({ hasText: /^Size/ }).locator('[aria-pressed="true"]')).toHaveCount(1);
     if (await page.getByRole('button', { name: 'Add to cart' }).isEnabled()) {
       await page.getByRole('button', { name: 'Add to cart' }).click();
+      await expect(page.getByRole('dialog', { name: 'Added to your cart' })).toBeVisible();
+      await page.keyboard.press('Escape');
       await expect(page.getByRole('banner').getByRole('link', { name: 'Cart, 1 item' })).toBeVisible();
     }
   });

@@ -18,7 +18,12 @@ test.describe('desktop', () => {
     await expect(cartCount(page)).toHaveAccessibleName('Cart, 0 items');
     const add = page.getByRole('button', { name: /^Add .+ to cart$/ }).first();
     await add.click();
-    await expect(page.getByText(/^Added .+ to your cart$/)).toBeVisible();
+    const drawer = page.getByRole('dialog', { name: 'Added to your cart' });   // the mini-cart (product.md §5.7)
+    await expect(drawer.getByText(/^Added .+ to your cart$/)).toBeAttached();
+    await expect(drawer.getByText('Cart subtotal (1 item)')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(drawer).toBeHidden();
+    await expect(add).toBeFocused();
     await expect(cartCount(page)).toHaveAccessibleName('Cart, 1 item');
     await page.reload();
     await expect(cartCount(page)).toHaveAccessibleName('Cart, 1 item');
@@ -33,9 +38,12 @@ test.describe('desktop', () => {
     await axeClean(page);
     await sheet.getByRole('button', { name: 'Increase quantity' }).click();
     await sheet.getByRole('button', { name: /^Add to cart · ₹/ }).click();
-    await expect(sheet).toBeHidden();
+    const drawer = page.getByRole('dialog', { name: 'Added to your cart' });   // the sheet closes, the mini-cart opens
+    await expect(drawer.getByText(/^Added 2 × .+ to your cart$/)).toBeAttached();
+    await axeClean(page);
+    await drawer.getByRole('button', { name: 'Continue shopping' }).click();
+    await expect(drawer).toBeHidden();
     await expect(options).toBeFocused();
-    await expect(page.getByText(/^Added 2 × .+ to your cart$/)).toBeVisible();
     await expect(cartCount(page)).toHaveAccessibleName('Cart, 2 items');   // each test starts with a fresh browser (no cart)
   });
 

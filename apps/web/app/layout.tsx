@@ -6,6 +6,7 @@ import { Header } from '../components/layout/Header';
 import { SiteToaster } from '../components/layout/SiteToaster';
 import { WhatsAppButton } from '../components/layout/WhatsAppButton';
 import { AuthProvider } from '../components/account/AuthProvider';
+import { MiniCart } from '../components/cart/MiniCart';
 import { ShopProvider } from '../components/shop/ShopProvider';
 import { loadLayout } from '../lib/api';
 import { inter, playfair, tenor } from '../lib/fonts';
@@ -32,6 +33,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
             <main id="main" tabIndex={-1} className="flex-1 focus:outline-none">{children}</main>
             <Footer navigation={navigation} settings={settings} />
             <WhatsAppButton number={settings.store.whatsapp} />
+            <MiniCart />
             <SiteToaster />
           </ShopProvider>
         </AuthProvider>

@@ -5,6 +5,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import userEvent from '@testing-library/user-event';
 import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { MiniCart } from '../components/cart/MiniCart';
 import { Header } from '../components/layout/Header';
 import { SiteToaster } from '../components/layout/SiteToaster';
 import { ProductCard as Card } from '../components/product/ProductCard';
@@ -28,7 +29,7 @@ const MICA_STOCK: Availability = { variants: [
   { id: 21, price: 19_000, mrp: null, discountPercent: null, stockStatus: 'OUT_OF_STOCK', maxQuantity: 0 }, { id: 22, price: 19_000, mrp: null, discountPercent: null, stockStatus: 'LOW_STOCK', maxQuantity: 3 },
   { id: 23, price: 49_000, mrp: null, discountPercent: null, stockStatus: 'IN_STOCK', maxQuantity: 50 }, { id: 24, price: 49_000, mrp: null, discountPercent: null, stockStatus: 'OUT_OF_STOCK', maxQuantity: 0 },
 ] };
-const cartView = (itemCount: number): CartView => ({ items: [], coupon: null, warnings: [], totals: { itemCount, subtotal: 0, mrpTotal: 0, mrpDiscount: 0, couponDiscount: 0, shipping: { amount: null, estimated: true, freeApplied: false }, codFee: 0, total: 0, savings: 0, freeShippingThreshold: 100_000, freeShippingRemaining: 100_000 } });
+const cartView = (itemCount: number): CartView => ({ items: [], coupon: null, warnings: [], totals: { itemCount, subtotal: 0, mrpTotal: 0, mrpDiscount: 0, couponDiscount: 0, shipping: { amount: null, estimated: true, freeApplied: false, heavySurcharge: 0, pincode: null, problem: null }, codFee: 0, total: 0, savings: 0, freeShippingThreshold: 100_000, freeShippingRemaining: 100_000 } });
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 const apiError = (status: number, code: string, message: string, details?: unknown) => json({ error: { code, message, details } }, status);
 
@@ -50,7 +51,7 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
-const page = (cards: ProductCard[]) => render(<ShopProvider><Header navigation={{ types: [] }} /><ul>{cards.map((c) => <li key={c.id}><Card card={c} /></li>)}</ul><SiteToaster /></ShopProvider>);
+const page = (cards: ProductCard[]) => render(<ShopProvider><Header navigation={{ types: [] }} /><ul>{cards.map((c) => <li key={c.id}><Card card={c} /></li>)}</ul><MiniCart /><SiteToaster /></ShopProvider>);
 const axeClean = async (el: Element) => expect((await axe.run(el, { rules: { 'color-contrast': { enabled: false }, region: { enabled: false } } })).violations.map((x) => `${x.id}: ${x.nodes.map((n) => n.target.join(' ')).join(', ')}`)).toEqual([]);
 
 describe('cart count and direct ADD', () => {
@@ -61,8 +62,12 @@ describe('cart count and direct ADD', () => {
     page([card({ id: 1, name: 'UV Curing Light' })]);
     expect(await screen.findByRole('link', { name: 'Cart, 2 items' })).toBeTruthy();
     await u.click(screen.getByRole('button', { name: 'Add UV Curing Light to cart' }));
-    expect(await screen.findByText('Added UV Curing Light to your cart')).toBeTruthy();
+    const drawer = await screen.findByRole('dialog', { name: 'Added to your cart' });   // the mini-cart (product.md §5.7)
+    expect(within(drawer).getByText('Added UV Curing Light to your cart')).toBeTruthy();
+    await u.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(screen.getByRole('link', { name: 'Cart, 3 items' })).toBeTruthy();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Add UV Curing Light to cart' }));
     const post = calls.find((c) => c.method === 'POST')!;
     expect(post).toMatchObject({ path: '/cart/items', body: { variantId: 101, quantity: 1 } });
     expect(post.init).toMatchObject({ credentials: 'include', cache: 'no-store' });
@@ -116,7 +121,7 @@ describe('quick-add sheet (several sizes)', () => {
     await axeClean(sheet);
   });
 
-  it('quantity stops at what is in stock; Add sends the chosen size and quantity, closes, focus returns to the pill', async () => {
+  it('quantity stops at what is in stock; Add sends the chosen size and quantity, the mini-cart opens; closing it returns focus to the pill', async () => {
     const u = userEvent.setup();
     routes['POST /cart/items'] = () => json(cartView(3), 201);
     const sheet = await open(u);
@@ -127,9 +132,12 @@ describe('quick-add sheet (several sizes)', () => {
     expect(within(sheet).getByText('Only 3 available')).toBeTruthy();
     await u.click(within(sheet).getByRole('button', { name: 'Add to cart · ₹570' }));
     expect(calls.find((c) => c.method === 'POST')!.body).toEqual({ variantId: 22, quantity: 3 });
+    const drawer = await screen.findByRole('dialog', { name: 'Added to your cart' });   // the sheet closed, the mini-cart opened
+    expect(within(drawer).getByText('Added 3 × Mica Pigment (10 gm / Silver) to your cart')).toBeTruthy();
+    await waitFor(() => expect(drawer.contains(document.activeElement)).toBe(true));
+    await u.keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Options for Mica Pigment' }));
-    expect(await screen.findByText('Added 3 × Mica Pigment (10 gm / Silver) to your cart')).toBeTruthy();
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Options for Mica Pigment' })));
   });
 
   it('changing size resets the quantity; a refusal from the API is shown in the sheet', async () => {

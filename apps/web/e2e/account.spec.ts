@@ -54,6 +54,7 @@ test.use({ viewport: { width: 1440, height: 900 } });
 test('signup: the guest cart and wishlist join the new account; the form shows errors under the fields; axe clean', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: /^Add .+ to cart$/ }).first().click();
+  await page.getByRole('dialog', { name: 'Added to your cart' }).getByRole('button', { name: 'Continue shopping' }).click();
   await expect(cartCount(page)).toHaveAccessibleName('Cart, 1 item');
   await page.getByRole('button', { name: /^Save .+ to wishlist$/ }).first().click();
   await expect(wishCount(page)).toHaveAccessibleName('Wishlist, 1 item');

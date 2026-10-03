@@ -131,10 +131,11 @@ export type PincodeCheck = {
 };
 export type Availability = { variants: { id: number; price: number; mrp: number | null; discountPercent: number | null; stockStatus: StockStatus; maxQuantity: number }[] };
 
-/** GET /v1/cart (api.md §2 CartView; shipping and COD arrive with checkout). */
+export type ShippingProblem = 'UNKNOWN_PINCODE' | 'NO_ZONE' | 'PINCODE_NOT_SERVICEABLE' | 'SHIPPING_RESTRICTED' | 'DIMENSIONS_REQUIRED' | 'NO_RATE';
+/** GET /v1/cart (api.md §2 CartView); COD arrives with checkout. */
 export type CartView = {
   items: {
-    id: number; variantId: number; productSlug: string; productName: string; variantLabel: string; image: MediaRef | null;
+    id: number; variantId: number; productId: number; productSlug: string; productName: string; variantLabel: string; image: MediaRef | null;
     unitPrice: number; unitMrp: number | null; quantity: number; lineTotal: number; maxQuantity: number; available: boolean; priceChanged: boolean; warning?: string;
   }[];
   /** The cart's coupon; `applied: false` with the reason while the cart does not qualify (it stays on the cart). */
@@ -144,7 +145,8 @@ export type CartView = {
   } | null;
   totals: {
     itemCount: number; subtotal: number; mrpTotal: number; mrpDiscount: number; couponDiscount: number;
-    shipping: { amount: number | null; estimated: boolean; freeApplied: boolean };
+    /** With `?pincode=`: the quote for that pincode (`amount`, included in `total`) or why it cannot ship; else an estimate. */
+    shipping: { amount: number | null; estimated: boolean; freeApplied: boolean; heavySurcharge: number; pincode: string | null; problem: ShippingProblem | null };
     codFee: number; total: number; savings: number; freeShippingThreshold: number; freeShippingRemaining: number;
   };
   warnings: string[];

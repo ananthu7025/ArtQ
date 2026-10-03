@@ -10,7 +10,7 @@ import { useForm } from 'react-hook-form';
 import type { z } from 'zod';
 import { clientRequest } from '../../lib/api';
 import { FormAlert, TextField } from '../form/fields';
-import { errorText } from '../shop/ShopProvider';
+import { errorText, writePincode } from '../shop/ShopProvider';
 
 const KEY = 'aq_pincode';
 const title = (s: string) => s.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
@@ -24,7 +24,7 @@ export function PincodeCheck() {
     setProblem(null);
     try {
       setResult(await clientRequest<Check>('GET', `/pincodes/${pincode}/serviceability`));
-      try { window.localStorage.setItem(KEY, pincode); } catch { /* storage blocked */ }
+      writePincode(pincode);   // also the cart's shipping estimate
     } catch (e) { setResult(null); setProblem(errorText(e)); }
   });
   return (

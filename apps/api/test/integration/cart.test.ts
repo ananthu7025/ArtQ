@@ -11,6 +11,7 @@ import { hashToken } from '../../src/cart/service.js';
 import { cartRouter } from '../../src/cart/routes.js';
 import * as fn from '../../src/db/functions.js';
 import type { RateLimiter } from '../../src/middleware/rateLimit.js';
+import { seedGeo, seedSettings, seedShipping } from '../../src/seed/steps.js';
 import { storefrontRouter } from '../../src/storefront/routes.js';
 import { createMigratedDatabase, type TestDb } from '../helpers/db.js';
 import { uniq, val } from '../helpers/fixtures.js';
@@ -308,5 +309,47 @@ describe('Notify me', () => {
     const res = await Promise.all(Array.from({ length: 4 }, () => notify(p.slug, { variantId: p.variantIds[0], email })));
     expect(res.map((r) => r.status).sort()).toEqual([200, 200, 200, 201]);
     expect(await prisma.stockNotification.count({ where: { email } })).toBe(1);
+  });
+});
+
+describe('cart: shipping estimate for a pincode (task 4.5, ?pincode= on every cart call)', () => {
+  beforeAll(async () => {
+    await seedShipping(prisma); await seedGeo(prisma); await seedSettings(prisma);
+    const state = (name: string) => prisma.state.findFirstOrThrow({ where: { name } });
+    await prisma.postalCode.createMany({ data: [
+      { pincode: '682011', officeName: 'ERNAKULAM H.O', district: 'ERNAKULAM', stateId: (await state('Kerala')).id },
+      { pincode: '744101', officeName: 'PORT BLAIR H.O', district: 'SOUTH ANDAMAN', stateId: (await state('Andaman and Nicobar Islands')).id },
+    ], skipDuplicates: true });
+  });
+
+  it('a quote for the pincode is added to the total (300 g + 150 g packaging → Kerala ₹50); free from ₹1,000; lines carry their product id', async () => {
+    const p = await liveProduct(prisma, { variants: [{ price: 49_900, onHand: 10 }] });
+    const s = shopper();
+    await s.add(p.variantIds[0]!);
+    const res = await s.get('/v1/cart?pincode=682011');
+    expect(res.body.items[0].productId).toBe(p.productId);
+    expect(res.body.totals.shipping).toEqual({ amount: 5000, estimated: false, freeApplied: false, heavySurcharge: 0, pincode: '682011', problem: null });
+    expect(res.body.totals.total).toBe(49_900 + 5000);
+    const two = await s.patch(res.body.items[0].id, 3);   // patch without the pincode: estimate only
+    expect(two.body.totals.shipping).toMatchObject({ amount: null, estimated: true, pincode: null });
+    const free = await s.get('/v1/cart?pincode=682011');
+    expect(free.body.totals.shipping).toMatchObject({ amount: 0, freeApplied: true });
+    expect(free.body.totals.total).toBe(3 * 49_900);
+    expect(free.body.totals.savings).toBe(11_000);   // the shipping waived: 1,050 g → Kerala 2 kg slab ₹110
+  });
+
+  it('why it cannot ship: unknown pincode, blocked pincode, resin to an air-only area; malformed pincode → 400', async () => {
+    const p = await liveProduct(prisma, { variants: [{ price: 20_000 }] });
+    await prisma.productVariant.update({ where: { id: p.variantIds[0]! }, data: { shippingClass: 'SURFACE_ONLY' } });
+    const s = shopper();
+    await s.add(p.variantIds[0]!);
+    expect((await s.get('/v1/cart?pincode=999999')).body.totals).toMatchObject({ shipping: { amount: null, problem: 'UNKNOWN_PINCODE', pincode: '999999' }, total: 20_000 });
+    expect((await s.get('/v1/cart?pincode=744101')).body.totals.shipping).toMatchObject({ amount: null, problem: 'SHIPPING_RESTRICTED' });
+    await prisma.pincodeServiceability.create({ data: { pincode: '682011', isServiceable: false, codAvailable: false } });
+    expect((await s.get('/v1/cart?pincode=682011')).body.totals.shipping.problem).toBe('PINCODE_NOT_SERVICEABLE');
+    await prisma.pincodeServiceability.delete({ where: { pincode: '682011' } });
+    expect((await s.get('/v1/cart?pincode=68201')).status).toBe(400);
+    expect((await s.get('/v1/cart?zip=682011')).status).toBe(400);
+    expect((await shopper().get('/v1/cart?pincode=682011')).body.totals.shipping).toMatchObject({ amount: null, pincode: null });   // empty cart: nothing to ship
   });
 });

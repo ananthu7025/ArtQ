@@ -7,6 +7,8 @@ if (!window.matchMedia) {
   window.matchMedia = ((q: string) => ({ matches: false, media: q, onchange: null, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {}, dispatchEvent: () => false })) as typeof window.matchMedia;
 }
 if (!Element.prototype.scrollTo) Element.prototype.scrollTo = function scrollTo() {};
+// Pointer capture (used by Radix while a pointer is down) is not in jsdom.
+if (!Element.prototype.setPointerCapture) { Element.prototype.setPointerCapture = () => {}; Element.prototype.releasePointerCapture = () => {}; Element.prototype.hasPointerCapture = () => false; }
 if (!('ResizeObserver' in window)) {
   (window as unknown as { ResizeObserver: unknown }).ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
 }
