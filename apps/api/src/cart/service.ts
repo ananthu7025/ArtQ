@@ -22,16 +22,50 @@ type Row = {
 export class CartService {
   constructor(private readonly prisma: PrismaClient, private readonly mediaUrl: MediaUrl) {}
 
-  /** The active cart for a cookie token, or null (no cookie, unknown or no longer active). */
+  /**
+   * The active GUEST cart for a cookie token, or null. A cart that belongs to an account is never reachable by its
+   * cookie alone, so after a logout on a shared computer the next person does not see it.
+   */
   async find(token: string | undefined): Promise<{ id: number } | null> {
     if (!token) return null;
-    return this.prisma.cart.findFirst({ where: { tokenHash: hashToken(token), status: 'ACTIVE' }, select: { id: true } });
+    return this.prisma.cart.findFirst({ where: { tokenHash: hashToken(token), status: 'ACTIVE', userId: null }, select: { id: true } });
   }
 
-  async create(): Promise<{ id: number; token: string }> {
+  /** The account's active cart (the same on every device), or null. */
+  async forUser(userId: number): Promise<{ id: number } | null> {
+    return this.prisma.cart.findFirst({ where: { userId, status: 'ACTIVE' }, orderBy: { lastActivityAt: 'desc' }, select: { id: true } });
+  }
+
+  async create(userId: number | null = null): Promise<{ id: number; token: string }> {
     const token = newToken();
-    const cart = await this.prisma.cart.create({ data: { tokenHash: hashToken(token) } });
+    const cart = await this.prisma.cart.create({ data: { tokenHash: hashToken(token), userId } });
     return { id: cart.id, token };
+  }
+
+  /**
+   * At sign-in (api.md §3.4 "merges cart"): the guest cart joins the account. No account cart yet → the guest cart
+   * becomes it. Otherwise its lines are added to the account cart (same variant: quantities added, capped at what is
+   * available and at 50) and the guest cart is marked MERGED. Returns the account cart id.
+   */
+  async claim(guestToken: string | undefined, userId: number): Promise<number | null> {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM users WHERE id = ${userId} FOR NO KEY UPDATE`;   // one claim per account at a time
+      const guest = guestToken ? await tx.cart.findFirst({ where: { tokenHash: hashToken(guestToken), status: 'ACTIVE', userId: null } }) : null;
+      const mine = await tx.cart.findFirst({ where: { userId, status: 'ACTIVE' }, orderBy: { lastActivityAt: 'desc' } });
+      if (!guest) return mine?.id ?? null;
+      if (!mine) { await tx.cart.update({ where: { id: guest.id }, data: { userId, lastActivityAt: new Date() } }); return guest.id; }
+      const lines = await tx.$queryRaw<{ variant_id: number; quantity: number; added_price: number; available: number }[]>`
+        SELECT ci.variant_id, ci.quantity, ci.added_price, GREATEST(v.on_hand - v.reserved, 0)::int AS available
+          FROM cart_items ci JOIN product_variants v ON v.id = ci.variant_id WHERE ci.cart_id = ${guest.id}`;
+      for (const l of lines) {
+        const existing = await tx.cartItem.findUnique({ where: { cartId_variantId: { cartId: mine.id, variantId: l.variant_id } } });
+        const quantity = Math.max(1, Math.min((existing?.quantity ?? 0) + l.quantity, MAX_CART_QUANTITY, Math.max(l.available, existing?.quantity ?? 1)));
+        await tx.cartItem.upsert({ where: { cartId_variantId: { cartId: mine.id, variantId: l.variant_id } }, create: { cartId: mine.id, variantId: l.variant_id, quantity, addedPrice: l.added_price }, update: { quantity } });
+      }
+      await tx.cart.update({ where: { id: guest.id }, data: { status: 'MERGED' } });
+      await tx.cart.update({ where: { id: mine.id }, data: { lastActivityAt: new Date() } });
+      return mine.id;
+    });
   }
 
   /** Adds `quantity` of a variant (merging with the same variant already in the cart). */

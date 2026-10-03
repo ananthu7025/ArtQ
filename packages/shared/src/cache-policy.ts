@@ -10,7 +10,7 @@ export const PUBLIC_CACHE_PATTERNS: readonly RegExp[] = [
   /^\/home$/, /^\/navigation$/, /^\/settings\/public$/,
   /^\/types(\/[^/]+)*$/, /^\/categories(\/[^/]+)*$/, /^\/techniques(\/[^/]+)*$/,
   /^\/products$/, /^\/products\/[^/]+$/, /^\/products\/[^/]+\/related$/,
-  /^\/pages\/[^/]+$/, /^\/faqs$/, /^\/testimonials$/, /^\/reels$/, /^\/seo(\/[^/]+)+$/,
+  /^\/states$/, /^\/pages\/[^/]+$/, /^\/faqs$/, /^\/testimonials$/, /^\/reels$/, /^\/seo(\/[^/]+)+$/,
 ];
 
 /** True when a GET of `path` (relative to /v1, query string allowed) may be publicly cached. Case-insensitive like Express routing; one trailing slash is ignored. */

@@ -49,3 +49,39 @@ export const stepUpBody = z.strictObject({ password: currentPasswordField });
 export const adminForgotPasswordBody = z.strictObject({ email: emailField });
 /** Invite and reset links (staff minimum 12 characters). */
 export const adminResetPasswordBody = z.strictObject({ token: z.string().min(16, 'This link is incomplete').max(200, 'This link is not valid'), password: staffPasswordField });
+
+// ── Account (api.md §3.5, task 4.2). The storefront's account forms import these. ──
+/** PATCH /me. Phone is contact-only at launch (not verified); null clears it. */
+export const profileBody = z.strictObject({
+  name: nameField,
+  phone: z.union([phoneField, z.literal('').transform(() => null), z.null()]).optional(),
+  marketingOptIn: z.boolean().optional(),
+});
+export const changePasswordBody = z.strictObject({ currentPassword: currentPasswordField, newPassword: customerPasswordField })
+  .refine((b) => b.currentPassword !== b.newPassword, { path: ['newPassword'], message: 'Choose a password different from the current one' });
+export const emailChangeBody = z.strictObject({ newEmail: emailField, password: currentPasswordField });
+export const emailVerifyBody = z.strictObject({ code: otpCodeField });
+export const deleteAccountBody = z.strictObject({ password: currentPasswordField, confirm: z.literal(true, { error: 'Tick the box to confirm' }) });
+
+export const ADDRESS_LABELS = ['HOME', 'WORK', 'OTHER'] as const;
+export const MAX_ADDRESSES = 10;
+const line = (max: number, required: string) => z.string().trim().min(1, required).max(max, `Use at most ${max} characters`);
+const optionalLine = (max: number) => z.string().trim().max(max, `Use at most ${max} characters`).transform((v) => v || null).nullable().optional();
+/** POST /me/addresses and PATCH /me/addresses/:id (India only at launch). */
+export const addressBody = z.strictObject({
+  label: z.enum(ADDRESS_LABELS).default('HOME'),
+  fullName: line(120, 'Enter the name for delivery'),
+  phone: phoneField,
+  line1: line(200, 'Enter the house / building and street'),
+  line2: optionalLine(200),
+  landmark: optionalLine(120),
+  city: line(80, 'Enter the city or town'),
+  stateId: z.number({ error: 'Choose a state' }).int().positive('Choose a state'),
+  pincode: z.string().trim().regex(/^[1-9][0-9]{5}$/, 'Enter a 6-digit pincode'),
+  isDefault: z.boolean().optional(),
+});
+export type AddressInput = z.input<typeof addressBody>;
+
+export const WISHLIST_MAX = 100;
+export const wishlistToggleBody = z.strictObject({ productId: z.number().int().positive() });
+export const wishlistMergeBody = z.strictObject({ productIds: z.array(z.number().int().positive()).max(WISHLIST_MAX, `At most ${WISHLIST_MAX} products`) });

@@ -50,6 +50,12 @@ function requireSession(deps: AuthDeps, audience: Audience): RequestHandler {
 /** Storefront Bearer token (audience storefront). */
 export const requireCustomer = (deps: AuthDeps): RequestHandler => requireSession(deps, 'storefront');
 
+/** A storefront Bearer token when one is sent (then it must be valid: 401 lets the client refresh); none → a guest. */
+export const optionalCustomer = (deps: AuthDeps): RequestHandler => {
+  const strict = requireSession(deps, 'storefront');
+  return (req, res, next) => (req.get('authorization') ? strict(req, res, next) : next());
+};
+
 /** Admin Bearer token (audience admin). The database already refuses admin sessions of CUSTOMER-role users. */
 export const requireAdmin = (deps: AuthDeps): RequestHandler => requireSession(deps, 'admin');
 

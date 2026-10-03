@@ -24,7 +24,7 @@ const TEMPLATES: Record<string, (d: Record<string, unknown>) => Rendered> = {
   otp: (d) => {
     const code = str(d.code, 'code');
     const mins = str(d.expiresInMinutes ?? 10, 'expiresInMinutes');
-    const what = d.purpose === 'SIGNUP_VERIFY' ? 'verify your email' : 'log in';
+    const what = d.purpose === 'SIGNUP_VERIFY' ? 'verify your email' : d.purpose === 'EMAIL_CHANGE' ? 'confirm your new email address' : 'log in';
     return {
       subject: `${code} is your ArtQ code`,
       text: `Use ${code} to ${what}. It expires in ${mins} minutes. If you did not ask for it, ignore this email.`,
@@ -52,6 +52,27 @@ const TEMPLATES: Record<string, (d: Record<string, unknown>) => Rendered> = {
     subject: 'Your ArtQ password was changed',
     text: 'Your password was changed and you were logged out everywhere. If this was not you, reset your password now.',
     html: layout('Password changed', ['Your password was changed and you were logged out on every device.', 'If this was not you, reset your password straight away.']),
+  }),
+  email_change_requested: (d) => {
+    const to = str(d.newEmail, 'newEmail');
+    return {
+      subject: 'Your ArtQ email address is being changed',
+      text: `Someone asked to change the email of your ArtQ account to ${to}. If this was not you, reset your password now.`,
+      html: layout('Email change requested', [`Someone asked to change the email of your ArtQ account to ${to}.`, 'If this was not you, reset your password straight away.']),
+    };
+  },
+  email_changed: (d) => {
+    const to = str(d.newEmail, 'newEmail');
+    return {
+      subject: 'Your ArtQ email address was changed',
+      text: `Your ArtQ account now uses ${to}, and you were logged out everywhere. If this was not you, contact us.`,
+      html: layout('Email address changed', [`Your ArtQ account now uses ${to}, and you were logged out on every device.`, 'If this was not you, contact us straight away.']),
+    };
+  },
+  account_deleted: () => ({
+    subject: 'Your ArtQ account was deleted',
+    text: 'Your ArtQ account was deleted and you were logged out everywhere. Your order history is kept for our records; your personal details are removed after 30 days.',
+    html: layout('Account deleted', ['Your ArtQ account was deleted and you were logged out on every device.', 'Order records are kept as the law requires; your personal details are removed after 30 days.']),
   }),
   signup_attempt_existing: () => ({
     subject: 'Someone tried to sign up with your email',

@@ -7,11 +7,12 @@ export const RETENTION = {
   sessionDays: 30,              // sessions (and their refresh-token history) after they end
   otpGraceHours: 24,            // codes after expiry or use
   resetTokenGraceHours: 24,     // password-reset links after expiry or use
+  deletedAccountDays: 30,       // deleted accounts: personal data removed after this (api.md §3.5); orders keep their own copy
   emailAuthScrubMinutes: 60,    // email.auth payloads whose deliveries all finished but were not scrubbed in-line
   batch: 5000,
 } as const;
 
-export type RetentionResult = Record<'outboxDeliveries' | 'outboxEvents' | 'emailPayloadsScrubbed' | 'sessions' | 'otpCodes' | 'resetTokens' | 'idempotencyKeys', number>;
+export type RetentionResult = Record<'outboxDeliveries' | 'outboxEvents' | 'emailPayloadsScrubbed' | 'sessions' | 'otpCodes' | 'resetTokens' | 'idempotencyKeys' | 'accountsAnonymised', number>;
 
 async function batched(run: () => Promise<number>, batch: number): Promise<number> {
   let total = 0;
@@ -54,5 +55,18 @@ export async function runRetention(prisma: PrismaClient, o: Partial<typeof RETEN
   // Idempotency records expire 24 h after creation (api.md §1.2); a still-PROCESSING one past expiry is abandoned.
   const idempotencyKeys = await batched(() => prisma.$executeRaw`
     DELETE FROM idempotency_keys WHERE id IN (SELECT id FROM idempotency_keys WHERE expires_at < now() LIMIT ${r.batch}::int)`, r.batch);
-  return { outboxDeliveries, outboxEvents, emailPayloadsScrubbed, sessions, otpCodes, resetTokens, idempotencyKeys };
+  // Deleted accounts (task 4.2): after 30 days the person's details go; the row stays (orders and audit refer to it).
+  // The email becomes a unique placeholder, so the address can sign up again and the row is recognisably anonymised.
+  const accountsAnonymised = await prisma.$transaction(async (tx) => {
+    const ids = (await tx.$queryRaw<{ id: number }[]>`
+      SELECT id FROM users WHERE deleted_at < now() - make_interval(days => ${r.deletedAccountDays}::int)
+         AND email NOT LIKE 'deleted-%@deleted.invalid' LIMIT ${r.batch}::int FOR UPDATE SKIP LOCKED`).map((x) => x.id);
+    if (ids.length === 0) return 0;
+    await tx.$executeRaw`DELETE FROM addresses WHERE user_id = ANY(${ids})`;
+    await tx.$executeRaw`DELETE FROM wishlist_items WHERE user_id = ANY(${ids})`;
+    await tx.$executeRaw`UPDATE users SET name = NULL, phone = NULL, password_hash = NULL, marketing_opt_in = false,
+        email = 'deleted-' || id || '@deleted.invalid' WHERE id = ANY(${ids})`;
+    return ids.length;
+  });
+  return { outboxDeliveries, outboxEvents, emailPayloadsScrubbed, sessions, otpCodes, resetTokens, idempotencyKeys, accountsAnonymised };
 }

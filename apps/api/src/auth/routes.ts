@@ -18,7 +18,11 @@ export const schemas = {
   empty: emptyBody, forgot: forgotPasswordBody, reset: resetPasswordBody,
 };
 
-export type AuthRouterDeps = AuthDeps & { service: AuthService; env: DeployEnv; refreshMaxAgeS: number; limiter: RateLimiter; onRateLimitError?: (e: unknown) => void };
+export type AuthRouterDeps = AuthDeps & {
+  service: AuthService; env: DeployEnv; refreshMaxAgeS: number; limiter: RateLimiter; onRateLimitError?: (e: unknown) => void;
+  /** After any storefront sign-in (e.g. claim the guest cart). A failure here never fails the sign-in. */
+  onSignedIn?: (req: Request, userId: number) => Promise<void>;
+};
 
 const meta = (req: Request): ClientMeta => ({ ip: req.ip ?? null, userAgent: req.get('user-agent') ?? null });
 
@@ -39,6 +43,10 @@ export function authRouter(d: AuthRouterDeps): Router {
     const row = t ? await d.prisma.refreshToken.findUnique({ where: { tokenHash: sha256(t) }, select: { sessionId: true } }) : null;
     return row ? `s:${row.sessionId}` : `ip:${clientKey(req)}`;
   });
+  const signedIn = async (req: Request, res: Response, i: Issued) => {
+    await d.onSignedIn?.(req, i.user.id).catch(() => { /* the session is what matters; the cart can be merged later */ });
+    issue(res, i);
+  };
   const issue = (res: Response, i: Issued, status = 200) => {
     res.status(status).set('Cache-Control', 'no-store').setHeader('Set-Cookie', setCookie(spec, i.refreshToken, d.refreshMaxAgeS));
     res.json({ accessToken: i.accessToken, user: i.user });
@@ -48,16 +56,16 @@ export function authRouter(d: AuthRouterDeps): Router {
     res.status(201).set('Cache-Control', 'no-store').json(await d.service.signup(req.body));
   });
   r.post('/auth/signup/verify', perIp.verify, validate({ body: schemas.verify }), async (req, res) => {
-    issue(res, await d.service.verifySignup(req.body, meta(req)));
+    await signedIn(req, res, await d.service.verifySignup(req.body, meta(req)));
   });
   r.post('/auth/login', perIp.login, validate({ body: schemas.login }), async (req, res) => {
-    issue(res, await d.service.login(req.body, meta(req)));
+    await signedIn(req, res, await d.service.login(req.body, meta(req)));
   });
   r.post('/auth/otp/request', perIp.emailSend, validate({ body: schemas.otpRequest }), async (req, res) => {
     res.set('Cache-Control', 'no-store').json(await d.service.requestLoginOtp(req.body));
   });
   r.post('/auth/otp/verify', perIp.verify, validate({ body: schemas.otpVerify }), async (req, res) => {
-    issue(res, await d.service.verifyLoginOtp(req.body, meta(req)));
+    await signedIn(req, res, await d.service.verifyLoginOtp(req.body, meta(req)));
   });
   r.post('/auth/refresh', perSession, validate({ body: schemas.empty }), async (req, res) => {
     const out = await d.service.refresh(readCookie(req));
@@ -88,7 +96,7 @@ export function authRouter(d: AuthRouterDeps): Router {
     res.json(out);
   });
   r.post('/auth/set-password', perIp.verify, validate({ body: schemas.reset }), async (req, res) => {
-    issue(res, await d.service.setPassword(req.body, meta(req)));
+    await signedIn(req, res, await d.service.setPassword(req.body, meta(req)));
   });
   r.get('/me', requireCustomer(d), async (req, res) => {
     res.set('Cache-Control', 'private, no-store').json({ user: await d.service.me(req.auth!.userId) });

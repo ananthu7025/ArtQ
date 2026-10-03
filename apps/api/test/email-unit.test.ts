@@ -10,6 +10,9 @@ const DATA: Record<string, Record<string, unknown>> = {
   signup_attempt_existing: {},
   new_signin_activity: {},
   admin_payment_exception: { type: 'OUTBOX_DEAD', order_id: null },
+  email_change_requested: { newEmail: 'n***@example.com' },
+  email_changed: { newEmail: 'n***@example.com' },
+  account_deleted: {},
 };
 
 describe('email templates', () => {
@@ -44,6 +47,16 @@ describe('email templates', () => {
     expect(r.html).toContain('&lt;script&gt;');
     expect(r.html).toContain('&quot;x&quot;');
     expect(render('password_reset', { link: 'https://artq.in/r?a=1&b="2"' }).html).toContain('href="https://artq.in/r?a=1&amp;b=&quot;2&quot;"');
+  });
+
+  it('email-change notices name the new address (escaped) and need it', () => {
+    for (const t of ['email_change_requested', 'email_changed'] as const) {
+      const r = render(t, { newEmail: '<b>@x.in' });
+      expect(r.text).toContain('<b>@x.in');
+      expect(r.html).toContain('&lt;b&gt;@x.in');
+      expect(() => render(t, {})).toThrow();
+    }
+    expect(render('account_deleted', {}).text).toMatch(/30 days/);
   });
 
   it('missing data and unknown templates fail loudly', () => {

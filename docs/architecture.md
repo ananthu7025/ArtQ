@@ -334,7 +334,7 @@ Permissions are declared in `packages/shared/src/permissions.ts` and checked by 
 | Layer | What | Policy |
 |-------|------|--------|
 | Next.js ISR | Home, listing, product, content pages (HTML) | `revalidate: 60` |
-| API HTTP cache headers | **Allow-listed** public GETs only: `/v1/home`, `/v1/navigation`, `/v1/settings/public`, `/v1/types*`, `/v1/categories*`, `/v1/techniques*`, `/v1/products` (listing), `/v1/products/:slug` (incl. `/v1/products/by-ids`), `/v1/products/:slug/related`, `/v1/pages/*`, `/v1/faqs`, `/v1/testimonials`, `/v1/reels`, `/v1/seo/*` | `Cache-Control: public, max-age=0, s-maxage=60, stale-while-revalidate=60`; never `Set-Cookie`; cookies ignored; `Vary: Accept-Encoding` |
+| API HTTP cache headers | **Allow-listed** public GETs only: `/v1/home`, `/v1/navigation`, `/v1/settings/public`, `/v1/types*`, `/v1/categories*`, `/v1/techniques*`, `/v1/products` (listing), `/v1/products/:slug` (incl. `/v1/products/by-ids`), `/v1/products/:slug/related`, `/v1/states`, `/v1/pages/*`, `/v1/faqs`, `/v1/testimonials`, `/v1/reels`, `/v1/seo/*` | `Cache-Control: public, max-age=0, s-maxage=60, stale-while-revalidate=60`; never `Set-Cookie`; cookies ignored; `Vary: Accept-Encoding` |
 | Cloudflare (API host) | Cache Rule matching exactly the allow-list above; everything else **bypass** | Respects `s-maxage` |
 | Redis app cache | navigation, settings, taxonomy | TTL 300 s, deleted on admin write |
 | Cloudflare (CDN host) | Public media renditions | Immutable URLs (content-addressed keys), 1 year |

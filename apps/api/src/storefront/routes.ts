@@ -92,6 +92,17 @@ export function storefrontRouter(d: StorefrontDeps): Router {
     if (id !== null) res.json(await loadRelated(d.prisma, id, d.mediaUrl));
   });
   const pincodeParam = z.strictObject({ pincode: pincodeField });
+  // Address forms (task 4.2): the states to choose from, and the place of a pincode from the postal directory.
+  r.get('/states', async (_req, res) => {
+    const states = await d.prisma.state.findMany({ where: { isActive: true, country: { iso2: 'IN' } }, orderBy: { name: 'asc' }, select: { id: true, name: true, code: true } });
+    res.json({ data: states });
+  });
+  r.get('/pincodes/:pincode', validate({ params: z.strictObject({ pincode: pincodeField }) }), async (req, res) => {
+    const pincode = (req.params as unknown as { pincode: string }).pincode;
+    const office = await d.prisma.postalCode.findFirst({ where: { pincode }, include: { state: true }, orderBy: { officeName: 'asc' } });
+    if (!office) throw new AppError(404, 'NOT_FOUND', `We could not find pincode ${pincode}`);
+    res.json({ pincode, district: office.district, state: { id: office.state.id, name: office.state.name } });
+  });
   r.get('/pincodes/:pincode/serviceability', validate({ params: pincodeParam }), async (req, res) => {
     res.json(await checkPincode(d.prisma, (req.params as unknown as { pincode: string }).pincode));
   });

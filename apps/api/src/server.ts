@@ -28,7 +28,8 @@ import { registerInventoryRoutes } from './inventory/routes.js';
 import { ImportService } from './imports/service.js';
 import { razorpayProvider } from './webhooks/provider.js';
 import { storefrontRouter } from './storefront/routes.js';
-import { cartRouter } from './cart/routes.js';
+import { cartRouter, claimGuestCartOnSignIn } from './cart/routes.js';
+import { accountRouter } from './account/routes.js';
 import { WEBHOOK_QUEUE, webhookRouter } from './webhooks/inbox.js';
 
 let env;
@@ -51,6 +52,7 @@ const service = new AuthService(prisma, cache, {
 });
 
 const limiter = new RedisRateLimiter(redis);
+const mediaUrl = (key: string) => `${env.MEDIA_PUBLIC_BASE_URL.replace(/\/$/, '')}/${key}`;
 const appCache = new RedisAppCache(redis, (op, err) => log.warn({ op, err: String(err) }, 'app cache unavailable; reading from the database'));
 const onRateLimitError = (err: unknown) => log.warn({ err: String(err) }, 'rate limiter unavailable; request allowed');
 
@@ -82,11 +84,12 @@ const app = createApp({
   rateLimiter: limiter,
   onRateLimitError,
   routes: [
-    authRouter({ prisma, cache, jwt, service, env: env.NODE_ENV, refreshMaxAgeS: DEFAULT_AUTH_TIMINGS.refreshIdleS, limiter, onRateLimitError }),
+    authRouter({ prisma, cache, jwt, service, env: env.NODE_ENV, refreshMaxAgeS: DEFAULT_AUTH_TIMINGS.refreshIdleS, limiter, onRateLimitError, onSignedIn: claimGuestCartOnSignIn({ prisma, env: env.NODE_ENV, mediaUrl }) }),
     adminAuthRouter({ prisma, cache, jwt, service, env: env.NODE_ENV, limiter, onRateLimitError }),
     customerMediaRouter({ prisma, cache, jwt }, media),
-    cartRouter({ prisma, env: env.NODE_ENV, mediaUrl: (key) => `${env.MEDIA_PUBLIC_BASE_URL.replace(/\/$/, '')}/${key}` }),
-    storefrontRouter({ prisma, cache: appCache, mediaUrl: (key) => `${env.MEDIA_PUBLIC_BASE_URL.replace(/\/$/, '')}/${key}`, limiter, onRateLimitError, onInvalidSetting: (key) => log.warn({ key }, 'stored setting is invalid; serving the default'), onSearchLogError: (err) => log.warn({ err: String(err) }, 'search log not written') }),
+    cartRouter({ prisma, cache, jwt, env: env.NODE_ENV, mediaUrl }),
+    accountRouter({ prisma, cache, jwt, service, env: env.NODE_ENV, mediaUrl, limiter, onRateLimitError }),
+    storefrontRouter({ prisma, cache: appCache, mediaUrl, limiter, onRateLimitError, onInvalidSetting: (key) => log.warn({ key }, 'stored setting is invalid; serving the default'), onSearchLogError: (err) => log.warn({ err: String(err) }, 'search log not written') }),
     webhookRouter({ prisma, queue: webhookQueue, providers: [razorpayProvider(env.RAZORPAY_WEBHOOK_SECRET || undefined)], log }),
     admin.router,
   ],

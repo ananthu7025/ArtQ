@@ -178,7 +178,7 @@ Implemented in task 3.5 (`storefrontListQuery` in `@artq/shared`, strict: unknow
 | POST | `/me/password` | `{currentPassword, newPassword}` |
 | DELETE | `/me` | `{password}` → soft delete (anonymised after 30 days; orders retained) |
 | CRUD | `/me/addresses[/:id]`, `POST /me/addresses/:id/default` | Max 10 |
-| GET | `/me/wishlist` · POST `/me/wishlist/toggle {productId}` · POST `/me/wishlist/merge {productIds[]}` | |
+| GET | `/me/wishlist` · POST `/me/wishlist/toggle {productId}` · POST `/me/wishlist/merge {productIds[]}` | Newest first, at most 100 (a new save past 100 drops the oldest); `{productIds, data: ProductCard[]}` (cards only for live products) |
 | GET | `/me/orders?status=&page=` | Summary list |
 | GET | `/me/orders/:orderNumber` | `OrderView` |
 | POST | `/me/orders/:orderNumber/cancel` | Idempotency-Key; `{reason}`; allowed while `PLACED/CONFIRMED` + `UNFULFILLED` |
@@ -186,6 +186,8 @@ Implemented in task 3.5 (`storefrontListQuery` in `@artq/shared`, strict: unknow
 | POST | `/me/orders/:orderNumber/reorder` | Adds available items to cart → `CartView` |
 | GET | `/me/orders/:orderNumber/invoice` | 302 to a short-lived private URL (if issued) |
 | GET | `/me/attachments/:mediaId` | 302 to a private URL if the media belongs to the user's order/return |
+
+Implemented in task 4.2 (bodies in `@artq/shared` auth-schemas, shared with the forms): password-checking routes (`/me/password`, `/me/email/*`, `DELETE /me`) share the per-IP login limit and the account lockout; a wrong password is a 400 `VALIDATION_ERROR` on the password field, so the form shows it under that field. Password change, email change and deletion revoke every session and clear the refresh cookie. Email change: `{newEmail, password}` → `{otpSentTo}` (masked); a taken or unchanged address is a field error; `{code}` → `{ok, email}` (409 `EMAIL_TAKEN` if someone claimed it meanwhile). `DELETE /me` `{password, confirm: true}`; the email can sign up again at once; after 30 days the retention job removes addresses and wishlist and blanks name, phone, password and email. Addresses: the first is the default, deleting the default promotes the most recently updated one, the 11th → 422 `ADDRESS_LIMIT` (serialised per user), another user's id → 404; an inactive state → field error on `stateId`, a pincode the postal directory places in another state → `This pincode is in <State>` on `pincode`. Helpers (public, cacheable): `GET /states` (active Indian states by name), `GET /pincodes/:pincode` → `{pincode, district, state}` or 404 (address autofill). Cart at sign-in (rest of 4.1): every sign-in route claims the guest cart cookie: with no account cart the guest cart becomes it, else its lines are added (quantity summed, capped at 50 and at stock) and it is marked `MERGED`; a failure never fails the sign-in. `/cart` with a Bearer uses the account cart on any device; an invalid Bearer → 401 (the client refreshes); the cookie alone never opens an account cart.
 
 ### 3.6 Guest order access
 | Method | Path | Description |

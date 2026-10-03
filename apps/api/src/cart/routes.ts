@@ -5,6 +5,7 @@ import type { PrismaClient } from '@prisma/client';
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import { cookieSpec, parseCookies, setCookie, type DeployEnv } from '../auth/cookies.js';
+import { optionalCustomer, type AuthDeps } from '../auth/middleware.js';
 import { AppError } from '../lib/errors.js';
 import { validate } from '../middleware/validate.js';
 import type { MediaUrl } from '../storefront/home.js';
@@ -12,14 +13,23 @@ import { CART_TTL_S, CartService } from './service.js';
 
 const itemParam = z.strictObject({ itemId: z.coerce.number().int().positive() });
 
-export function cartRouter(d: { prisma: PrismaClient; env: DeployEnv; mediaUrl: MediaUrl }): Router {
+export function cartRouter(d: AuthDeps & { env: DeployEnv; mediaUrl: MediaUrl }): Router {
   const r = Router();
+  r.use('/cart', optionalCustomer(d));
   const spec = cookieSpec('cart', d.env);
   const carts = new CartService(d.prisma, d.mediaUrl);
   const token = (req: Request) => parseCookies(req.get('cookie')).get(spec.name);
-  /** The caller's cart, created (with its cookie) when `create` and there is none. Every write renews the 30-day cookie. */
+  /**
+   * The caller's cart. Signed in: the account's cart (a guest cart in this browser is claimed into it first). Guest: the
+   * cookie's cart, created (with its cookie) when `create` and there is none. Every guest write renews the 30-day cookie.
+   */
   const cartFor = async (req: Request, res: Response, create: boolean): Promise<number | null> => {
     const t = token(req);
+    if (req.auth) {
+      const id = await carts.claim(t, req.auth.userId);
+      if (id !== null || !create) return id;
+      return (await carts.create(req.auth.userId)).id;
+    }
     const found = await carts.find(t);
     if (found) { if (create) res.append('Set-Cookie', setCookie(spec, t!, CART_TTL_S)); return found.id; }
     if (!create) return null;
@@ -54,4 +64,11 @@ export function cartRouter(d: { prisma: PrismaClient; env: DeployEnv; mediaUrl: 
     res.json(await carts.view(id));
   });
   return r;
+}
+
+/** For the auth router: after any sign-in, the guest cart in this browser (cookie) joins the account. */
+export function claimGuestCartOnSignIn(d: { prisma: PrismaClient; env: DeployEnv; mediaUrl: MediaUrl }) {
+  const spec = cookieSpec('cart', d.env);
+  const carts = new CartService(d.prisma, d.mediaUrl);
+  return async (req: Request, userId: number) => { await carts.claim(parseCookies(req.get('cookie')).get(spec.name), userId); };
 }
