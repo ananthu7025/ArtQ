@@ -2,10 +2,13 @@
 // allow-list (architecture.md §6.1; headers set by middleware/cachePolicy.ts) and kept in the Redis app cache.
 import { randomBytes } from 'node:crypto';
 import type { PrismaClient } from '@prisma/client';
-import { DEFAULT_SETTINGS, newsletterSubscribeBody, PUBLIC_SETTING_KEYS, settingSchemas, toPublicSettings, type Navigation, type PublicSettings, type SettingKey, type SettingValue } from '@artq/shared';
-import { Router, type RequestHandler } from 'express';
+import { DEFAULT_SETTINGS, newsletterSubscribeBody, notifyMeBody, PUBLIC_SETTING_KEYS, settingSchemas, toPublicSettings, type Navigation, type PublicSettings, type SettingKey, type SettingValue } from '@artq/shared';
+import { Router, type RequestHandler, type Response } from 'express';
+import { z } from 'zod';
 import { noAppCache, type AppCache } from '../lib/app-cache.js';
 import { loadHome, type MediaUrl } from './home.js';
+import { findLiveProduct, loadAvailability, loadProductDetail } from './products.js';
+import { AppError } from '../lib/errors.js';
 import { RATE_LIMITS, rateLimit, type RateLimiter } from '../middleware/rateLimit.js';
 import { validate } from '../middleware/validate.js';
 
@@ -45,6 +48,46 @@ export function storefrontRouter(d: StorefrontDeps): Router {
   r.get('/navigation', async (_req, res) => { res.json(await cache.get('navigation', () => loadNavigation(d.prisma))); });
   r.get('/home', async (_req, res) => { res.json(await loadHome(d.prisma, d.mediaUrl)); });
   r.get('/settings/public', async (_req, res) => { res.json(await cache.get('publicSettings', () => loadPublicSettings(d.prisma, d.onInvalidSetting))); });
+
+  const slugParam = z.strictObject({ slug: z.string().min(1).max(220) });
+  const notFound = () => new AppError(404, 'NOT_FOUND', 'This product is not available');
+  /** Live product for :slug; an old slug answers 200 {redirectTo} (api.md §3.3); drafts/archived/unknown → 404. */
+  const live = async (slug: string, res: Response): Promise<number | null> => {
+    const found = await findLiveProduct(d.prisma, slug);
+    if (!found) throw notFound();
+    if ('redirectTo' in found) { res.json({ redirectTo: found.redirectTo }); return null; }
+    return found.id;
+  };
+  r.get('/products/:slug', validate({ params: slugParam }), async (req, res) => {
+    const id = await live(String(req.params.slug), res);
+    if (id === null) return;
+    const detail = await loadProductDetail(d.prisma, id, d.mediaUrl);
+    if (!detail) throw notFound();
+    res.json(detail);
+  });
+  r.get('/products/:slug/availability', validate({ params: slugParam }), async (req, res) => {
+    const id = await live(String(req.params.slug), res);
+    if (id !== null) res.json(await loadAvailability(d.prisma, id));
+  });
+
+  // "Notify me" (product.md §6): one pending request per size and email; only while that size is out of stock.
+  r.post('/products/:slug/notify', formLimit, validate({ params: slugParam, body: notifyMeBody }), async (req, res) => {
+    const { variantId, email } = req.body as z.infer<typeof notifyMeBody>;
+    const found = await findLiveProduct(d.prisma, String(req.params.slug));
+    if (!found || 'redirectTo' in found) throw notFound();
+    const created = await d.prisma.$transaction(async (tx) => {
+      const [v] = await tx.$queryRaw<{ available: number }[]>`SELECT GREATEST(on_hand - reserved, 0)::int AS available FROM product_variants
+        WHERE id = ${variantId} AND product_id = ${found.id} AND is_active AND deleted_at IS NULL AND price IS NOT NULL`;
+      if (!v) throw new AppError(404, 'NOT_FOUND', 'This option is not available');
+      if (v.available > 0) throw new AppError(409, 'IN_STOCK', 'This option is in stock: you can add it to your cart now', { available: v.available });
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`notify:${variantId}:${email.toLowerCase()}`}))`;
+      const pending = await tx.stockNotification.findFirst({ where: { variantId, email, status: 'PENDING' } });
+      if (pending) return false;
+      await tx.stockNotification.create({ data: { variantId, productId: found.id, email } });
+      return true;
+    });
+    res.status(created ? 201 : 200).json({ status: created ? 'SUBSCRIBED' : 'ALREADY_SUBSCRIBED' });
+  });
 
   // 201 SUBSCRIBED for a new (or returning, previously unsubscribed) address, 200 ALREADY_SUBSCRIBED otherwise (api.md §3.2).
   r.post('/newsletter/subscribe', formLimit, validate({ body: newsletterSubscribeBody }), async (req, res) => {

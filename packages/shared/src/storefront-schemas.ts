@@ -85,6 +85,47 @@ export type HomeView = {
   instagram: { handle: string | null; url: string | null };
 };
 
+// ── Product detail, availability, cart, notify-me (api.md §2, §3.3, §3.7; tasks 3.4 / 4.1) ──
+export const MAX_CART_QUANTITY = 50;
+const variantIdField = z.number({ error: 'Choose an option' }).int().positive('Choose an option');
+export const cartAddBody = z.strictObject({
+  variantId: variantIdField,
+  quantity: z.number().int('Use a whole number').min(1, 'Add at least 1').max(MAX_CART_QUANTITY, `At most ${MAX_CART_QUANTITY} per item`).default(1),
+});
+export const cartUpdateBody = z.strictObject({ quantity: z.number().int('Use a whole number').min(0, 'Use 0 to remove').max(MAX_CART_QUANTITY, `At most ${MAX_CART_QUANTITY} per item`) });
+export const notifyMeBody = z.strictObject({ variantId: variantIdField, email: emailField });
+
+export type StockStatus = 'IN_STOCK' | 'LOW_STOCK' | 'OUT_OF_STOCK';
+/** A sellable variant as shown on product pages (no live stock: that comes from /availability). */
+export type PublicVariant = {
+  id: number; sku: string; label: string; size: string | null; color: string | null; colorHex: string | null; thickness: string | null;
+  price: number; mrp: number | null; discountPercent: number | null; image: MediaRef | null;
+};
+export type ProductDetail = {
+  id: number; slug: string; name: string; shortDescription: string | null; description: string | null;
+  type: { slug: string; name: string }; category: { slug: string; name: string } | null;
+  images: MediaRef[]; variants: PublicVariant[];
+  /** Option dimensions with more than one value, in selector order (Size → Colour → Thickness). */
+  options: { size: string[]; color: { name: string; hex: string | null }[]; thickness: string[] };
+  fromPrice: number; maxPrice: number; isNew: boolean; isTrending: boolean;
+};
+export type Availability = { variants: { id: number; price: number; mrp: number | null; discountPercent: number | null; stockStatus: StockStatus; maxQuantity: number }[] };
+
+/** GET /v1/cart (api.md §2 CartView; coupon, shipping and COD arrive with checkout). */
+export type CartView = {
+  items: {
+    id: number; variantId: number; productSlug: string; productName: string; variantLabel: string; image: MediaRef | null;
+    unitPrice: number; unitMrp: number | null; quantity: number; lineTotal: number; maxQuantity: number; available: boolean; priceChanged: boolean; warning?: string;
+  }[];
+  coupon: null;
+  totals: {
+    itemCount: number; subtotal: number; mrpTotal: number; mrpDiscount: number; couponDiscount: number;
+    shipping: { amount: number | null; estimated: boolean; freeApplied: boolean };
+    codFee: number; total: number; savings: number; freeShippingThreshold: number; freeShippingRemaining: number;
+  };
+  warnings: string[];
+};
+
 /** WhatsApp chat link for a stored number ("+91 98470 12345", "919847012345", "09847012345"); null when it is not a usable Indian or international number. */
 export function whatsappHref(number: string | null | undefined, text?: string): string | null {
   if (!number) return null;

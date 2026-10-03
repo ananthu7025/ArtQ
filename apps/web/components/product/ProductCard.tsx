@@ -1,8 +1,9 @@
 // Product card (product.md §6, design-system.md §5.5): fixed 1:1 image box (placeholder when there is no photo; second
-// photo on hover), badges, name (2 lines), "From ₹…" / "₹…", struck MRP. Quick add and wishlist arrive with task 3.4.
+// photo on hover), badges, ♡, name (2 lines), "From ₹…" / "₹…", struck MRP, and the ADD / OPTIONS / NOTIFY ME pill.
 import { formatINR, type ProductCard as Card } from '@artq/shared';
 import Link from 'next/link';
 import { Img, ImgPlaceholder } from '../Img';
+import { CardActions } from '../shop/CardActions';
 
 export const CARD_SIZES = '(min-width: 1280px) 240px, (min-width: 768px) 30vw, 46vw';
 
@@ -32,6 +33,7 @@ export function ProductCard({ card }: { card: Card }) {
         <span className="font-semibold text-ink-900">{ranged ? `From ${formatINR(card.fromPrice)}` : formatINR(card.fromPrice)}</span>
         {card.mrp !== null && <s className="text-sm text-ink-500"><span className="sr-only">MRP </span>{formatINR(card.mrp)}</s>}
       </p>
+      <CardActions card={card} />
     </article>
   );
 }

@@ -121,7 +121,7 @@ Image 1:1 radius `lg` on `surface-100` with **fixed aspect box** (no layout shif
 - Order/product status pills (text + colour, never colour alone): Draft (`surface-100`/`ink-700`), Active (`#dcfce7`/`success-700`), Archived (`surface-200`/`ink-700`), Pending payment/Processing (`warning-bg`/`#7c2d12`), Shipped (`#dbeafe`/`#1e40af`), Delivered (`#dcfce7`/`success-700`), Cancelled/Expired (`#fee2e2`/`danger-700`), Exception (`danger-700`/white).
 
 ### 5.7 Variant selector
-Pills min 64×40, border `border-input`; selected `brand-700` border 2 px + `brand-50` bg + `brand-800` text; unavailable: strike-through + `ink-500` + `aria-disabled` + tooltip "Not available in this size". Colour swatch 32 px with the colour name in an accessible label.
+Pills min 64×40, border `border-input`; selected `brand-700` border 2 px + `brand-50` bg + `brand-800` text. **Sold out** (the combination exists): strike-through + `ink-500`, accessible name "Gold, sold out", still selectable because choosing it offers "Notify me". **Not available with the other choices** (no such variant): dashed border + `ink-500`, name "100 gm, other options will change"; choosing it moves the other options to the nearest real combination (in stock first). Neither uses `aria-disabled`: both do something when chosen (task 3.4 refinement). Colour swatch with the colour name in the accessible label.
 
 ### 5.8 Drawers, modals, toasts, skeletons
 Drawers (mobile menu left 85vw max 380; cart right 420/full), bottom sheets (filters, quick add); modals max 560, focus-trapped, Esc closes, focus returns to trigger; toasts `ink-900`/white, `role="status"`, 5 s (pause on hover); skeleton shimmer disabled under reduced motion.

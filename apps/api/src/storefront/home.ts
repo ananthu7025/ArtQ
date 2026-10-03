@@ -70,7 +70,7 @@ export async function productCards(prisma: PrismaClient, where: Prisma.Sql, orde
   });
 }
 
-async function setting<K extends SettingKey>(prisma: PrismaClient, key: K): Promise<SettingValue<K>> {
+export async function setting<K extends SettingKey>(prisma: PrismaClient, key: K): Promise<SettingValue<K>> {
   const row = await prisma.setting.findUnique({ where: { key } });
   const parsed = row?.isPublic ? settingSchemas[key].safeParse(row.value) : null;
   return parsed?.success ? (parsed.data as SettingValue<K>) : parseSetting(key, DEFAULT_SETTINGS[key]);

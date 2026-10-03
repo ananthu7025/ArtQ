@@ -15,7 +15,7 @@ function Column({ title, children }: { title: string; children: ReactNode }) {
 
 export function Footer({ navigation, settings, year = new Date().getFullYear() }: { navigation: Navigation; settings: PublicSettings; year?: number }) {
   const wa = whatsappHref(settings.store.whatsapp);
-  const ext = (href: string, label: string) => <li><a href={href} target="_blank" rel="noopener noreferrer" className={linkCls}>{label}<span className="sr-only"> (opens in a new tab)</span></a></li>;
+  const ext = (href: string, label: string) => <li><a href={href} target="_blank" rel="noopener noreferrer" className={linkCls}>{label}{' '}<span className="sr-only">(opens in a new tab)</span></a></li>;
   return (
     <footer className="bg-ink-900 text-white">
       <section aria-labelledby="newsletter-heading" className="border-b border-white/10">

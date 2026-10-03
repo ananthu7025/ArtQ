@@ -38,7 +38,7 @@ export function ProductRow({ id, title, subtitle, cards, viewAll }: { id: string
       </ul>
       {viewAll && (
         <div className="mt-8 text-center">
-          <Link href={viewAll} className="inline-flex h-12 items-center rounded-md border-[1.5px] border-ink-900 px-8 text-sm font-semibold uppercase tracking-[0.06em] text-ink-900 hover:bg-ink-900 hover:text-white">View all<span className="sr-only"> {title}</span></Link>
+          <Link href={viewAll} className="inline-flex h-12 items-center rounded-md border-[1.5px] border-ink-900 px-8 text-sm font-semibold uppercase tracking-[0.06em] text-ink-900 hover:bg-ink-900 hover:text-white">View all{' '}<span className="sr-only">{title}</span></Link>
         </div>
       )}
     </section>
@@ -70,7 +70,7 @@ export function InstagramBand({ handle, url }: { handle: string; url: string }) 
       <div className="mx-auto flex max-w-[1320px] flex-col items-center gap-3 px-4 py-10 text-center md:px-6 lg:px-8">
         <h2 id="instagram-heading" className="font-display text-[22px] font-semibold text-ink-900 md:text-[30px]">Instagram moments</h2>
         <p className="text-ink-700">See what our makers create, and share yours with #ArtQ.</p>
-        <a href={url} target="_blank" rel="noopener noreferrer" className="inline-flex h-12 items-center rounded-md bg-brand-700 px-6 text-sm font-semibold uppercase tracking-[0.06em] text-white hover:bg-brand-800">Follow @{handle}<span className="sr-only"> on Instagram (opens in a new tab)</span></a>
+        <a href={url} target="_blank" rel="noopener noreferrer" className="inline-flex h-12 items-center rounded-md bg-brand-700 px-6 text-sm font-semibold uppercase tracking-[0.06em] text-white hover:bg-brand-800">Follow @{handle}{' '}<span className="sr-only">on Instagram (opens in a new tab)</span></a>
       </div>
     </section>
   );

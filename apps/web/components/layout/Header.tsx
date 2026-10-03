@@ -11,6 +11,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { MobileDrawer } from './MobileDrawer';
 import { NAV_LINKS } from './links';
 import { SearchDialog } from './SearchDialog';
+import { useShop } from '../shop/ShopProvider';
 
 // Display is set per use (`inline-flex`, or `hidden lg:inline-flex`): two display classes on one element fight.
 const iconBox = 'relative h-11 w-11 items-center justify-center rounded-md text-ink-900 hover:bg-surface-100';
@@ -108,7 +109,10 @@ function MegaMenu({ navigation }: { navigation: Navigation }) {
   );
 }
 
-export function Header({ navigation, cartCount = 0, wishlistCount = 0 }: { navigation: Navigation; cartCount?: number; wishlistCount?: number }) {
+export function Header({ navigation, cartCount, wishlistCount }: { navigation: Navigation; cartCount?: number; wishlistCount?: number }) {
+  const shop = useShop();
+  cartCount ??= shop.cartCount;
+  wishlistCount ??= shop.wishlist.length;
   const pathname = usePathname();
   const [drawerAt, setDrawerAt] = useState<string | null>(null);
   const drawer = drawerAt === pathname;   // closes by itself when a link in it changes the page

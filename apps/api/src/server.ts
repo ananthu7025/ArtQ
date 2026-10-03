@@ -28,6 +28,7 @@ import { registerInventoryRoutes } from './inventory/routes.js';
 import { ImportService } from './imports/service.js';
 import { razorpayProvider } from './webhooks/provider.js';
 import { storefrontRouter } from './storefront/routes.js';
+import { cartRouter } from './cart/routes.js';
 import { WEBHOOK_QUEUE, webhookRouter } from './webhooks/inbox.js';
 
 let env;
@@ -84,6 +85,7 @@ const app = createApp({
     authRouter({ prisma, cache, jwt, service, env: env.NODE_ENV, refreshMaxAgeS: DEFAULT_AUTH_TIMINGS.refreshIdleS, limiter, onRateLimitError }),
     adminAuthRouter({ prisma, cache, jwt, service, env: env.NODE_ENV, limiter, onRateLimitError }),
     customerMediaRouter({ prisma, cache, jwt }, media),
+    cartRouter({ prisma, env: env.NODE_ENV, mediaUrl: (key) => `${env.MEDIA_PUBLIC_BASE_URL.replace(/\/$/, '')}/${key}` }),
     storefrontRouter({ prisma, cache: appCache, mediaUrl: (key) => `${env.MEDIA_PUBLIC_BASE_URL.replace(/\/$/, '')}/${key}`, limiter, onRateLimitError, onInvalidSetting: (key) => log.warn({ key }, 'stored setting is invalid; serving the default') }),
     webhookRouter({ prisma, queue: webhookQueue, providers: [razorpayProvider(env.RAZORPAY_WEBHOOK_SECRET || undefined)], log }),
     admin.router,

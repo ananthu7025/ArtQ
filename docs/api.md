@@ -142,8 +142,9 @@ Return photos are uploaded under the order routes so the order-scoped cookie (`P
 |--------|------|-------------|
 | GET | `/types`, `/types/:slug`, `/categories/:slug`, `/techniques`, `/techniques/:slug` | Taxonomy (active only) |
 | GET | `/products` | Listing (below). Only `ACTIVE` products with ≥ 1 active priced variant |
-| GET | `/products/:slug` | Product detail; `{redirectTo}` for old slugs; 404 for DRAFT/ARCHIVED |
-| GET | `/products/:slug/availability` | **no-store**: `{variants:[{id, price, mrp, stockStatus, maxQuantity}]}` |
+| GET | `/products/:slug` | `ProductDetail` (`@artq/shared`): active variants with a price (cheapest first), `options` only for dimensions with more than one value (Size → Colour → Thickness), images; **no stock** (cacheable). `{redirectTo}` for old slugs; 404 for DRAFT/ARCHIVED |
+| POST | `/products/:slug/notify` | "Notify me" `{variantId, email}` (`notifyMeBody`) → `201 SUBSCRIBED` / `200 ALREADY_SUBSCRIBED` (one pending request per size and email); 409 `IN_STOCK` while that size can be bought; 5/min per IP |
+| GET | `/products/:slug/availability` | **no-store**: `{variants:[{id, price, mrp, discountPercent, stockStatus, maxQuantity}]}`; `LOW_STOCK` when available ≤ the variant's low-stock threshold; `maxQuantity` = min(available, 50) |
 | GET | `/products/:slug/related` | `{frequentlyBoughtTogether[], similar[]}` |
 | GET | `/products/by-ids?ids=` | Cards (recently viewed, guest wishlist) |
 | GET | `/search?q=…`, `/search/suggest?q=` | Search (logged) |
@@ -200,7 +201,7 @@ Return photos are uploaded under the order routes so the order-scoped cookie (`P
 | Method | Path | Notes |
 |--------|------|-------|
 | GET | `/cart` | `CartView` (re-priced live, quantities clamped to available) |
-| POST | `/cart/items` | `{variantId, quantity}`; 409 `OUT_OF_STOCK` with `available` |
+| POST | `/cart/items` | `{variantId, quantity 1–50}` (`cartAddBody`); the first add creates the cart and its cookie. Merges with the same variant; 409 `OUT_OF_STOCK` `{available, inCart}` (available = on hand − reserved; carts never reserve); 422 `QUANTITY_LIMIT` above 50 per line; 404 for drafts/inactive/unknown. Every cart response is the re-priced `CartView`: quantities above stock are lowered and saved with a warning, sold-out and unpublished lines stay listed but are not counted, a price change is flagged once (task 3.4; merge on login with 4.2) |
 | PATCH / DELETE | `/cart/items/:itemId` | quantity 0 = remove |
 | DELETE | `/cart` | Clear |
 | POST / DELETE | `/cart/coupon` | `{code}`; validation only, **capacity is reserved at checkout** |

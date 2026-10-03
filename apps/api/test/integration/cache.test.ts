@@ -25,6 +25,7 @@ import { razorpayProvider } from '../../src/webhooks/provider.js';
 import { createMigratedDatabase, type TestDb } from '../helpers/db.js';
 import { uniq } from '../helpers/fixtures.js';
 import { startPostgres, startRedis, type Service } from '../helpers/services.js';
+import { liveProduct } from '../helpers/storefront-fixtures.js';
 
 const WEB = 'http://localhost:3000';
 const CDN = (key: string) => `https://cdn.test/${key}`;
@@ -46,8 +47,9 @@ function standIns(): Router {
     res.cookie('aq_track', 'x').status(status).json({ name });
   };
   r.get('/pages/missing-page', echo('missing', 404));   // before /pages/:slug
-  for (const p of ['/home', '/types/resins', '/categories/mica', '/techniques', '/products', '/products/:slug', '/pages/:slug', '/faqs', '/testimonials', '/reels', '/seo/sitemap-entries']) r.get(p, echo(p));
-  for (const p of ['/me', '/me/orders', '/cart', '/checkout', '/orders/:n', '/uploads/:id', '/products/:slug/availability', '/pincodes/:p/serviceability']) r.get(p, echo(p));
+  // /home, /products/:slug and its /availability are real routes (storefront router) and answer first.
+  for (const p of ['/types/resins', '/categories/mica', '/techniques', '/products', '/pages/:slug', '/faqs', '/testimonials', '/reels', '/seo/sitemap-entries']) r.get(p, echo(p));
+  for (const p of ['/me', '/me/orders', '/cart', '/checkout', '/orders/:n', '/uploads/:id', '/pincodes/:p/serviceability']) r.get(p, echo(p));
   r.get('/reels-broken', () => { throw new Error('boom'); });
   return r;
 }
@@ -94,7 +96,8 @@ const menu = async () => ((await request(app).get('/v1/navigation')).body.types 
 
 describe('✅ cache headers for every route group', () => {
   it('allow-listed public GETs (real and stand-in): public 60 s, no Set-Cookie even if the handler sets one, Vary: Accept-Encoding', async () => {
-    for (const p of ['/navigation', '/settings/public', '/home', '/types/resins', '/categories/mica', '/techniques', '/products', '/products/epoxy', '/pages/about', '/faqs', '/testimonials', '/reels', '/seo/sitemap-entries']) {
+    const live = await liveProduct(prisma, { name: 'Cache Check' });
+    for (const p of ['/navigation', '/settings/public', '/home', '/types/resins', '/categories/mica', '/techniques', '/products', `/products/${live.slug}`, '/pages/about', '/faqs', '/testimonials', '/reels', '/seo/sitemap-entries']) {
       const res = await request(app).get(`/v1${p}`).set('Cookie', 'aq_cart=c1; __Secure-aq_rt=r1').set('Authorization', 'Bearer abc');
       expect(res.status, p).toBe(200);
       expectPublic(res);
@@ -104,14 +107,16 @@ describe('✅ cache headers for every route group', () => {
   });
 
   it('public handlers never see the caller\'s cookies or Authorization (a cached body cannot depend on them)', async () => {
-    await request(app).get('/v1/products/epoxy').set('Cookie', 'aq_cart=c1').set('Authorization', 'Bearer abc');
-    expect(seen['/products/:slug']).toEqual({ cookie: false, auth: false });
-    await request(app).get('/v1/products/epoxy/availability').set('Cookie', 'aq_cart=c1').set('Authorization', 'Bearer abc');
-    expect(seen['/products/:slug/availability']).toEqual({ cookie: true, auth: true });   // personal routes still get them
+    await request(app).get('/v1/faqs').set('Cookie', 'aq_cart=c1').set('Authorization', 'Bearer abc');
+    expect(seen['/faqs']).toEqual({ cookie: false, auth: false });
+    await request(app).get('/v1/uploads/9').set('Cookie', 'aq_cart=c1').set('Authorization', 'Bearer abc');
+    expect(seen['/uploads/:id']).toEqual({ cookie: true, auth: true });   // personal routes still get them
   });
 
   it('personal and live routes are never shared-cacheable, even as a 200 GET', async () => {
-    for (const p of ['/me', '/me/orders', '/cart', '/checkout', '/orders/AQ1001', '/uploads/9', '/products/epoxy/availability', '/pincodes/682001/serviceability']) {
+    const live = await liveProduct(prisma, { name: 'Availability Check' });
+    expectNoStore(await request(app).get(`/v1/products/${live.slug}/availability`).set('Cookie', 'aq_cart=c1'));   // live stock: real route
+    for (const p of ['/me', '/me/orders', '/cart', '/checkout', '/orders/AQ1001', '/uploads/9', '/pincodes/682001/serviceability']) {
       const res = await request(app).get(`/v1${p}`).set('Cookie', 'aq_cart=c1');
       expect([200, 401], p).toContain(res.status);                    // /me is the real customer route (401 without a token)
       expectNoStore(res);
@@ -213,6 +218,7 @@ describe('Redis app cache (TTL 300 s, dropped on admin writes)', () => {
 
   it('Redis down: answers come from PostgreSQL and the problem is reported; invalidation does not fail the admin write', async () => {
     const dead = new Redis({ port: 1, lazyConnect: true, maxRetriesPerRequest: 0, enableOfflineQueue: false, retryStrategy: () => null });
+    dead.on('error', () => {});   // expected: nothing listens on port 1
     const errors: string[] = [];
     const broken = new RedisAppCache(dead, (op) => errors.push(op));
     const t = await prisma.productType.create({ data: { name: `NoRedis ${uniq()}`, slug: `noredis-${uniq()}` } });

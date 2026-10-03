@@ -26,7 +26,7 @@ export type LiveProduct = { productId: number; slug: string; name: string; varia
  * stock (counted). `status: 'DRAFT'` leaves it unpublished but otherwise ready.
  */
 export async function liveProduct(db: PrismaClient, o: {
-  typeId?: number; categoryId?: number; name?: string; variants?: { price: number; mrp?: number | null; onHand?: number; active?: boolean }[];
+  typeId?: number; categoryId?: number; name?: string; variants?: { price: number; mrp?: number | null; onHand?: number; active?: boolean; size?: string; color?: string | null; colorHex?: string | null; thickness?: string | null; lowStock?: number }[];
   images?: number; status?: 'ACTIVE' | 'DRAFT'; isNewArrival?: boolean; newArrivalRank?: number | null; isTrending?: boolean; trendingRank?: number | null; publishedAt?: Date;
 } = {}): Promise<LiveProduct> {
   const u = uniq();
@@ -40,10 +40,12 @@ export async function liveProduct(db: PrismaClient, o: {
   typeId, categoryId, name, slug, o.isNewArrival ?? false, o.newArrivalRank ?? null, o.isTrending ?? false, o.trendingRank ?? null);
   const variantIds: number[] = [];
   for (const [i, v] of (o.variants ?? [{ price: 49_900 }]).entries()) {
-    variantIds.push(await val<number>(db, `INSERT INTO product_variants (product_id, sku, size, label, price, mrp, on_hand, inventory_counted_at, net_quantity, net_unit,
-        weight_g, weight_source, is_active, updated_at)
-      VALUES ($1,$2,$3,$3,$4,$5,$6,now(),$7,'G',300,'MEASURED',$8,now()) RETURNING id`,
-    productId, `SKU-${u}-${i}`, `${(i + 1) * 100} gm`, v.price, v.mrp ?? null, v.onHand ?? 10, (i + 1) * 100, v.active ?? true));
+    const size = v.size ?? `${(i + 1) * 100} gm`;
+    const label = [size, v.color, v.thickness].filter(Boolean).join(' / ');
+    variantIds.push(await val<number>(db, `INSERT INTO product_variants (product_id, sku, size, color, color_hex, thickness, label, price, mrp, on_hand, inventory_counted_at, net_quantity, net_unit,
+        weight_g, weight_source, is_active, low_stock_threshold, updated_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now(),$11,'G',300,'MEASURED',$12,$13,now()) RETURNING id`,
+    productId, `SKU-${u}-${i}`, size, v.color ?? null, v.colorHex ?? null, v.thickness ?? null, label, v.price, v.mrp ?? null, v.onHand ?? 10, (i + 1) * 100, v.active ?? true, v.lowStock ?? 5));
   }
   for (let i = 0; i < (o.images ?? 1); i++) {
     await db.$executeRawUnsafe(`INSERT INTO product_images (product_id, media_id, alt, sort_order, is_cover) VALUES ($1,$2,$3,$4,$5)`, productId, await readyImage(db), `${name} photo ${i + 1}`, i, i === 0);
