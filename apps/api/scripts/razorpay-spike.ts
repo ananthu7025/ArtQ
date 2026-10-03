@@ -61,12 +61,12 @@ async function payment(id: string) {
     note('9b_capture_again', await call('POST', `/payments/${id}/capture`, { amount: pay.amount, currency: 'INR' }));
   }
   const key = `artq-refund-spike-${Date.now().toString(36)}-a1`;
-  const body = { amount: 50, speed: 'normal', receipt: `AQR_SPIKE_${Date.now().toString(36)}`, notes: { aq_refund_id: 'spike-1' } };
+  const body = { amount: 100, speed: 'normal', receipt: `AQR_SPIKE_${Date.now().toString(36)}`, notes: { aq_refund_id: 'spike-1' } };
   const r1 = await call('POST', `/payments/${id}/refund`, body, { 'X-Refund-Idempotency': key });
   note('10_refund', { status: r1.status, body: r1.body });
   note('11_refund_same_key_same_body', await call('POST', `/payments/${id}/refund`, body, { 'X-Refund-Idempotency': key }));
-  note('12_refund_same_key_other_body', await call('POST', `/payments/${id}/refund`, { ...body, amount: 20 }, { 'X-Refund-Idempotency': key }));
-  note('13_refund_reused_receipt_new_key', await call('POST', `/payments/${id}/refund`, { ...body, amount: 10 }, { 'X-Refund-Idempotency': `${key}-b` }));
+  note('12_refund_same_key_other_body', await call('POST', `/payments/${id}/refund`, { ...body, notes: { aq_refund_id: 'spike-1-changed' } }, { 'X-Refund-Idempotency': key }));
+  note('13_refund_reused_receipt_new_key', await call('POST', `/payments/${id}/refund`, { ...body }, { 'X-Refund-Idempotency': `${key}-b` }));
   note('14_refunds_list', await call('GET', `/payments/${id}/refunds`));
   const after = await call('GET', `/payments/${id}`);
   note('15_payment_after_refund', { payment_status: (after.body as { status?: string }).status, amount_refunded: (after.body as { amount_refunded?: number }).amount_refunded, refund_status: (after.body as { refund_status?: string }).refund_status });
