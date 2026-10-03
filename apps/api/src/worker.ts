@@ -9,6 +9,7 @@ import { processSearchQueue } from './db/functions.js';
 import { jobId } from './jobs/ids.js';
 import { QUEUE } from './jobs/registry.js';
 import { importEnqueue } from './imports/queues.js';
+import { RedisAppCache } from './lib/app-cache.js';
 import { ImportService } from './imports/service.js';
 import { runCatalogChecks } from './jobs/catalog-check.js';
 import { runRetention } from './jobs/retention.js';
@@ -38,8 +39,9 @@ const email = (consumer: EmailConsumer) => async (job: Job<OutboxJobData>) =>
 const providers = [razorpayProvider(env.RAZORPAY_WEBHOOK_SECRET || undefined)];
 // Uploads are queued by the API; images downloaded by catalogue imports are queued here. Retries: BullMQ attempts.
 const media = mediaServiceFromEnv(env, prisma, async (id) => { await runtime.queues.get(QUEUE.mediaProcess)!.add('media.process', { id }, { jobId: jobId('media', id, Date.now()), attempts: 3, backoff: { type: 'exponential', delay: 10_000 }, removeOnComplete: true }); });
+const appCache = new RedisAppCache(redis, (op, err) => log.warn({ op, err: String(err) }, 'app cache unavailable'));
 const imports = new ImportService({
-  prisma, readFile: (m) => media.read(m), ingestImage: (url, userId) => media.ingestRemote(url, userId),
+  prisma, onCatalogChanged: () => appCache.invalidate('navigation'), readFile: (m) => media.read(m), ingestImage: (url, userId) => media.ingestRemote(url, userId),
   enqueue: { validate: (id, c) => importEnqueue(runtime.queues.get(QUEUE.importValidate)!, runtime.queues.get(QUEUE.importApply)!).validate(id, c), apply: (id) => importEnqueue(runtime.queues.get(QUEUE.importValidate)!, runtime.queues.get(QUEUE.importApply)!).apply(id) },
 });
 

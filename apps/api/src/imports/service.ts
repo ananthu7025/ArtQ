@@ -26,6 +26,8 @@ export type ImportDeps = {
   /** Downloads a remote product image (SSRF-safe) and returns its media id. */
   ingestImage?: (url: string, userId: number | null) => Promise<number>;
   enqueue: { validate: (importId: number, createMissing: boolean) => Promise<void>; apply: (importId: number) => Promise<void> };
+  /** After a catalogue batch commits (it may have created types/categories): e.g. drop the cached storefront menu. Failures are ignored. */
+  onCatalogChanged?: () => Promise<void>;
 };
 export type ImportActor = { userId: number; role: Role };
 /** Test hook: called inside each batch transaction before it commits (throwing simulates a crash mid-batch). */
@@ -145,7 +147,10 @@ export class ImportService {
       const todo = rows.filter((r) => r.attempts + 1 <= MAX_ATTEMPTS);
       const items = todo.map((r) => ({ id: r.id, payload: r.payload as unknown as RowPayload, messages: r.messages as Message[] }));
       if (todo.length && imp.kind === 'INVENTORY') await this.applyCounts(importId, imp.createdBy, todo.map((r) => ({ id: r.id, count: r.payload as unknown as CountPayload, messages: r.messages as Message[] })), () => hooks.beforeCommit?.(batch));
-      else if (todo.length) await this.applyBatch(importId, imp.createdBy, items, () => hooks.beforeCommit?.(batch));
+      else if (todo.length) {
+        await this.applyBatch(importId, imp.createdBy, items, () => hooks.beforeCommit?.(batch));
+        await this.d.onCatalogChanged?.().catch(() => {});
+      }
     }
     await this.finish(importId);
     return 'DONE';

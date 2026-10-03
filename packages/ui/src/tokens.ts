@@ -20,8 +20,10 @@ export const color = {
   'warning-bg': '#fef3c7',
   'warning-ink': '#7c2d12',
   'danger-700': '#b91c1c',
+  'danger-300': '#fca5a5',
   'sidebar-text': '#e5e7eb',
   'sidebar-muted': '#9ca3af',
+  'star': '#f5b301',
 } as const;
 export type ColorToken = keyof typeof color;
 
@@ -49,6 +51,10 @@ export const allowedPairs: ContrastPair[] = [
   { fg: 'sidebar-text', bg: 'ink-900', use: 'text', where: 'admin sidebar items' },
   { fg: 'sidebar-muted', bg: 'ink-900', use: 'text', where: 'admin sidebar group headings' },
   { fg: 'brand-300', bg: 'ink-900', use: 'text', where: 'focus ring / links on dark' },
+  { fg: '#ffffff', bg: 'ink-900', use: 'text', where: 'storefront footer text' },
+  { fg: 'danger-300', bg: 'ink-900', use: 'text', where: 'error text on dark (footer newsletter)' },
+  { fg: 'danger-300', bg: 'ink-900', use: 'ui', where: 'invalid field border on dark' },
+  { fg: 'sidebar-muted', bg: 'ink-900', use: 'ui', where: 'footer newsletter input underline' },
   { fg: 'border-input', bg: 'surface-0', use: 'ui', where: 'input borders' },
   { fg: 'brand-700', bg: 'ink-900', use: 'ui', where: 'selected nav item vs sidebar' },
 ];

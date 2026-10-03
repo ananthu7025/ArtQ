@@ -11,3 +11,7 @@ coverage/
 # Playwright
 apps/admin/test-results/
 apps/admin/playwright-report/
+apps/web/.next-e2e/
+apps/web/test-results/
+apps/web/playwright-report/
+.next-env.d.ts.keep

@@ -14,3 +14,5 @@ export * from './readiness.js';
 export * from './taxonomy-schemas.js';
 export * from './import-schemas.js';
 export * from './inventory-schemas.js';
+export * from './storefront-schemas.js';
+export * from './cache-policy.js';

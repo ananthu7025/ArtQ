@@ -1,6 +1,6 @@
 import { Queue, Worker, type ConnectionOptions } from 'bullmq';
 import type { Logger } from 'pino';
-import type { QueueDef, SchedulerDef } from '../jobs/registry.js';
+import { BULLMQ_BASE, type QueueDef, type SchedulerDef } from '../jobs/registry.js';
 
 export type WorkerRuntime = { start(): Promise<void>; stop(): Promise<void>; queues: Map<string, Queue> };
 
@@ -22,7 +22,7 @@ export function createWorkerRuntime(opts: {
   /** BullMQ key prefix (default "bull"); tests use a unique one per file so a shared Redis never mixes their jobs. */
   prefix?: string;
 }): WorkerRuntime {
-  const prefix = opts.prefix ? { prefix: opts.prefix } : {};
+  const prefix = { ...BULLMQ_BASE, ...(opts.prefix ? { prefix: opts.prefix } : {}) };
   const queues = new Map<string, Queue>();
   const workers: Worker[] = [];
   return {

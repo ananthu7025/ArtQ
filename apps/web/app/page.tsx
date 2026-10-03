@@ -1,14 +1,10 @@
-import { formatINR } from '@artq/shared';
-import { Button } from '@artq/ui';
+// Home (product.md §5.1).
+import { HomeSections } from '../components/home/HomeSections';
+import { loadHome } from '../lib/api';
 
-// Phase 0 placeholder: proves SSR + shared packages + tokens. Real home page is task 3.3.
-export default function Home() {
-  return (
-    <main className="mx-auto max-w-3xl px-4 py-16 text-center">
-      <h1 className="font-display text-ink-900 text-4xl font-semibold tracking-widest">ARTQ</h1>
-      <p className="mt-2 uppercase tracking-[0.3em]">Wood moulds &amp; resins</p>
-      <p className="mt-8 text-ink-700">2:1 Epoxy Resin from {formatINR(49900)}</p>
-      <div className="mt-6"><Button>Shop now</Button></div>
-    </main>
-  );
+export const revalidate = 60;
+
+export default async function HomePage() {
+  const { home } = await loadHome();
+  return <HomeSections home={home} />;
 }

@@ -7,7 +7,7 @@ resetRateLimitsBeforeAll();
 const OWNER = { email: 'owner@e2e.artq.in', password: 'e2e-owner-passphrase' };
 const STAFF = { email: 'staff@e2e.artq.in', password: 'e2e-staff-passphrase' };
 const ALL = ['Dashboard', 'Orders', 'Customers', 'Coupons', 'Shipping Rates', 'Products', 'Restock Requests', 'Product Types', 'Categories', 'Techniques',
-  'Inventory', 'Returns & Refunds', 'COD Remittances', 'Payment Exceptions', 'Jobs & Webhooks', 'Imports', 'Media', 'CMS & Messages',
+  'Inventory', 'Returns & Refunds', 'COD Remittances', 'Payment Exceptions', 'Jobs & Webhooks', 'Imports', 'CMS & Messages',
   'Staff & Permissions', 'Settings', 'Audit Logs'];
 
 async function login(page: Page, who: { email: string; password: string }) {

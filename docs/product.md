@@ -184,7 +184,6 @@ Left sidebar, **independently scrollable** (`height: 100dvh; overflow-y: auto`, 
 | | Payment Exceptions | ✓ | payments:exceptions |
 | | Jobs & Webhooks | ✓ | jobs:read |
 | Catalogue tools | Imports | ✓ | imports:catalog / inventory:adjust |
-| | Media | ✓ | media:write |
 | Content | CMS (home, reels, testimonials, FAQs, pages, announcement) + Messages | ✓ | content:write |
 | Admin | Staff & Permissions | ✓ | staff:manage |
 | | Settings | ✓ | settings:write |
@@ -237,7 +236,7 @@ Sections: Basics (name, slug, type, category (filtered by type), techniques) · 
 | **Payment Exceptions** | Queue of excess/late captures, mismatches, stuck authorizations, failed/unknown refunds, dead webhooks/outbox, oversold, coupon over-limit; resolve/dismiss with note; manual reconcile |
 | **Jobs & Webhooks** | Queue depths, failed jobs (retry), webhook inbox status (retry dead), outbox deliveries by consumer (pending, published but not completed, dead; retry dead), search queue depth, last scheduler runs |
 | **Imports** | Upload catalogue or inventory sheet → validation preview with row outcomes and messages → confirm → progress → result file; resolve "needs review" rows; templates |
-| **Media** | Library with state (processing/ready/failed/rejected), usage, retry, delete when unused |
+| ~~Media~~ | **Dropped by the owner (2026-10-03):** no separate library. Images are managed where they are used (product editor Media section, type/category images), each with its own state (processing/ready/failed/rejected). `media:write` stays as the upload permission |
 | **CMS & Messages** | Hero/slides, announcement bar, home sections, reels, testimonials, FAQs, policy pages, Instagram moments; contact & custom-work inbox with private attachments |
 | **Staff & Permissions** | Staff users, roles, MFA reset, revoke sessions |
 | **Settings** | Store info/GSTIN, payment toggles (online/COD, fee, limits), order rules, tax settings, notification recipients |

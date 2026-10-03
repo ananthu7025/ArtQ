@@ -37,6 +37,7 @@ Calm, crafted, premium but approachable: teal "resin" accents on clean white/sla
 | `success-700` | `#15803d` | Success text/badges (replaces `#16a34a`, which is 3.30:1) |
 | `warning-700` | `#b45309` | Warning text (replaces `#d97706`, which is 3.19:1); `warning-bg #fef3c7` with `#7c2d12` text |
 | `danger-700` | `#b91c1c` | Errors, destructive buttons |
+| `danger-300` | `#fca5a5` | Errors **on dark surfaces** (`ink-900` footer): message text and invalid-field border |
 | `star` | `#f5b301` | Rating stars (decorative; always paired with text "4.6 out of 5") |
 
 ### 2.3 Measured contrast (WCAG 2.1: 4.5:1 normal text, 3:1 large text & UI components)
@@ -55,6 +56,8 @@ Calm, crafted, premium but approachable: teal "resin" accents on clean white/sla
 | Admin sidebar text `#e5e7eb` / muted `#9ca3af` on `ink-900` | 14.33 / 6.99 | ✓ |
 | Admin selected item: white on `brand-700` | 5.56 | ✓; item vs sidebar boundary `brand-700` on `ink-900` 3.19 ✓ |
 | Focus ring: `brand-700` on light / `brand-300` on `ink-900` | 5.56 / 11.99 | ✓ |
+| `danger-300` error text / invalid border on `ink-900` (footer newsletter) | 9.34 | ✓ |
+| White footer text on `ink-900`; newsletter underline `sidebar-muted` on `ink-900` | 17.74 / 6.99 | ✓ |
 | `slate-400` `#94a3b8` on white | 2.56 | ✗ decorative only (was used for placeholders in v1 of this doc) |
 
 The contrast table is checked again in CI with an automated test (axe + token unit test) in Phase 0.
@@ -118,7 +121,7 @@ Image 1:1 radius `lg` on `surface-100` with **fixed aspect box** (no layout shif
 - Order/product status pills (text + colour, never colour alone): Draft (`surface-100`/`ink-700`), Active (`#dcfce7`/`success-700`), Archived (`surface-200`/`ink-700`), Pending payment/Processing (`warning-bg`/`#7c2d12`), Shipped (`#dbeafe`/`#1e40af`), Delivered (`#dcfce7`/`success-700`), Cancelled/Expired (`#fee2e2`/`danger-700`), Exception (`danger-700`/white).
 
 ### 5.7 Variant selector
-Pills min 64×40, border `border-input`; selected `brand-700` border 2 px + `brand-50` bg + `brand-800` text; unavailable: strike-through + `ink-500` + `aria-disabled` + tooltip "Not available in this size". Colour swatch 32 px with the colour name in an accessible label.
+Pills min 64×40, border `border-input`; selected `brand-700` border 2 px + `brand-50` bg + `brand-800` text. **Sold out** (the combination exists): strike-through + `ink-500`, accessible name "Gold, sold out", still selectable because choosing it offers "Notify me". **Not available with the other choices** (no such variant): dashed border + `ink-500`, name "100 gm, other options will change"; choosing it moves the other options to the nearest real combination (in stock first). Neither uses `aria-disabled`: both do something when chosen (task 3.4 refinement). Colour swatch with the colour name in the accessible label.
 
 ### 5.8 Drawers, modals, toasts, skeletons
 Drawers (mobile menu left 85vw max 380; cart right 420/full), bottom sheets (filters, quick add); modals max 560, focus-trapped, Esc closes, focus returns to trigger; toasts `ink-900`/white, `role="status"`, 5 s (pause on hover); skeleton shimmer disabled under reduced motion.

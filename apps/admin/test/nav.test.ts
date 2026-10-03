@@ -8,11 +8,12 @@ describe('navigation (product.md §7.2)', () => {
   it('follows the screenshot order, then Operations, Catalogue tools, Content, Admin', () => {
     expect(NAV[0]!.items.map((i) => i.label)).toEqual(['Dashboard', 'Orders', 'Customers', 'Coupons', 'Shipping Rates', 'Products', 'Restock Requests', 'Product Types', 'Categories', 'Techniques']);
     expect(NAV.map((g) => g.title)).toEqual([null, 'Operations', 'Catalogue tools', 'Content', 'Admin']);
-    expect(ALL_NAV_ITEMS).toHaveLength(21);
-    expect(new Set(ALL_NAV_ITEMS.map((i) => i.path)).size).toBe(21);
+    expect(ALL_NAV_ITEMS).toHaveLength(20);   // 21 in product.md §7.2 minus Media (dropped by the owner 2026-10-03)
+    expect(new Set(ALL_NAV_ITEMS.map((i) => i.path)).size).toBe(20);
+    expect(NAV[2]!.items.map((i) => i.label)).toEqual(['Imports']);
   });
 
-  it('SUPER_ADMIN sees every module', () => { expect(labels('SUPER_ADMIN')).toHaveLength(21); });
+  it('SUPER_ADMIN sees every module', () => { expect(labels('SUPER_ADMIN')).toHaveLength(20); });
 
   it('ADMIN sees everything except the Admin group items that need super-admin permissions (and job retries)', () => {
     expect(labels('ADMIN')).toEqual(ALL_NAV_ITEMS.map((i) => i.label).filter((l) => !['Staff & Permissions', 'Settings', 'Audit Logs'].includes(l)));

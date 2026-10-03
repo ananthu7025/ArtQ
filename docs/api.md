@@ -116,9 +116,9 @@ type OrderView = {
 ### 3.1 Content & meta (public, cacheable)
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/settings/public` | Announcement bar, hero, home sections, free-shipping threshold, COD flags, social, store contact |
-| GET | `/navigation` | Types → categories (active only) |
-| GET | `/home` | `{hero, types[], newArrivals: ProductCard[≤8], reels[], techniques[], testimonials[], instagram[]}` |
+| GET | `/settings/public` | `PublicSettings` (`@artq/shared`): `{store:{name, phone, email, whatsapp}, announcement:{enabled, messages}, social, shipping:{freeThreshold, estimatedDays}, payment:{codEnabled, codFee, codMin, codMax}, order:{returnWindowHours}, home:{order, hidden, heroSlideIntervalMs, instagram}}`. Only `is_public` settings; a stored value that fails its schema is served as the default (and logged). Never GSTIN, legal name, address or private settings |
+| GET | `/navigation` | `{types:[{id, name, slug, href, categories:[{id, name, slug}]}]}`: active types with *show in menu*, their active categories, both in admin order; `href` = the type's tile link override or `/type/:slug` |
+| GET | `/home` | `HomeView` (`@artq/shared`): `{sections, hero:{slides, intervalMs}, types[], newArrivals: ProductCard[≤8], trending: ProductCard[≤8], reels[], techniques[], testimonials[], instagram:{handle, url}}`. `sections` = the `HOME_SECTIONS` order without hidden or empty sections (`reels` is "Trending now"; `trending` is its product-grid fallback, listed only without reels). Only `ACTIVE` products and `READY` public media; New Arrivals = flagged by rank, then newest published; techniques only with live products; a reel/testimonial links its product only while it is live; a video hero slide uses its second image as poster |
 | GET | `/reels`, `/testimonials`, `/faqs`, `/pages/:slug` | Content |
 | GET | `/states?country=IN` | States |
 | GET | `/pincodes/:pincode` | **Geography only**: `{pincode, city, district, state}` or 404 |
@@ -127,8 +127,8 @@ type OrderView = {
 ### 3.2 Uncached public utilities
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/pincodes/:pincode/serviceability` | `{serviceable, codAvailable, surfaceOnly, estimatedDays:{min,max}}`, from `pincode_serviceability` or the default policy |
-| POST | `/newsletter/subscribe` | `{email, source}` → `201 SUBSCRIBED` / `200 ALREADY_SUBSCRIBED` |
+| GET | `/pincodes/:pincode/serviceability` | `PincodeCheck` `{pincode, place:{district,state}\|null, serviceable, codAvailable, surfaceOnly, estimatedDays:{min,max}\|null, reason:'UNKNOWN_PINCODE'\|'NOT_SERVICEABLE'\|null}`: an explicit `pincode_serviceability` row, else the default policy (D-6); a pincode in neither the postal directory nor the rules → `UNKNOWN_PINCODE` (probably mistyped). 400 "Enter a 6-digit pincode" (`pincodeField`) |
+| POST | `/newsletter/subscribe` | `{email, source?:'footer'|'checkout'|'account'}` (`newsletterSubscribeBody`) → `201 {status:'SUBSCRIBED'}` (new, or previously unsubscribed) / `200 {status:'ALREADY_SUBSCRIBED'}`; email case-insensitive; 5/min per IP (task 3.1) |
 | GET | `/newsletter/unsubscribe?token=` | Unsubscribe |
 | POST | `/contact` | `{name, email, phone?, subject, message, orderNumber?}` |
 | POST | `/custom-work` | `{name, email, phone, details{size, wood, quantity, budget, neededBy}, message, attachmentMediaIds[]}` (ids must be this cart's READY private uploads) |
@@ -142,14 +142,16 @@ Return photos are uploaded under the order routes so the order-scoped cookie (`P
 |--------|------|-------------|
 | GET | `/types`, `/types/:slug`, `/categories/:slug`, `/techniques`, `/techniques/:slug` | Taxonomy (active only) |
 | GET | `/products` | Listing (below). Only `ACTIVE` products with ≥ 1 active priced variant |
-| GET | `/products/:slug` | Product detail; `{redirectTo}` for old slugs; 404 for DRAFT/ARCHIVED |
-| GET | `/products/:slug/availability` | **no-store**: `{variants:[{id, price, mrp, stockStatus, maxQuantity}]}` |
-| GET | `/products/:slug/related` | `{frequentlyBoughtTogether[], similar[]}` |
-| GET | `/products/by-ids?ids=` | Cards (recently viewed, guest wishlist) |
-| GET | `/search?q=…`, `/search/suggest?q=` | Search (logged) |
+| GET | `/products/:slug` | `ProductDetail` (`@artq/shared`): active variants with a price (cheapest first), `options` only for dimensions with more than one value (Size → Colour → Thickness), images; **no stock** (cacheable). `{redirectTo}` for old slugs; 404 for DRAFT/ARCHIVED |
+| POST | `/products/:slug/notify` | "Notify me" `{variantId, email}` (`notifyMeBody`) → `201 SUBSCRIBED` / `200 ALREADY_SUBSCRIBED` (one pending request per size and email); 409 `IN_STOCK` while that size can be bought; 5/min per IP |
+| GET | `/products/:slug/availability` | **no-store**: `{variants:[{id, price, mrp, discountPercent, stockStatus, maxQuantity}]}`; `LOW_STOCK` when available ≤ the variant's low-stock threshold; `maxQuantity` = min(available, 50) |
+| GET | `/products/:slug/related` | `{frequentlyBoughtTogether[], similar[]}`: products in the same paid orders (most often first, ≤ 4) and live products of the same category, then the same type (≤ 8); cacheable |
+| GET | `/products/by-ids?ids=` | Cards in the order asked (`ids` = up to 24 comma-separated ids; only live products) |
+| GET | `/search?q=…`, `/search/suggest?q=` | `/search`: the listing parameters with a required `q`; `SearchResults` = `ProductList` + `{query, suggestion}` (closest product name by trigram word similarity when nothing matched); page 1 logged in `search_logs` (query, normalised, result count; a logging failure never fails the search); no-store. `/search/suggest` (`q` 2–100 chars, 60/min per IP): `{products ≤ 6 (word prefix, name or close spelling), types ≤ 3, categories ≤ 3}` (only with live products) |
 
 `GET /products` parameters: `type`, `category`, `technique` (slug lists), `q`, `minPrice`, `maxPrice`, `size`, `color`, `thickness` (lists), `inStock=1`, `sale=1`, `isNew=1`, `isTrending=1`, `sort` (`featured|newest|price_asc|price_desc|name_asc|best_selling|relevance`), `page`, `limit`.
 **Variant filters (size, color, thickness, price, inStock, sale) must all be satisfied by the same variant** (architecture.md §6.2). Response: `{data: ProductCard[], meta, facets:{types, categories, techniques, sizes, colors, thicknesses, price:{min,max}}}`.
+Implemented in task 3.5 (`storefrontListQuery` in `@artq/shared`, strict: unknown parameters → 400): lists are repeated parameters (`?size=10 gm&size=50 gm`, ≤ 20 values, OR within a list, AND across); `minPrice`/`maxPrice` in paise (inclusive; max ≥ min); flags `1`/`true`; `limit` ≤ 96 (default 24), `page` ≤ 200; `sort` default `featured` (`relevance` with `q`, required for it). `q` matches word prefixes (`mica gol`) or the name. `best_selling` = units in paid orders of the last 90 days. Facets are `{value, label, count, hex?}`; each counts with every other filter applied (same-variant rule); a selected value that matches nothing is still listed with count 0. The storefront URL uses whole rupees (`min`, `max`) and converts. `GET /types/:slug` · `/categories/:slug` · `/techniques/:slug` → `TaxonomyPage` `{kind, name, slug, description, banner, metaTitle, metaDescription, parent, children}` (a type's children: its active categories with live products); `{redirectTo}` for renamed slugs; 404 when inactive (a category also when its type is off).
 
 ### 3.4 Customer auth (launch: email only)
 | Method | Path | Body → Response |
@@ -200,7 +202,7 @@ Return photos are uploaded under the order routes so the order-scoped cookie (`P
 | Method | Path | Notes |
 |--------|------|-------|
 | GET | `/cart` | `CartView` (re-priced live, quantities clamped to available) |
-| POST | `/cart/items` | `{variantId, quantity}`; 409 `OUT_OF_STOCK` with `available` |
+| POST | `/cart/items` | `{variantId, quantity 1–50}` (`cartAddBody`); the first add creates the cart and its cookie. Merges with the same variant; 409 `OUT_OF_STOCK` `{available, inCart}` (available = on hand − reserved; carts never reserve); 422 `QUANTITY_LIMIT` above 50 per line; 404 for drafts/inactive/unknown. Every cart response is the re-priced `CartView`: quantities above stock are lowered and saved with a warning, sold-out and unpublished lines stay listed but are not counted, a price change is flagged once (task 3.4; merge on login with 4.2) |
 | PATCH / DELETE | `/cart/items/:itemId` | quantity 0 = remove |
 | DELETE | `/cart` | Clear |
 | POST / DELETE | `/cart/coupon` | `{code}`; validation only, **capacity is reserved at checkout** |

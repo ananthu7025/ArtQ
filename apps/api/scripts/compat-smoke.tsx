@@ -53,7 +53,8 @@ await check('prisma', async () => {
   if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL not set');
   const prisma = new PrismaClient();
   try {
-    const [{ version }] = await prisma.$queryRaw<{ version: string }[]>`SELECT version()`;
+    const [row] = await prisma.$queryRaw<{ version: string }[]>`SELECT version()`;
+    const version = row?.version ?? 'unknown';
     const n = await prisma.productType.count();
     return `${version.split(',')[0]}; productType.count() = ${n}`;
   } finally { await prisma.$disconnect(); }

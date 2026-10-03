@@ -4,6 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { jobId } from '../../src/jobs/ids.js';
 import type { QueueDef, SchedulerDef } from '../../src/jobs/registry.js';
 import { createWorkerRuntime } from '../../src/worker/runtime.js';
+import { BULLMQ_BASE } from '../../src/jobs/registry.js';
 import { startRedis } from '../helpers/services.js';
 
 let rd: Awaited<ReturnType<typeof startRedis>>;
@@ -29,6 +30,15 @@ describe('worker runtime (real Redis)', () => {
     await until(() => c.seen.length === 1);
     await rt.stop();
     expect(c.seen).toEqual([{ n: 1 }]);
+  });
+
+  it('every queue and worker skips BullMQ\'s INFO version check (a startup race once left a queue broken)', async () => {
+    const c = counter();
+    const rt = createWorkerRuntime({ connection, log, queues: [c.def()], schedulers: [], producers: [`${qname}-producer`] });
+    await rt.start();
+    for (const q of rt.queues.values()) expect(q.opts.skipVersionCheck, q.name).toBe(true);
+    await rt.stop();
+    expect(BULLMQ_BASE).toEqual({ skipVersionCheck: true });
   });
 
   it('a duplicate deterministic job id is processed once', async () => {

@@ -91,7 +91,7 @@ describe('signup + email OTP', () => {
     const v = await post('/auth/signup/verify', { email, code: await otpOf(email) });
     expect(v.status).toBe(200);
     expect(v.body.user).toMatchObject({ email, emailVerified: true, role: 'CUSTOMER', phone: '+919800000000' });
-    expect(v.headers['cache-control']).toBe('no-store');
+    expect(v.headers['cache-control']).toBe('private, no-store');   // architecture.md §6.1
     const c = setCookies(v).find((x) => x.startsWith(`${COOKIE}=`))!;
     expect(c).toMatch(/; Path=\/v1\/auth; Max-Age=2592000; HttpOnly; Secure; SameSite=Strict$/);
     expect(c.toLowerCase()).not.toContain('domain');

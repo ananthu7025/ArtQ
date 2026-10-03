@@ -34,7 +34,6 @@ export const NAV: NavGroup[] = [
   ] },
   { title: 'Catalogue tools', items: [
     { label: 'Imports', path: '/imports', perms: ['imports:catalog', 'inventory:adjust'], task: '2.7' },
-    { label: 'Media', path: '/media', perms: ['media:write'], task: '2.5' },
   ] },
   { title: 'Content', items: [
     { label: 'CMS & Messages', path: '/cms', perms: ['content:write'], task: '6.1' },
