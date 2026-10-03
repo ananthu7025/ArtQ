@@ -94,6 +94,17 @@ test.describe('desktop 1440×900', () => {
   });
 });
 
+test('caching (task 3.2): pages are regenerated every 60 s; the API marks public data shareable and personal data private', async ({ request }) => {
+  const home = await request.get('/');
+  expect(home.headers()['cache-control']).toContain('s-maxage=60');
+  const nav = await request.get('http://localhost:4001/v1/navigation', { headers: { Cookie: 'aq_cart=abc' } });
+  expect(nav.headers()['cache-control']).toBe('public, max-age=0, s-maxage=60, stale-while-revalidate=60');
+  expect(nav.headers()['set-cookie']).toBeUndefined();
+  const me = await request.get('http://localhost:4001/v1/me');
+  expect(me.status()).toBe(401);
+  expect(me.headers()['cache-control']).toBe('private, no-store');
+});
+
 test.describe('phone 390×844', () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
 

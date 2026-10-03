@@ -8,6 +8,7 @@ import { jsonOnly } from './middleware/jsonOnly.js';
 import { originPolicy, type OriginLists } from './middleware/originGuard.js';
 import { RATE_LIMITS, rateLimit, type RateLimiter } from './middleware/rateLimit.js';
 import { requestId } from './middleware/requestId.js';
+import { cachePolicy } from './middleware/cachePolicy.js';
 import { healthRouter, type ReadinessChecks } from './routes/health.js';
 
 export type AppDeps = {
@@ -32,6 +33,8 @@ export function createApp(deps: AppDeps): Express {
   app.disable('x-powered-by');
   app.set('trust proxy', 1);
   app.use(requestId);
+  // First, so preflights, origin/rate-limit refusals and errors are covered too.
+  app.use(cachePolicy());
   app.use(pinoHttp({ logger: log, genReqId: (req) => (req as express.Request).id, autoLogging: { ignore: (req) => req.url?.startsWith('/health') ?? false } }));
   app.use(helmet());
   // CORS only tells browsers what they may read; it is NOT authorization (originGuard enforces server-side).

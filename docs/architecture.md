@@ -339,6 +339,8 @@ Permissions are declared in `packages/shared/src/permissions.ts` and checked by 
 | Redis app cache | navigation, settings, taxonomy | TTL 300 s, deleted on admin write |
 | Cloudflare (CDN host) | Public media renditions | Immutable URLs (content-addressed keys), 1 year |
 
+**Enforcement (task 3.2):** the allow-list lives once in `@artq/shared` (`cache-policy.ts`). The API applies it to every response in `middleware/cachePolicy.ts` (first in the chain, decided when headers are written; on allow-listed routes the request's cookies and `Authorization` are removed before any handler runs). The storefront's server-side `publicGet` refuses any other path, so personal data is only ever fetched in the browser (`clientRequest`, `credentials:'include'`). The Redis app cache keys carry a generation number that writes bump, so a read racing a write cannot store stale data.
+
 **Normal-case staleness** of public catalogue display is about **3 minutes** (60 s ISR + 60 s edge + 60 s stale-while-revalidate). This is **not an enforced maximum**: neither ISR nor `stale-while-revalidate` stops serving an old page when regeneration fails.
 
 **During API outages or failed regeneration:** Next.js keeps serving the last successfully generated HTML, and the CDN may serve its last cached copy, for as long as the outage lasts. Correctness does not depend on freshness:

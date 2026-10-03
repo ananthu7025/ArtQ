@@ -1,16 +1,14 @@
 // Public storefront content (api.md §3.1) and the newsletter sign-up (§3.2). The two GETs are on the public cache
-// allow-list (architecture.md §8): shared caches may keep them 60 s; they never set or read cookies.
+// allow-list (architecture.md §6.1; headers set by middleware/cachePolicy.ts) and kept in the Redis app cache.
 import { randomBytes } from 'node:crypto';
 import type { PrismaClient } from '@prisma/client';
 import { DEFAULT_SETTINGS, newsletterSubscribeBody, PUBLIC_SETTING_KEYS, settingSchemas, toPublicSettings, type Navigation, type PublicSettings, type SettingKey, type SettingValue } from '@artq/shared';
-import { Router, type RequestHandler, type Response } from 'express';
+import { Router, type RequestHandler } from 'express';
+import { noAppCache, type AppCache } from '../lib/app-cache.js';
 import { RATE_LIMITS, rateLimit, type RateLimiter } from '../middleware/rateLimit.js';
 import { validate } from '../middleware/validate.js';
 
-export const PUBLIC_CACHE = 'public, max-age=0, s-maxage=60, stale-while-revalidate=60';
-const cacheable = (res: Response) => res.set('Cache-Control', PUBLIC_CACHE).set('Vary', 'Accept-Encoding');
-
-export type StorefrontDeps = { prisma: PrismaClient; limiter?: RateLimiter; onRateLimitError?: (e: unknown) => void; onInvalidSetting?: (key: SettingKey) => void };
+export type StorefrontDeps = { prisma: PrismaClient; cache?: AppCache; limiter?: RateLimiter; onRateLimitError?: (e: unknown) => void; onInvalidSetting?: (key: SettingKey) => void };
 
 /** Menu: active types with "show in menu", their active categories; a tile link override replaces the type page. */
 export async function loadNavigation(prisma: PrismaClient): Promise<Navigation> {
@@ -42,8 +40,9 @@ export function storefrontRouter(d: StorefrontDeps): Router {
     ? rateLimit({ limiter: d.limiter, name: 'public-form', rule: RATE_LIMITS.publicForm, ...(d.onRateLimitError ? { onError: d.onRateLimitError } : {}) })
     : (_req, _res, next) => next();
 
-  r.get('/navigation', async (_req, res) => { cacheable(res).json(await loadNavigation(d.prisma)); });
-  r.get('/settings/public', async (_req, res) => { cacheable(res).json(await loadPublicSettings(d.prisma, d.onInvalidSetting)); });
+  const cache = d.cache ?? noAppCache;
+  r.get('/navigation', async (_req, res) => { res.json(await cache.get('navigation', () => loadNavigation(d.prisma))); });
+  r.get('/settings/public', async (_req, res) => { res.json(await cache.get('publicSettings', () => loadPublicSettings(d.prisma, d.onInvalidSetting))); });
 
   // 201 SUBSCRIBED for a new (or returning, previously unsubscribed) address, 200 ALREADY_SUBSCRIBED otherwise (api.md §3.2).
   r.post('/newsletter/subscribe', formLimit, validate({ body: newsletterSubscribeBody }), async (req, res) => {
@@ -54,7 +53,7 @@ export function storefrontRouter(d: StorefrontDeps): Router {
         WHERE newsletter_subscribers.status <> 'SUBSCRIBED'
       RETURNING true AS created`;
     const created = rows.length > 0;
-    res.status(created ? 201 : 200).set('Cache-Control', 'no-store').json({ status: created ? 'SUBSCRIBED' : 'ALREADY_SUBSCRIBED' });
+    res.status(created ? 201 : 200).json({ status: created ? 'SUBSCRIBED' : 'ALREADY_SUBSCRIBED' });
   });
   return r;
 }

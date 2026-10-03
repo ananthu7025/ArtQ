@@ -40,7 +40,7 @@ describe('health', () => {
     const res = await request(app()).get('/health');
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ status: 'ok', service: 'api', version: 'test' });
-    expect(res.headers['cache-control']).toBe('no-store');
+    expect(res.headers['cache-control']).toBe('private, no-store');   // architecture.md §6.1
     expect(res.headers['x-content-type-options']).toBe('nosniff');
     expect(res.headers['x-powered-by']).toBeUndefined();
   });

@@ -11,6 +11,7 @@ import { RedisSessionCache } from './auth/session-cache.js';
 import { ConfigError, loadEnv } from './config/env.js';
 import { makeReadinessChecks } from './lib/readiness.js';
 import { RedisRateLimiter } from './middleware/rateLimit.js';
+import { RedisAppCache } from './lib/app-cache.js';
 import { redisConnection } from './lib/redis-url.js';
 import { jobId } from './jobs/ids.js';
 import { QUEUE } from './jobs/registry.js';
@@ -49,6 +50,7 @@ const service = new AuthService(prisma, cache, {
 });
 
 const limiter = new RedisRateLimiter(redis);
+const appCache = new RedisAppCache(redis, (op, err) => log.warn({ op, err: String(err) }, 'app cache unavailable; reading from the database'));
 const onRateLimitError = (err: unknown) => log.warn({ err: String(err) }, 'rate limiter unavailable; request allowed');
 
 // Admin feature modules (Phase 2+) register on admin.routes; auth, rate limit and audit are wired by the factory.
@@ -64,7 +66,7 @@ registerAdminMediaRoutes(admin, media, prisma);
 registerAuditRoutes(admin, prisma);
 registerStaffRoutes(admin, prisma, service);
 registerCatalogRoutes(admin, new CatalogService(prisma, (m) => media.view(m)));
-registerTaxonomyRoutes(admin, prisma, (m) => media.view(m));
+registerTaxonomyRoutes(admin, prisma, (m) => media.view(m), appCache);
 const importValidateQueue = new Queue(QUEUE.importValidate, { connection: webhookQueue.opts.connection });
 const importApplyQueue = new Queue(QUEUE.importApply, { connection: webhookQueue.opts.connection });
 for (const q of [importValidateQueue, importApplyQueue]) q.on('error', (err) => log.warn({ err: err.message, queue: q.name }, 'import queue connection error'));
@@ -82,7 +84,7 @@ const app = createApp({
     authRouter({ prisma, cache, jwt, service, env: env.NODE_ENV, refreshMaxAgeS: DEFAULT_AUTH_TIMINGS.refreshIdleS, limiter, onRateLimitError }),
     adminAuthRouter({ prisma, cache, jwt, service, env: env.NODE_ENV, limiter, onRateLimitError }),
     customerMediaRouter({ prisma, cache, jwt }, media),
-    storefrontRouter({ prisma, limiter, onRateLimitError, onInvalidSetting: (key) => log.warn({ key }, 'stored setting is invalid; serving the default') }),
+    storefrontRouter({ prisma, cache: appCache, limiter, onRateLimitError, onInvalidSetting: (key) => log.warn({ key }, 'stored setting is invalid; serving the default') }),
     webhookRouter({ prisma, queue: webhookQueue, providers: [razorpayProvider(env.RAZORPAY_WEBHOOK_SECRET || undefined)], log }),
     admin.router,
   ],

@@ -8,6 +8,7 @@ import type { Media, PrismaClient } from '@prisma/client';
 import type { Request, RequestHandler, Response, Router } from 'express';
 import { z } from 'zod';
 import { recordAudit } from '../admin/router.js';
+import { noAppCache, type AppCache } from '../lib/app-cache.js';
 import { validate } from '../middleware/validate.js';
 import { TaxonomyService, type TaxonomyActor, type TaxonomyKind } from './taxonomy-service.js';
 
@@ -21,8 +22,10 @@ const ROUTES: { kind: TaxonomyKind; path: string; create: z.ZodType; update: z.Z
   { kind: 'technique', path: '/techniques', create: createTechniqueBody, update: updateTechniqueBody },
 ];
 
-export function registerTaxonomyRoutes(admin: AdminRoutes, prisma: PrismaClient, renderMedia?: Render): void {
+export function registerTaxonomyRoutes(admin: AdminRoutes, prisma: PrismaClient, renderMedia?: Render, cache: AppCache = noAppCache): void {
   const r = admin.routes;
+  // The storefront menu is built from types and categories: drop its cached copy after every committed change.
+  const changed = () => cache.invalidate('navigation');
   const service = new TaxonomyService(prisma, renderMedia);
   const thumb = async (ids: (number | null)[]) => {
     const list = ids.filter((v): v is number => v !== null);
@@ -79,19 +82,25 @@ export function registerTaxonomyRoutes(admin: AdminRoutes, prisma: PrismaClient,
     // Before `/:id`, so "reorder" is never read as an id.
     r.patch(`${path}/reorder`, admin.can('catalog:write'), validate({ body: reorderBody }), async (req, res) => {
       await service.reorder(kind, (req.body as z.infer<typeof reorderBody>).ids, actor(req, res));
+      await changed();
       noStore(res).json({ ok: true });
     });
     r.get(`${path}/:id`, admin.can('catalog:read'), validate({ params: idParam }), async (req, res) => {
       noStore(res).json(await service.get(kind, (req.params as unknown as { id: number }).id));
     });
     r.post(path, admin.can('catalog:write'), validate({ body: create }), async (req, res) => {
-      noStore(res).status(201).json(await service.create(kind, req.body, actor(req, res)));
+      const created = await service.create(kind, req.body, actor(req, res));
+      await changed();
+      noStore(res).status(201).json(created);
     });
     r.patch(`${path}/:id`, admin.can('catalog:write'), validate({ params: idParam, body: update }), async (req, res) => {
-      noStore(res).json(await service.update(kind, (req.params as unknown as { id: number }).id, req.body, actor(req, res)));
+      const updated = await service.update(kind, (req.params as unknown as { id: number }).id, req.body, actor(req, res));
+      await changed();
+      noStore(res).json(updated);
     });
     r.delete(`${path}/:id`, admin.can('catalog:write'), validate({ params: idParam }), async (req, res) => {
       await service.remove(kind, (req.params as unknown as { id: number }).id, actor(req, res));
+      await changed();
       res.status(204).end();
     });
   }

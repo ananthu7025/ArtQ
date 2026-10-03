@@ -1,6 +1,6 @@
 // Task 3.1: the public endpoints the storefront layout needs (api.md §3.1–§3.2): navigation, public settings,
 // newsletter sign-up. Real PostgreSQL and Redis.
-import { DEFAULT_SETTINGS } from '@artq/shared';
+import { DEFAULT_SETTINGS, NO_STORE, PUBLIC_CACHE_CONTROL as PUBLIC_CACHE } from '@artq/shared';
 import { PrismaClient } from '@prisma/client';
 import type { Express } from 'express';
 import { Redis } from 'ioredis';
@@ -9,7 +9,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../../src/app.js';
 import { RedisRateLimiter, type RateLimiter } from '../../src/middleware/rateLimit.js';
 import { seedSettings } from '../../src/seed/steps.js';
-import { PUBLIC_CACHE, storefrontRouter } from '../../src/storefront/routes.js';
+import { storefrontRouter } from '../../src/storefront/routes.js';
 import { createMigratedDatabase, type TestDb } from '../helpers/db.js';
 import { uniq } from '../helpers/fixtures.js';
 import { startPostgres, startRedis, type Service } from '../helpers/services.js';
@@ -89,7 +89,7 @@ describe('GET /v1/navigation', () => {
     const res = await request(build({ db: dead })).get('/v1/navigation');
     expect(res.status).toBe(500);
     expect(res.body.error.code).toBe('INTERNAL');
-    expect(res.headers['cache-control']).toBe('no-store');
+    expect(res.headers['cache-control']).toBe(NO_STORE);
     expect(JSON.stringify(res.body)).not.toContain('127.0.0.1');
     await dead.$disconnect();
   });
@@ -156,7 +156,7 @@ describe('POST /v1/newsletter/subscribe', () => {
     const first = await subscribe(app, { email });
     expect(first.status).toBe(201);
     expect(first.body).toEqual({ status: 'SUBSCRIBED' });
-    expect(first.headers['cache-control']).toBe('no-store');
+    expect(first.headers['cache-control']).toBe(NO_STORE);
     const again = await subscribe(app, { email: `  ${email.toUpperCase()} `, source: 'footer' });
     expect(again.status).toBe(200);
     expect(again.body).toEqual({ status: 'ALREADY_SUBSCRIBED' });
