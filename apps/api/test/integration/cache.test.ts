@@ -48,7 +48,8 @@ function standIns(): Router {
   };
   r.get('/pages/missing-page', echo('missing', 404));   // before /pages/:slug
   // /home, /products/:slug and its /availability are real routes (storefront router) and answer first.
-  for (const p of ['/types/resins', '/categories/mica', '/techniques', '/products', '/pages/:slug', '/faqs', '/testimonials', '/reels', '/seo/sitemap-entries']) r.get(p, echo(p));
+  // /types/:slug, /categories/:slug, /techniques/:slug and /products are real too (task 3.5).
+  for (const p of ['/types', '/techniques', '/pages/:slug', '/faqs', '/testimonials', '/reels', '/seo/sitemap-entries']) r.get(p, echo(p));
   for (const p of ['/me', '/me/orders', '/cart', '/checkout', '/orders/:n', '/uploads/:id', '/pincodes/:p/serviceability']) r.get(p, echo(p));
   r.get('/reels-broken', () => { throw new Error('boom'); });
   return r;
@@ -97,7 +98,10 @@ const menu = async () => ((await request(app).get('/v1/navigation')).body.types 
 describe('✅ cache headers for every route group', () => {
   it('allow-listed public GETs (real and stand-in): public 60 s, no Set-Cookie even if the handler sets one, Vary: Accept-Encoding', async () => {
     const live = await liveProduct(prisma, { name: 'Cache Check' });
-    for (const p of ['/navigation', '/settings/public', '/home', '/types/resins', '/categories/mica', '/techniques', '/products', `/products/${live.slug}`, '/pages/about', '/faqs', '/testimonials', '/reels', '/seo/sitemap-entries']) {
+    const type = await prisma.productType.findUniqueOrThrow({ where: { id: live.typeId } });
+    const category = await prisma.category.findUniqueOrThrow({ where: { id: live.categoryId } });
+    const technique = await prisma.technique.create({ data: { name: `Tech ${uniq()}`, slug: `tech-${uniq()}` } });
+    for (const p of ['/navigation', '/settings/public', '/home', '/types', `/types/${type.slug}`, `/categories/${category.slug}`, '/techniques', `/techniques/${technique.slug}`, '/products', `/products/${live.slug}`, '/pages/about', '/faqs', '/testimonials', '/reels', '/seo/sitemap-entries']) {
       const res = await request(app).get(`/v1${p}`).set('Cookie', 'aq_cart=c1; __Secure-aq_rt=r1').set('Authorization', 'Bearer abc');
       expect(res.status, p).toBe(200);
       expectPublic(res);

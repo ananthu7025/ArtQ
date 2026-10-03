@@ -3,7 +3,7 @@
 //   personal response can never be baked into a page that is cached and served to everyone.
 // - clientRequest: in the browser, with the customer's cookies (cart, session), never cached.
 // If the API cannot be reached, layout data falls back to the default settings and an empty menu.
-import { DEFAULT_PUBLIC_SETTINGS, isPublicCacheable, type HomeView, type Navigation, type PublicSettings } from '@artq/shared';
+import { DEFAULT_PUBLIC_SETTINGS, isPublicCacheable, type HomeView, type Navigation, type ProductList, type PublicSettings, type TaxonomyPage } from '@artq/shared';
 
 export const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/v1').replace(/\/$/, '');
 
@@ -37,7 +37,7 @@ export const apiPost = <T>(path: string, body: unknown, fetchImpl: Fetch = fetch
 export async function publicGet<T>(path: string, fetchImpl: Fetch = fetch, timeoutMs = 3000): Promise<T> {
   if (!isPublicCacheable(path)) throw new Error(`publicGet(${path}): not a public, cacheable API path; personal data is fetched in the browser with clientRequest`);
   const res = await fetchImpl(`${API_URL}${path}`, { next: { revalidate: 60 }, signal: AbortSignal.timeout(timeoutMs), credentials: 'omit', headers: { Accept: 'application/json' } });
-  if (!res.ok) throw new Error(`${path} → ${res.status}`);
+  if (!res.ok) throw new ApiError(res.status, 'HTTP', `${path} → ${res.status}`);
   return (await res.json()) as T;
 }
 
@@ -63,4 +63,16 @@ export async function loadHome(fetchImpl: Fetch = fetch, timeoutMs = 3000): Prom
   } catch {
     return { home: EMPTY_HOME, degraded: true };
   }
+}
+
+/** A listing page's products; null when the API cannot be reached (the page explains instead of showing "no products"). */
+export async function loadListing(path: string, fetchImpl: Fetch = fetch): Promise<ProductList | null> {
+  try { return await publicGet<ProductList>(path, fetchImpl); } catch { return null; }
+}
+
+/** A listing header: the page, a move to its new slug, 'missing' (404) or 'unavailable' (API down). */
+export async function loadTaxonomy(kind: TaxonomyPage['kind'], slug: string, fetchImpl: Fetch = fetch): Promise<TaxonomyPage | { redirectTo: string } | 'missing' | 'unavailable'> {
+  const base = kind === 'type' ? 'types' : kind === 'category' ? 'categories' : 'techniques';
+  try { return await publicGet<TaxonomyPage | { redirectTo: string }>(`/${base}/${encodeURIComponent(slug)}`, fetchImpl); }
+  catch (e) { return e instanceof ApiError && e.status === 404 ? 'missing' : 'unavailable'; }
 }

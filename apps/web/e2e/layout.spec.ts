@@ -50,13 +50,13 @@ test.describe('desktop 1440×900', () => {
     await expect(page.getByRole('link', { name: 'Chat with us on WhatsApp (opens WhatsApp)' })).toHaveAttribute('href', 'https://wa.me/919847012345');
   });
 
-  test('following a menu link: the mega-menu closes and the next page keeps the layout (404 until listings exist)', async ({ page }) => {
+  test('following a menu link: the mega-menu closes and the category page keeps the layout', async ({ page }) => {
     await page.goto('/');
     const shop = page.getByRole('navigation', { name: 'Main' }).getByRole('button', { name: 'Shop' });
     await shop.click();
     await page.getByRole('link', { name: 'Mica Powder Pigments' }).click();
     await expect(page).toHaveURL(/\/category\/mica-powder-pigments$/);
-    await expect(page.getByRole('heading', { name: 'We couldn’t find that page' })).toBeVisible();
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText('Mica Powder Pigments');
     await expect(shop).toHaveAttribute('aria-expanded', 'false');
     await expect(page.locator('footer')).toBeVisible();
     await axeClean(page);

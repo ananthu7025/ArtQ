@@ -29,7 +29,7 @@ export function videoRef(m: Media | undefined | null, url: MediaUrl): VideoRef |
   return { id: m.id, url: url(m.key), mime: m.detectedMime ?? m.declaredMime, width: m.width, height: m.height };
 }
 
-type CardRow = {
+export type CardRow = {
   id: number; slug: string; name: string; min_price: number | null; max_price: number | null; available_qty: number; active_variant_count: number;
   is_new_arrival: boolean; is_trending: boolean; type_slug: string; type_name: string; cheapest_mrp: number | null; single_variant_id: number | null;
 };
@@ -50,6 +50,11 @@ export async function productCards(prisma: PrismaClient, where: Prisma.Sql, orde
     WHERE p.status = 'ACTIVE' AND p.deleted_at IS NULL AND p.min_price IS NOT NULL AND (${where})
     ORDER BY ${order}
     LIMIT ${limit}`;
+  return cardsFromRows(prisma, rows, url);
+}
+
+/** ProductCards from card rows (min/max price and cheapest MRP already chosen by the caller's query). */
+export async function cardsFromRows(prisma: PrismaClient, rows: CardRow[], url: MediaUrl): Promise<ProductCard[]> {
   if (rows.length === 0) return [];
   const images = await prisma.productImage.findMany({
     where: { productId: { in: rows.map((r) => r.id) }, media: { status: 'READY', visibility: 'PUBLIC', kind: 'IMAGE', deletedAt: null } },

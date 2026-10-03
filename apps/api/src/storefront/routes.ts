@@ -2,12 +2,13 @@
 // allow-list (architecture.md §6.1; headers set by middleware/cachePolicy.ts) and kept in the Redis app cache.
 import { randomBytes } from 'node:crypto';
 import type { PrismaClient } from '@prisma/client';
-import { DEFAULT_SETTINGS, newsletterSubscribeBody, notifyMeBody, PUBLIC_SETTING_KEYS, settingSchemas, toPublicSettings, type Navigation, type PublicSettings, type SettingKey, type SettingValue } from '@artq/shared';
+import { DEFAULT_SETTINGS, newsletterSubscribeBody, notifyMeBody, storefrontListQuery, type StorefrontListQuery, PUBLIC_SETTING_KEYS, settingSchemas, toPublicSettings, type Navigation, type PublicSettings, type SettingKey, type SettingValue } from '@artq/shared';
 import { Router, type RequestHandler, type Response } from 'express';
 import { z } from 'zod';
 import { noAppCache, type AppCache } from '../lib/app-cache.js';
 import { loadHome, type MediaUrl } from './home.js';
 import { findLiveProduct, loadAvailability, loadProductDetail } from './products.js';
+import { listProducts, loadTaxonomyPage } from './listing.js';
 import { AppError } from '../lib/errors.js';
 import { RATE_LIMITS, rateLimit, type RateLimiter } from '../middleware/rateLimit.js';
 import { validate } from '../middleware/validate.js';
@@ -58,6 +59,14 @@ export function storefrontRouter(d: StorefrontDeps): Router {
     if ('redirectTo' in found) { res.json({ redirectTo: found.redirectTo }); return null; }
     return found.id;
   };
+  r.get('/products', validate({ query: storefrontListQuery }), async (req, res) => { res.json(await listProducts(d.prisma, req.query as unknown as StorefrontListQuery, d.mediaUrl)); });
+  for (const [kind, path] of [['type', '/types/:slug'], ['category', '/categories/:slug'], ['technique', '/techniques/:slug']] as const) {
+    r.get(path, validate({ params: slugParam }), async (req, res) => {
+      const page = await loadTaxonomyPage(d.prisma, kind, String(req.params.slug), d.mediaUrl);
+      if (!page) throw new AppError(404, 'NOT_FOUND', `This ${kind} is not available`);
+      res.json(page);
+    });
+  }
   r.get('/products/:slug', validate({ params: slugParam }), async (req, res) => {
     const id = await live(String(req.params.slug), res);
     if (id === null) return;

@@ -126,6 +126,51 @@ export type CartView = {
   warnings: string[];
 };
 
+// ── Listing (api.md §3.3 GET /products, product.md §5.2, architecture.md §6.2) ──
+export const LISTING_SORTS = ['featured', 'newest', 'price_asc', 'price_desc', 'name_asc', 'best_selling', 'relevance'] as const;
+export type ListingSort = (typeof LISTING_SORTS)[number];
+export const LISTING_PAGE_SIZE = 24;
+export const LISTING_MAX_LIMIT = 96;
+/** A repeated query parameter (?size=10 gm&size=50 gm) or a single one, as a de-duplicated list. */
+const valueList = z.union([z.string(), z.array(z.string())])
+  .transform((v) => [...new Set((Array.isArray(v) ? v : [v]).map((x) => x.trim()).filter(Boolean))])
+  .pipe(z.array(z.string().max(80, 'Use at most 80 characters')).max(20, 'Choose at most 20'));
+const flag = z.enum(['1', 'true']).transform(() => true);
+const paiseParam = z.coerce.number({ error: 'Enter a number' }).int('Use whole rupees').min(0, 'Use 0 or more').max(1_00_00_000);
+/** GET /v1/products. Prices in paise. `relevance` needs `q`. */
+export const storefrontListQuery = z.strictObject({
+  type: valueList.optional(), category: valueList.optional(), technique: valueList.optional(),
+  size: valueList.optional(), color: valueList.optional(), thickness: valueList.optional(),
+  q: z.string().trim().max(SEARCH_QUERY_MAX, `Use at most ${SEARCH_QUERY_MAX} characters`).optional(),
+  minPrice: paiseParam.optional(), maxPrice: paiseParam.optional(),
+  inStock: flag.optional(), sale: flag.optional(), isNew: flag.optional(), isTrending: flag.optional(),
+  sort: z.enum(LISTING_SORTS).optional(),
+  page: z.coerce.number().int().min(1).max(200).default(1),
+  limit: z.coerce.number().int().min(1).max(LISTING_MAX_LIMIT).default(LISTING_PAGE_SIZE),
+}).refine((q) => q.minPrice === undefined || q.maxPrice === undefined || q.minPrice <= q.maxPrice, { path: ['maxPrice'], message: 'The maximum must be at least the minimum' })
+  .refine((q) => q.sort !== 'relevance' || Boolean(q.q), { path: ['sort'], message: 'Relevance needs a search' });
+export type StorefrontListQuery = z.output<typeof storefrontListQuery>;
+
+/** The storefront's price filter (whole rupees); the same limits as the API's paise parameters. */
+const rupees = z.union([z.literal(''), z.coerce.number({ error: 'Enter a number' }).int('Use whole rupees').min(0, 'Use 0 or more').max(1_00_000, 'At most ₹1,00,000')]);
+export const priceRangeForm = z.object({ min: rupees, max: rupees })
+  .refine((r) => r.min === '' || r.max === '' || r.min <= r.max, { path: ['max'], message: 'The maximum must be at least the minimum' });
+
+export type Facet = { value: string; label: string; count: number; hex?: string | null };
+export type ProductList = {
+  data: ProductCard[];
+  meta: { page: number; limit: number; total: number; totalPages: number };
+  facets: { types: Facet[]; categories: Facet[]; techniques: Facet[]; sizes: Facet[]; colors: Facet[]; thicknesses: Facet[]; price: { min: number; max: number } | null };
+};
+
+/** GET /v1/types/:slug, /categories/:slug, /techniques/:slug: the listing page header. */
+export type TaxonomyPage = {
+  kind: 'type' | 'category' | 'technique'; name: string; slug: string; description: string | null;
+  banner: MediaRef | null; metaTitle: string | null; metaDescription: string | null;
+  parent: { slug: string; name: string } | null;
+  children: { slug: string; name: string }[];
+};
+
 /** WhatsApp chat link for a stored number ("+91 98470 12345", "919847012345", "09847012345"); null when it is not a usable Indian or international number. */
 export function whatsappHref(number: string | null | undefined, text?: string): string | null {
   if (!number) return null;
