@@ -8,7 +8,7 @@ import { uniq, val } from './fixtures.js';
 export async function readyImage(db: PrismaClient, o: { status?: string; visibility?: string; width?: number; height?: number } = {}): Promise<number> {
   const key = `public/test/${uniq()}`;
   return val<number>(db, `INSERT INTO media (key, visibility, kind, declared_mime, detected_mime, declared_size, size_bytes, width, height, renditions, placeholder, owner_scope, status, updated_at)
-    VALUES ($1, $2::"MediaVisibility", 'IMAGE', 'image/jpeg', 'image/jpeg', 1000, 1000, $3, $4, $5::jsonb, 'data:image/webp;base64,AAAA', 'product', $6::"MediaStatus", now()) RETURNING id`,
+    VALUES ($1, $2::"MediaVisibility", 'IMAGE', 'image/jpeg', 'image/jpeg', 1000, 1000, $3, $4, $5::jsonb, 'data:image/webp;base64,AAAA', 'admin', $6::"MediaStatus", now()) RETURNING id`,
   `${key}.jpg`, o.visibility ?? 'PUBLIC', o.width ?? 1200, o.height ?? 1200,
   JSON.stringify({ 320: `${key}/w320.webp`, 640: `${key}/w640.webp`, 1200: `${key}/w1200.webp` }), o.status ?? 'READY');
 }

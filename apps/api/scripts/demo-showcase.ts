@@ -40,7 +40,11 @@ export async function seedShowcase(d: ShowcaseDeps): Promise<ShowcaseReport> {
   const { prisma, admin } = d;
   const report: ShowcaseReport = { published: [], skipped: [], images: 0 };
 
-  /** Generated image, uploaded and processed like an upload; reused on later runs (same key). */
+  // Earlier runs tagged demo images 'product'; the admin only accepts 'admin' images, so editing a demo product's photos
+  // failed. Fix any such rows (re-runnable).
+  await prisma.media.updateMany({ where: { key: { startsWith: 'public/demo/' }, ownerScope: { not: 'admin' } }, data: { ownerScope: 'admin' } });
+
+  /** Generated image, uploaded and processed like an upload, owned like an admin upload (ownerScope 'admin'); reused on later runs (same key). */
   const image = async (key: string, label: string, color: string, w = 1200, h = 1200, round = false): Promise<number> => {
     const fullKey = `public/demo/${key}.png`;
     const existing = await prisma.media.findUnique({ where: { key: fullKey } });
@@ -49,7 +53,7 @@ export async function seedShowcase(d: ShowcaseDeps): Promise<ShowcaseReport> {
     await d.store.put(d.bucket, fullKey, body, 'image/png', 'public, max-age=31536000, immutable');
     const m = existing
       ? await prisma.media.update({ where: { id: existing.id }, data: { status: 'UPLOADED', declaredSize: body.length, failureReason: null } })
-      : await prisma.media.create({ data: { key: fullKey, visibility: 'PUBLIC', kind: 'IMAGE', declaredMime: 'image/png', declaredSize: body.length, ownerScope: 'product', status: 'UPLOADED', uploadedBy: admin.id } });
+      : await prisma.media.create({ data: { key: fullKey, visibility: 'PUBLIC', kind: 'IMAGE', declaredMime: 'image/png', declaredSize: body.length, ownerScope: 'admin', status: 'UPLOADED', uploadedBy: admin.id } });
     if ((await d.media.process(m.id)) !== 'READY') throw new Error(`demo image ${key} was not accepted`);
     report.images++;
     return m.id;
