@@ -2,4 +2,31 @@
 @import "@artq/ui/theme.css";
 @import "@artq/ui/tokens.css";
 
-body { background: var(--surface-50); color: var(--ink-700); font-family: var(--font-body); }
+/* Brand fonts come from next/font (lib/fonts.ts) as --font-inter / --font-playfair / --font-tenor; the shared stacks
+   stay as fallbacks. WhatsApp green is the darker brand shade so the white icon keeps 4.1:1 (UI component ≥ 3:1). */
+@theme {
+  --font-display: var(--font-playfair), "Playfair Display", Georgia, serif;
+  --font-body: var(--font-inter), Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-eyebrow: var(--font-tenor), "Tenor Sans", var(--font-inter), Inter, sans-serif;
+  --color-whatsapp: #128c7e;
+  --color-whatsapp-dark: #075e54;
+}
+
+html { scroll-padding-top: 80px; }
+body { background: var(--color-surface-50); color: var(--color-ink-700); font-family: var(--font-body); -webkit-font-smoothing: antialiased; }
+:focus-visible { outline: 2px solid var(--color-brand-700); outline-offset: 2px; }
+.bg-ink-900 :focus-visible, .bg-brand-800 :focus-visible, footer :focus-visible { outline-color: var(--color-brand-300); }
+
+/* Validation rule (CLAUDE.md): every invalid field gets a red border; on the dark footer the light red (danger-300). */
+:is(input, select, textarea)[aria-invalid="true"] { border-color: var(--color-danger-700); box-shadow: 0 0 0 1px var(--color-danger-700); }
+footer :is(input, select, textarea)[aria-invalid="true"] { border-color: var(--color-danger-300); box-shadow: 0 1px 0 0 var(--color-danger-300); }
+
+/* Announcement marquee: two copies of the line slide left by one copy; paused on hover/focus or by the Pause button. */
+@keyframes marquee { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+.marquee-track { animation: marquee 30s linear infinite; }
+.marquee:hover .marquee-track, .marquee:focus-within .marquee-track, .marquee[data-paused] .marquee-track { animation-play-state: paused; }
+@media (prefers-reduced-motion: reduce) {
+  .marquee-track { animation: none; }
+  .marquee-track > [aria-hidden] { display: none; }
+  .marquee { overflow-x: auto; }
+}

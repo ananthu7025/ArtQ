@@ -37,6 +37,7 @@ Calm, crafted, premium but approachable: teal "resin" accents on clean white/sla
 | `success-700` | `#15803d` | Success text/badges (replaces `#16a34a`, which is 3.30:1) |
 | `warning-700` | `#b45309` | Warning text (replaces `#d97706`, which is 3.19:1); `warning-bg #fef3c7` with `#7c2d12` text |
 | `danger-700` | `#b91c1c` | Errors, destructive buttons |
+| `danger-300` | `#fca5a5` | Errors **on dark surfaces** (`ink-900` footer): message text and invalid-field border |
 | `star` | `#f5b301` | Rating stars (decorative; always paired with text "4.6 out of 5") |
 
 ### 2.3 Measured contrast (WCAG 2.1: 4.5:1 normal text, 3:1 large text & UI components)
@@ -55,6 +56,8 @@ Calm, crafted, premium but approachable: teal "resin" accents on clean white/sla
 | Admin sidebar text `#e5e7eb` / muted `#9ca3af` on `ink-900` | 14.33 / 6.99 | ✓ |
 | Admin selected item: white on `brand-700` | 5.56 | ✓; item vs sidebar boundary `brand-700` on `ink-900` 3.19 ✓ |
 | Focus ring: `brand-700` on light / `brand-300` on `ink-900` | 5.56 / 11.99 | ✓ |
+| `danger-300` error text / invalid border on `ink-900` (footer newsletter) | 9.34 | ✓ |
+| White footer text on `ink-900`; newsletter underline `sidebar-muted` on `ink-900` | 17.74 / 6.99 | ✓ |
 | `slate-400` `#94a3b8` on white | 2.56 | ✗ decorative only (was used for placeholders in v1 of this doc) |
 
 The contrast table is checked again in CI with an automated test (axe + token unit test) in Phase 0.

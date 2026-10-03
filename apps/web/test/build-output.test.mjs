@@ -25,11 +25,13 @@ describe.skipIf(!existsSync(next))('next build output', () => {
     expect(handlerRoutes(manifest)).toEqual([]);
     expect(manifest['/page']).toBe('/');
   });
-  it('prerenders the home page with shared-package output', () => {
+  it('prerenders the home page inside the layout shell, with shared-package output', () => {
     const html = readFileSync(join(next, 'server', 'app', 'index.html'), 'utf8');
     expect(html).toContain('lang="en-IN"');
     expect(html).toContain('ARTQ');
-    expect(html).toContain('₹499');
+    // The announcement comes from the API, or from @artq/shared's defaults when the build cannot reach it.
+    expect(html).toContain('Free shipping on orders above ₹1000');
+    for (const landmark of ['<header', 'id="main"', '<footer', 'Skip to content', 'ALL RIGHTS RESERVED']) expect(html).toContain(landmark);
   });
   it('emits the design-token utilities and variables', () => {
     const dir = join(next, 'static', 'chunks');

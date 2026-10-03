@@ -116,8 +116,8 @@ type OrderView = {
 ### 3.1 Content & meta (public, cacheable)
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/settings/public` | Announcement bar, hero, home sections, free-shipping threshold, COD flags, social, store contact |
-| GET | `/navigation` | Types → categories (active only) |
+| GET | `/settings/public` | `PublicSettings` (`@artq/shared`): `{store:{name, phone, email, whatsapp}, announcement:{enabled, messages}, social, shipping:{freeThreshold, estimatedDays}, payment:{codEnabled, codFee, codMin, codMax}, order:{returnWindowHours}, home:{order, hidden, heroSlideIntervalMs, instagram}}`. Only `is_public` settings; a stored value that fails its schema is served as the default (and logged). Never GSTIN, legal name, address or private settings |
+| GET | `/navigation` | `{types:[{id, name, slug, href, categories:[{id, name, slug}]}]}`: active types with *show in menu*, their active categories, both in admin order; `href` = the type's tile link override or `/type/:slug` |
 | GET | `/home` | `{hero, types[], newArrivals: ProductCard[≤8], reels[], techniques[], testimonials[], instagram[]}` |
 | GET | `/reels`, `/testimonials`, `/faqs`, `/pages/:slug` | Content |
 | GET | `/states?country=IN` | States |
@@ -128,7 +128,7 @@ type OrderView = {
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/pincodes/:pincode/serviceability` | `{serviceable, codAvailable, surfaceOnly, estimatedDays:{min,max}}`, from `pincode_serviceability` or the default policy |
-| POST | `/newsletter/subscribe` | `{email, source}` → `201 SUBSCRIBED` / `200 ALREADY_SUBSCRIBED` |
+| POST | `/newsletter/subscribe` | `{email, source?:'footer'|'checkout'|'account'}` (`newsletterSubscribeBody`) → `201 {status:'SUBSCRIBED'}` (new, or previously unsubscribed) / `200 {status:'ALREADY_SUBSCRIBED'}`; email case-insensitive; 5/min per IP (task 3.1) |
 | GET | `/newsletter/unsubscribe?token=` | Unsubscribe |
 | POST | `/contact` | `{name, email, phone?, subject, message, orderNumber?}` |
 | POST | `/custom-work` | `{name, email, phone, details{size, wood, quantity, budget, neededBy}, message, attachmentMediaIds[]}` (ids must be this cart's READY private uploads) |

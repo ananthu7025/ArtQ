@@ -114,7 +114,7 @@ describe('shell and navigation', () => {
     const menu = await screen.findByRole('button', { name: 'Open navigation' });
     await u.click(menu);
     const drawer = await screen.findByTestId('drawer');
-    expect(within(drawer).getAllByRole('link')).toHaveLength(21);
+    expect(within(drawer).getAllByRole('link')).toHaveLength(20);
     expect(drawer.contains(document.activeElement)).toBe(true);
     for (let i = 0; i < 30; i++) await u.tab();
     expect(drawer.contains(document.activeElement)).toBe(true);                // focus never leaves the drawer

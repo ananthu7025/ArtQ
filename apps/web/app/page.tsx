@@ -1,14 +1,9 @@
-import { formatINR } from '@artq/shared';
-import { Button } from '@artq/ui';
-
-// Phase 0 placeholder: proves SSR + shared packages + tokens. Real home page is task 3.3.
+// Placeholder inside the real layout until the home page (task 3.3).
 export default function Home() {
   return (
-    <main className="mx-auto max-w-3xl px-4 py-16 text-center">
-      <h1 className="font-display text-ink-900 text-4xl font-semibold tracking-widest">ARTQ</h1>
-      <p className="mt-2 uppercase tracking-[0.3em]">Wood moulds &amp; resins</p>
-      <p className="mt-8 text-ink-700">2:1 Epoxy Resin from {formatINR(49900)}</p>
-      <div className="mt-6"><Button>Shop now</Button></div>
-    </main>
+    <div className="mx-auto max-w-3xl px-4 py-24 text-center">
+      <h1 className="font-display text-[44px] font-semibold tracking-[0.08em] text-ink-900 md:text-[88px]">ARTQ</h1>
+      <p className="font-eyebrow mt-2 text-[15px] uppercase tracking-[0.3em] text-ink-700 md:text-[17px]">Wood moulds &amp; resins</p>
+    </div>
   );
 }
