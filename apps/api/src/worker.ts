@@ -16,6 +16,11 @@ import { runRetention } from './jobs/retention.js';
 import { dispatchOnce, OUTBOX_CONSUMERS, type OutboxJobData } from './outbox/dispatcher.js';
 import { processWebhook, sweepWebhooks, WEBHOOK_QUEUE } from './webhooks/inbox.js';
 import { razorpayProvider } from './webhooks/provider.js';
+import { CartService } from './cart/service.js';
+import { CheckoutService } from './checkout/initiate.js';
+import { RazorpayClient } from './payments/razorpay.js';
+import { expirePending, reconcileAttempts, reconcileDaily } from './payments/reconcile.js';
+import { razorpayHandlers } from './payments/webhook-handlers.js';
 import { mediaServiceFromEnv } from './media/factory.js';
 import { createWorkerRuntime } from './worker/runtime.js';
 import { redisConnection } from './lib/redis-url.js';
@@ -36,7 +41,12 @@ const transport: EmailTransport = env.EMAIL_TRANSPORT === 'resend'
 const email = (consumer: EmailConsumer) => async (job: Job<OutboxJobData>) =>
   processEmailDelivery({ prisma, transport, from: env.EMAIL_FROM, log }, consumer, job.data.deliveryId);
 
-const providers = [razorpayProvider(env.RAZORPAY_WEBHOOK_SECRET || undefined)];
+// Razorpay (task 4.9): webhook handlers and the payment jobs need the API keys; without them online payments are off.
+const razorpay = env.RAZORPAY_KEY_ID && env.RAZORPAY_KEY_SECRET ? new RazorpayClient(env.RAZORPAY_KEY_ID, env.RAZORPAY_KEY_SECRET) : null;
+const mediaUrl = (key: string) => `${env.MEDIA_PUBLIC_BASE_URL.replace(/\/$/, '')}/${key}`;
+const checkout = new CheckoutService({ prisma, carts: new CartService(prisma, mediaUrl), provider: razorpay, mediaUrl, storeName: 'ArtQ' });
+const payments = razorpay ? { prisma, provider: razorpay, checkout, log } : null;
+const providers = [razorpayProvider(env.RAZORPAY_WEBHOOK_SECRET || undefined, razorpay ? razorpayHandlers(razorpay) : undefined)];
 // Uploads are queued by the API; images downloaded by catalogue imports are queued here. Retries: BullMQ attempts.
 const media = mediaServiceFromEnv(env, prisma, async (id) => { await runtime.queues.get(QUEUE.mediaProcess)!.add('media.process', { id }, { jobId: jobId('media', id, Date.now()), attempts: 3, backoff: { type: 'exponential', delay: 10_000 }, removeOnComplete: true }); });
 const appCache = new RedisAppCache(redis, (op, err) => log.warn({ op, err: String(err) }, 'app cache unavailable'));
@@ -53,6 +63,9 @@ const runtime = createWorkerRuntime({
       if (job.name === 'webhook-sweep') return sweepWebhooks(prisma, runtime.queues.get(WEBHOOK_QUEUE)!);
       if (job.name === 'media-purge') return media.purgeStale();
       if (job.name === 'import-sweep') return imports.sweep();
+      if (job.name === 'payments-reconcile') return payments ? reconcileAttempts(payments) : 'no Razorpay keys';
+      if (job.name === 'orders-expire') return expirePending({ prisma, provider: razorpay, checkout, log });
+      if (job.name === 'payments-daily') return payments ? reconcileDaily(payments) : 'no Razorpay keys';
       if (job.name === 'catalog-check') {
         const r = await runCatalogChecks(prisma);
         if (r.driftRepaired.length) log.error({ products: r.driftRepaired }, 'product aggregate drift repaired; investigate the write path');
@@ -89,6 +102,10 @@ const runtime = createWorkerRuntime({
     { queue: QUEUE.maintenance, id: 'media-purge', everyMs: 3_600_000, jobName: 'media-purge' },
     { queue: QUEUE.maintenance, id: 'import-sweep', everyMs: 60_000, jobName: 'import-sweep' },
     { queue: QUEUE.maintenance, id: 'catalog-check', everyMs: 86_400_000, jobName: 'catalog-check' },
+    // Payments (architecture.md §7.4). The daily reconciliation covers the previous IST day, so its run time is free.
+    { queue: QUEUE.maintenance, id: 'payments-reconcile', everyMs: 60_000, jobName: 'payments-reconcile' },
+    { queue: QUEUE.maintenance, id: 'orders-expire', everyMs: 60_000, jobName: 'orders-expire' },
+    { queue: QUEUE.maintenance, id: 'payments-daily', everyMs: 86_400_000, jobName: 'payments-daily' },
     { queue: QUEUE.outboxDispatch, id: 'outbox-dispatch', everyMs: 1000, jobName: 'dispatch' },
     { queue: QUEUE.searchReindex, id: 'search-reindex', everyMs: 2000, jobName: 'reindex' },
   ],

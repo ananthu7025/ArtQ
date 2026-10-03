@@ -13,6 +13,10 @@ export type ProviderPayment = {
   amountRefunded: number; method: string | null; createdAt: number; raw: unknown;
 };
 type RawPayment = { id: string; order_id: string | null; amount: number; currency: string; status: ProviderPayment['status']; amount_refunded?: number; method?: string | null; created_at: number };
+/** A refund as Razorpay reports it. */
+export type ProviderRefund = { id: string; paymentId: string; amount: number; status: 'pending' | 'processed' | 'failed'; receipt: string | null; notes: Record<string, string>; createdAt: number };
+type RawRefund = { id: string; payment_id: string; amount: number; status: ProviderRefund['status']; receipt?: string | null; notes?: Record<string, string> | unknown[]; created_at: number };
+const toRefund = (r: RawRefund): ProviderRefund => ({ id: r.id, paymentId: r.payment_id, amount: r.amount, status: r.status, receipt: r.receipt ?? null, notes: Array.isArray(r.notes) ? {} : (r.notes ?? {}), createdAt: r.created_at });
 const toPayment = (r: RawPayment): ProviderPayment => ({ id: r.id, orderId: r.order_id, amount: r.amount, currency: r.currency, status: r.status, amountRefunded: r.amount_refunded ?? 0, method: r.method ?? null, createdAt: r.created_at, raw: r });
 
 export class ProviderError extends Error {
@@ -34,6 +38,13 @@ export interface PaymentProvider {
   orderPayments(providerOrderId: string): Promise<ProviderPayment[]>;
   /** Checkout signature: HMAC-SHA256("<provider order id>|<payment id>", key secret), compared in constant time. */
   verifySignature(providerOrderId: string, paymentId: string, signature: string): boolean;
+  /** Capture an authorized payment (auto-capture is ON, task 4.0: only stale authorizations need this). "Already captured" is success. */
+  capturePayment(paymentId: string, amount: number): Promise<void>;
+  /** Payments created in [from, to] (unix seconds), all pages. */
+  listPayments(from: number, to: number): Promise<ProviderPayment[]>;
+  /** Refunds created in [from, to] (unix seconds), all pages. */
+  listRefunds(from: number, to: number): Promise<ProviderRefund[]>;
+  fetchRefund(refundId: string): Promise<ProviderRefund>;
 }
 
 /** HMAC-SHA256 hex of "<order id>|<payment id>" (Razorpay Checkout), compared in constant time. */
@@ -88,6 +99,25 @@ export class RazorpayClient implements PaymentProvider {
   async orderPayments(providerOrderId: string): Promise<ProviderPayment[]> {
     return (await this.call<{ items: RawPayment[] }>('GET', `/orders/${encodeURIComponent(providerOrderId)}/payments`)).items.map(toPayment);
   }
+
+  async capturePayment(paymentId: string, amount: number): Promise<void> {
+    try { await this.call('POST', `/payments/${encodeURIComponent(paymentId)}/capture`, { amount, currency: 'INR' }); } catch (e) {
+      if (e instanceof ProviderError && e.kind === 'DEFINITIVE' && /already been captured/i.test(e.message)) return;   // task 4.0: idempotent
+      throw e;
+    }
+  }
+
+  private async pages<T>(path: string, from: number, to: number): Promise<T[]> {
+    const out: T[] = [];
+    for (let skip = 0; ; skip += 100) {
+      const r = await this.call<{ items: T[] }>('GET', `${path}?from=${from}&to=${to}&count=100&skip=${skip}`);
+      out.push(...r.items);
+      if (r.items.length < 100 || skip > 100_000) return out;
+    }
+  }
+  async listPayments(from: number, to: number): Promise<ProviderPayment[]> { return (await this.pages<RawPayment>('/payments', from, to)).map(toPayment); }
+  async listRefunds(from: number, to: number): Promise<ProviderRefund[]> { return (await this.pages<RawRefund>('/refunds', from, to)).map(toRefund); }
+  async fetchRefund(refundId: string): Promise<ProviderRefund> { return toRefund(await this.call<RawRefund>('GET', `/refunds/${encodeURIComponent(refundId)}`)); }
 
   async findOrdersByReceipt(receipt: string): Promise<ProviderOrder[]> {
     const r = await this.call<{ items: { id: string; amount: number; currency: string; receipt: string; created_at: number }[] }>('GET', `/orders?receipt=${encodeURIComponent(receipt)}`);
@@ -151,6 +181,31 @@ export class FakeRazorpay implements PaymentProvider {
   async orderPayments(providerOrderId: string): Promise<ProviderPayment[]> {
     if (this.fetchFails) throw new ProviderError('UNKNOWN', 'Razorpay unreachable: TimeoutError');
     return this.payments.filter((x) => x.orderId === providerOrderId).map((x) => ({ ...x }));
+  }
+
+  readonly refunds: ProviderRefund[] = [];
+  captureCalls: string[] = [];
+  /** Next capture outcomes ('ok' turns the payment captured). */
+  captureNext: ('ok' | 'unknown' | 'definitive')[] = [];
+  async capturePayment(paymentId: string): Promise<void> {
+    this.captureCalls.push(paymentId);
+    const mode = this.captureNext.shift() ?? 'ok';
+    if (mode === 'unknown') throw new ProviderError('UNKNOWN', 'Razorpay unreachable: TimeoutError');
+    if (mode === 'definitive') throw new ProviderError('DEFINITIVE', 'Razorpay 400: capture not allowed', 400);
+    const p = this.payments.find((x) => x.id === paymentId);
+    if (p && p.status === 'authorized') p.status = 'captured';
+  }
+  async listPayments(from: number, to: number): Promise<ProviderPayment[]> {
+    if (this.fetchFails) throw new ProviderError('UNKNOWN', 'Razorpay unreachable: TimeoutError');
+    return this.payments.filter((p) => p.createdAt >= from && p.createdAt <= to).map((p) => ({ ...p }));
+  }
+  async listRefunds(from: number, to: number): Promise<ProviderRefund[]> {
+    return this.refunds.filter((r) => r.createdAt >= from && r.createdAt <= to).map((r) => ({ ...r }));
+  }
+  async fetchRefund(refundId: string): Promise<ProviderRefund> {
+    const r = this.refunds.find((x) => x.id === refundId);
+    if (!r) throw new ProviderError('DEFINITIVE', 'Razorpay 400: The id provided does not exist', 400);
+    return { ...r };
   }
 
   async findOrdersByReceipt(receipt: string): Promise<ProviderOrder[]> {

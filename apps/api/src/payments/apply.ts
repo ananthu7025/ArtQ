@@ -7,14 +7,20 @@ import type { PaymentProvider, ProviderPayment } from './razorpay.js';
 
 const STATUS: Record<ProviderPayment['status'], fn.ProviderPaymentStatus> = { created: 'CREATED', failed: 'FAILED', authorized: 'AUTHORIZED', captured: 'CAPTURED', refunded: 'REFUNDED' };
 
-/** Applies an already-fetched snapshot. A payment with no provider order cannot belong to a checkout: null. */
-export async function applySnapshot(prisma: PrismaClient, p: ProviderPayment, actor: fn.ActorType): Promise<string | null> {
+/** aq_apply_provider_payment inside the caller's transaction (the webhook's fenced one). null: no provider order. */
+export async function applyInTx(tx: fn.Db, p: ProviderPayment, actor: fn.ActorType): Promise<string | null> {
   if (!p.orderId) return null;
-  return prisma.$transaction((tx) => fn.applyProviderPayment(tx, {
-    providerOrderId: p.orderId!, paymentId: p.id, amount: p.amount, currency: p.currency, status: STATUS[p.status],
+  return fn.applyProviderPayment(tx, {
+    providerOrderId: p.orderId, paymentId: p.id, amount: p.amount, currency: p.currency, status: STATUS[p.status],
     amountRefunded: p.amountRefunded, capturedAt: p.status === 'captured' || p.status === 'refunded' ? new Date(p.createdAt * 1000) : null,
     method: p.method, raw: p.raw, actor,
-  }), { timeout: 30_000 });
+  });
+}
+
+/** Applies an already-fetched snapshot in its own short transaction. A payment with no provider order: null. */
+export async function applySnapshot(prisma: PrismaClient, p: ProviderPayment, actor: fn.ActorType): Promise<string | null> {
+  if (!p.orderId) return null;
+  return prisma.$transaction((tx) => applyInTx(tx, p, actor), { timeout: 30_000 });
 }
 
 /** Fetch (outside any transaction) then apply. Throws ProviderError when Razorpay cannot be reached. */

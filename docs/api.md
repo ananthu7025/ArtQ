@@ -395,7 +395,7 @@ CRUD `/admin/product-types`, `/admin/categories`, `/admin/techniques` (image med
 ---
 
 ## 5. Webhooks (incoming)
-**Razorpay** `POST /v1/webhooks/razorpay`: architecture.md §8.1. Handled events: `payment.authorized`, `payment.captured`, `payment.failed`, `order.paid`, `refund.created`, `refund.processed`, `refund.failed`. Others → `IGNORED`. The handler always re-fetches the authoritative object before applying.
+**Razorpay** `POST /v1/webhooks/razorpay`: architecture.md §8.1. Handled events: `payment.authorized`, `payment.captured`, `payment.failed`, `order.paid`, `refund.created`, `refund.processed`, `refund.failed`. Others → `IGNORED`. The handler always re-fetches the authoritative object before applying. Implemented in task 4.9 (`src/payments/webhook-handlers.ts`): payment events re-fetch the payment (`payload.payment.entity.id`) and apply it; a payment Razorpay does not know is `IGNORED`; Razorpay unreachable → `FAILED` (retried with backoff by the sweeper). Refund events re-fetch the refund; ArtQ's own refund (provider id or `notes.aq_refund_id`) is marked processed when `processed`; others are `IGNORED` here and recorded by the refund reconciliation (5.4).
 **Courier** (post-launch, Shiprocket): same inbox pattern (`provider = 'SHIPROCKET'`).
 
 ---
