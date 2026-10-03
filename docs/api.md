@@ -118,7 +118,7 @@ type OrderView = {
 |--------|------|-------------|
 | GET | `/settings/public` | `PublicSettings` (`@artq/shared`): `{store:{name, phone, email, whatsapp}, announcement:{enabled, messages}, social, shipping:{freeThreshold, estimatedDays}, payment:{codEnabled, codFee, codMin, codMax}, order:{returnWindowHours}, home:{order, hidden, heroSlideIntervalMs, instagram}}`. Only `is_public` settings; a stored value that fails its schema is served as the default (and logged). Never GSTIN, legal name, address or private settings |
 | GET | `/navigation` | `{types:[{id, name, slug, href, categories:[{id, name, slug}]}]}`: active types with *show in menu*, their active categories, both in admin order; `href` = the type's tile link override or `/type/:slug` |
-| GET | `/home` | `{hero, types[], newArrivals: ProductCard[≤8], reels[], techniques[], testimonials[], instagram[]}` |
+| GET | `/home` | `HomeView` (`@artq/shared`): `{sections, hero:{slides, intervalMs}, types[], newArrivals: ProductCard[≤8], trending: ProductCard[≤8], reels[], techniques[], testimonials[], instagram:{handle, url}}`. `sections` = the `HOME_SECTIONS` order without hidden or empty sections (`reels` is "Trending now"; `trending` is its product-grid fallback, listed only without reels). Only `ACTIVE` products and `READY` public media; New Arrivals = flagged by rank, then newest published; techniques only with live products; a reel/testimonial links its product only while it is live; a video hero slide uses its second image as poster |
 | GET | `/reels`, `/testimonials`, `/faqs`, `/pages/:slug` | Content |
 | GET | `/states?country=IN` | States |
 | GET | `/pincodes/:pincode` | **Geography only**: `{pincode, city, district, state}` or 404 |

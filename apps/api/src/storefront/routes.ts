@@ -5,10 +5,11 @@ import type { PrismaClient } from '@prisma/client';
 import { DEFAULT_SETTINGS, newsletterSubscribeBody, PUBLIC_SETTING_KEYS, settingSchemas, toPublicSettings, type Navigation, type PublicSettings, type SettingKey, type SettingValue } from '@artq/shared';
 import { Router, type RequestHandler } from 'express';
 import { noAppCache, type AppCache } from '../lib/app-cache.js';
+import { loadHome, type MediaUrl } from './home.js';
 import { RATE_LIMITS, rateLimit, type RateLimiter } from '../middleware/rateLimit.js';
 import { validate } from '../middleware/validate.js';
 
-export type StorefrontDeps = { prisma: PrismaClient; cache?: AppCache; limiter?: RateLimiter; onRateLimitError?: (e: unknown) => void; onInvalidSetting?: (key: SettingKey) => void };
+export type StorefrontDeps = { prisma: PrismaClient; cache?: AppCache; mediaUrl: MediaUrl; limiter?: RateLimiter; onRateLimitError?: (e: unknown) => void; onInvalidSetting?: (key: SettingKey) => void };
 
 /** Menu: active types with "show in menu", their active categories; a tile link override replaces the type page. */
 export async function loadNavigation(prisma: PrismaClient): Promise<Navigation> {
@@ -42,6 +43,7 @@ export function storefrontRouter(d: StorefrontDeps): Router {
 
   const cache = d.cache ?? noAppCache;
   r.get('/navigation', async (_req, res) => { res.json(await cache.get('navigation', () => loadNavigation(d.prisma))); });
+  r.get('/home', async (_req, res) => { res.json(await loadHome(d.prisma, d.mediaUrl)); });
   r.get('/settings/public', async (_req, res) => { res.json(await cache.get('publicSettings', () => loadPublicSettings(d.prisma, d.onInvalidSetting))); });
 
   // 201 SUBSCRIBED for a new (or returning, previously unsubscribed) address, 200 ALREADY_SUBSCRIBED otherwise (api.md §3.2).

@@ -15,6 +15,7 @@ import { uniq } from '../helpers/fixtures.js';
 import { startPostgres, startRedis, type Service } from '../helpers/services.js';
 
 const ORIGIN = 'http://localhost:3000';
+const CDN = (key: string) => `https://cdn.test/${key}`;
 let pg: Service, rd: Service, db: TestDb, prisma: PrismaClient, redis: Redis;
 beforeAll(async () => {
   [pg, rd] = await Promise.all([startPostgres(), startRedis()]);
@@ -30,7 +31,7 @@ function build(o: { db?: PrismaClient; limiter?: RateLimiter; invalid?: string[]
   return createApp({
     version: 't', origins: { storefront: [ORIGIN], admin: ['http://localhost:5173'] }, readiness: { database: async () => {}, redis: async () => {} },
     rateLimiter: limiter, onRateLimitError,
-    routes: [storefrontRouter({ prisma: o.db ?? prisma, limiter, onRateLimitError, onInvalidSetting: (k) => o.invalid?.push(k) })],
+    routes: [storefrontRouter({ mediaUrl: CDN, prisma: o.db ?? prisma, limiter, onRateLimitError, onInvalidSetting: (k) => o.invalid?.push(k) })],
   });
 }
 const ip = () => `203.0.${Math.floor(Math.random() * 250)}.${Math.floor(Math.random() * 250)}`;

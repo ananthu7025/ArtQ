@@ -3,7 +3,7 @@
 //   personal response can never be baked into a page that is cached and served to everyone.
 // - clientRequest: in the browser, with the customer's cookies (cart, session), never cached.
 // If the API cannot be reached, layout data falls back to the default settings and an empty menu.
-import { DEFAULT_PUBLIC_SETTINGS, isPublicCacheable, type Navigation, type PublicSettings } from '@artq/shared';
+import { DEFAULT_PUBLIC_SETTINGS, isPublicCacheable, type HomeView, type Navigation, type PublicSettings } from '@artq/shared';
 
 export const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/v1').replace(/\/$/, '');
 
@@ -51,4 +51,16 @@ export async function loadLayout(fetchImpl: Fetch = fetch, timeoutMs = 3000): Pr
     settings: settings.status === 'fulfilled' && settings.value?.store ? settings.value : DEFAULT_PUBLIC_SETTINGS,
     degraded: nav.status === 'rejected' || settings.status === 'rejected',
   };
+}
+
+/** What the home page shows when the API cannot be reached: the brand hero only. */
+export const EMPTY_HOME: HomeView = { sections: ['hero'], hero: { slides: [], intervalMs: 6000 }, types: [], newArrivals: [], trending: [], reels: [], techniques: [], testimonials: [], instagram: { handle: null, url: null } };
+
+export async function loadHome(fetchImpl: Fetch = fetch, timeoutMs = 3000): Promise<{ home: HomeView; degraded: boolean }> {
+  try {
+    const home = await publicGet<HomeView>('/home', fetchImpl, timeoutMs);
+    return Array.isArray(home?.sections) ? { home, degraded: false } : { home: EMPTY_HOME, degraded: true };
+  } catch {
+    return { home: EMPTY_HOME, degraded: true };
+  }
 }

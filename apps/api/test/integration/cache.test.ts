@@ -27,6 +27,7 @@ import { uniq } from '../helpers/fixtures.js';
 import { startPostgres, startRedis, type Service } from '../helpers/services.js';
 
 const WEB = 'http://localhost:3000';
+const CDN = (key: string) => `https://cdn.test/${key}`;
 const ADMIN_ORIGIN = 'http://localhost:5173';
 const JWT = { secret: new TextEncoder().encode('test-jwt-secret-0123456789abcdef0123'), issuer: 'artq-test' };
 const PUBLIC = 'public, max-age=0, s-maxage=60, stale-while-revalidate=60';
@@ -68,7 +69,7 @@ beforeAll(async () => {
       authRouter({ ...deps, service, env: 'test', refreshMaxAgeS: DEFAULT_AUTH_TIMINGS.refreshIdleS, limiter: NO_LIMIT }),
       adminAuthRouter({ ...deps, service, env: 'test', limiter: NO_LIMIT }),
       webhookRouter({ prisma, queue: null, providers: [razorpayProvider('whsec_test')], log: pino({ level: 'silent' }) }),
-      storefrontRouter({ prisma, cache: appCache, limiter: NO_LIMIT }),
+      storefrontRouter({ mediaUrl: CDN, prisma, cache: appCache, limiter: NO_LIMIT }),
       admin.router,
       standIns(),
     ],
@@ -146,7 +147,7 @@ describe('✅ cache headers for every route group', () => {
 
   it('a rate-limited public GET (429) is not cached', async () => {
     const blocked: RateLimiter = { hit: async () => ({ count: 10_000, resetMs: 30_000 }) };
-    const limited = createApp({ version: 't', origins: { storefront: [WEB], admin: [ADMIN_ORIGIN] }, readiness: { database: async () => {}, redis: async () => {} }, rateLimiter: blocked, routes: [storefrontRouter({ prisma })] });
+    const limited = createApp({ version: 't', origins: { storefront: [WEB], admin: [ADMIN_ORIGIN] }, readiness: { database: async () => {}, redis: async () => {} }, rateLimiter: blocked, routes: [storefrontRouter({ mediaUrl: CDN, prisma })] });
     const res = await request(limited).get('/v1/navigation');
     expect(res.status).toBe(429);
     expectNoStore(res);
@@ -215,7 +216,7 @@ describe('Redis app cache (TTL 300 s, dropped on admin writes)', () => {
     const errors: string[] = [];
     const broken = new RedisAppCache(dead, (op) => errors.push(op));
     const t = await prisma.productType.create({ data: { name: `NoRedis ${uniq()}`, slug: `noredis-${uniq()}` } });
-    const solo = createApp({ version: 't', origins: { storefront: [WEB], admin: [ADMIN_ORIGIN] }, readiness: { database: async () => {}, redis: async () => {} }, routes: [storefrontRouter({ prisma, cache: broken })] });
+    const solo = createApp({ version: 't', origins: { storefront: [WEB], admin: [ADMIN_ORIGIN] }, readiness: { database: async () => {}, redis: async () => {} }, routes: [storefrontRouter({ mediaUrl: CDN, prisma, cache: broken })] });
     const res = await request(solo).get('/v1/navigation');
     expect(res.status).toBe(200);
     expect(res.body.types.map((x: { id: number }) => x.id)).toContain(t.id);

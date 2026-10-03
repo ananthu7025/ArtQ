@@ -4,6 +4,9 @@
 //    Imports page does it (create missing types/categories): types, categories and draft products from the real data.
 // 2. Types in the reference site's order (design-system.md §6.1).
 // 3. Sample store contact (WhatsApp, Instagram) — only where the owner has not set a value.
+// 4. A showcase for testing the storefront (scripts/demo-showcase.ts): about a dozen of those drafts finished and
+//    published through the real gate with generated demo photos, plus range-circle images, techniques, sample reviews
+//    and a hero image. Needs the local S3 storage (docker compose). Skip with --no-showcase.
 // Safe to run again: the import is skipped once it has completed (use --reimport to run it again).
 // Refuses production and any database that is not on this machine.
 import { readdirSync, readFileSync } from 'node:fs';
@@ -11,6 +14,9 @@ import { join } from 'node:path';
 import { DEFAULT_SETTINGS, parseSetting } from '@artq/shared';
 import { PrismaClient } from '@prisma/client';
 import { ImportService } from '../src/imports/service.js';
+import { MediaService } from '../src/media/service.js';
+import { S3ObjectStore } from '../src/media/storage.js';
+import { seedShowcase } from './demo-showcase.js';
 import { seedSettings } from '../src/seed/steps.js';
 
 const FILE_NAME = 'ArtQ_Product_Import_All_Items.xlsx';
@@ -61,16 +67,34 @@ try {
   const ordered = [...types].sort((a, b) => rank(a.name) - rank(b.name) || a.sortOrder - b.sortOrder || a.id - b.id);
   for (const [i, t] of ordered.entries()) if (t.sortOrder !== i) await prisma.productType.update({ where: { id: t.id }, data: { sortOrder: i } });
 
+  // The section order as first seeded (before product.md §5.1's order became the default): move it, unless changed.
+  const OLD_DEFAULT = ['hero', 'types', 'trending', 'new-arrivals', 'techniques', 'reels', 'testimonials', 'instagram'];
+  const sections = await prisma.setting.findUnique({ where: { key: 'HOME_SECTIONS' } });
+  if (sections && JSON.stringify((sections.value as { order?: unknown }).order) === JSON.stringify(OLD_DEFAULT)) {
+    await prisma.setting.update({ where: { key: 'HOME_SECTIONS' }, data: { value: DEFAULT_SETTINGS.HOME_SECTIONS } });
+  }
+
   // 3. Sample contact details, never over the owner's own
   const store = parseSetting('STORE_INFO', (await prisma.setting.findUniqueOrThrow({ where: { key: 'STORE_INFO' } })).value);
   if (!store.whatsapp) await prisma.setting.update({ where: { key: 'STORE_INFO' }, data: { value: { ...store, whatsapp: DEMO_CONTACT.whatsapp } } });
   const social = parseSetting('SOCIAL', (await prisma.setting.findUnique({ where: { key: 'SOCIAL' } }))?.value ?? DEFAULT_SETTINGS.SOCIAL);
   if (!social.instagram) await prisma.setting.update({ where: { key: 'SOCIAL' }, data: { value: { ...social, instagram: DEMO_CONTACT.instagram } } });
 
+  // 4. Showcase (storage settings as in .env.example unless set)
+  if (!process.argv.includes('--no-showcase')) {
+    const e = (k: string, d: string) => process.env[k] ?? d;
+    const store = new S3ObjectStore({ endpoint: e('S3_ENDPOINT', 'http://localhost:9090'), region: e('S3_REGION', 'auto'), accessKeyId: e('S3_ACCESS_KEY_ID', 'local'), secretAccessKey: e('S3_SECRET_ACCESS_KEY', 'local'), forcePathStyle: e('S3_FORCE_PATH_STYLE', 'true') === 'true' });
+    const buckets = { PUBLIC: e('S3_BUCKET_PUBLIC', 'artq-public'), PRIVATE: e('S3_BUCKET_PRIVATE', 'artq-private') };
+    const media = new MediaService(prisma, { store, buckets, publicBaseUrl: e('MEDIA_PUBLIC_BASE_URL', `${e('S3_ENDPOINT', 'http://localhost:9090')}/${buckets.PUBLIC}`) }, async () => {});
+    const r = await seedShowcase({ prisma, media, store, bucket: buckets.PUBLIC, admin });
+    console.log(`showcase: ${r.published.length} live products, ${r.images} new demo images`);
+    for (const s of r.skipped) console.log(`  not published: ${s}`);
+  }
+
   const summary = await prisma.productType.findMany({ orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }], select: { name: true, isActive: true, _count: { select: { categories: true, products: true } } } });
   console.log('types (menu order):');
   for (const t of summary) console.log(`  ${t.name}: ${t._count.categories} categories, ${t._count.products} products${t.isActive ? '' : ' (inactive)'}`);
-  console.log(`products: ${await prisma.product.count({ where: { deletedAt: null } })} (drafts until published in the admin)`);
+  console.log(`products: ${await prisma.product.count({ where: { deletedAt: null } })}, live: ${await prisma.product.count({ where: { deletedAt: null, status: 'ACTIVE' } })} (the rest stay drafts until finished and published in the admin)`);
 } finally {
   await prisma.$disconnect();
 }

@@ -6,6 +6,7 @@ afterEach(() => { cleanup(); nav.pathname = '/'; nav.push.mockClear(); });
 if (!window.matchMedia) {
   window.matchMedia = ((q: string) => ({ matches: false, media: q, onchange: null, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {}, dispatchEvent: () => false })) as typeof window.matchMedia;
 }
+if (!Element.prototype.scrollTo) Element.prototype.scrollTo = function scrollTo() {};
 if (!('ResizeObserver' in window)) {
   (window as unknown as { ResizeObserver: unknown }).ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
 }

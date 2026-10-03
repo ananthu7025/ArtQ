@@ -36,8 +36,8 @@ test.describe('desktop 1440×900', () => {
     await shop.click();
     await expect(shop).toHaveAttribute('aria-expanded', 'true');
     const panel = page.locator(`#${await shop.getAttribute('aria-controls')}`.replace(/:/g, '\\:'));
-    await expect(panel.getByRole('link', { name: 'Pigments' })).toHaveAttribute('href', '/type/pigments');
-    await expect(panel.getByRole('link', { name: 'Mica Powder' })).toBeVisible();
+    await expect(panel.getByRole('link', { name: 'Pigments', exact: true })).toHaveAttribute('href', '/type/pigments');
+    await expect(panel.getByRole('link', { name: 'Mica Powder Pigments' })).toBeVisible();
     await expect(panel).not.toContainText('Retired Range');               // inactive type left out
     await axeClean(page);
     await page.keyboard.press('Escape');
@@ -45,7 +45,7 @@ test.describe('desktop 1440×900', () => {
     await expect(shop).toBeFocused();
 
     const footer = page.locator('footer');
-    await expect(footer.getByRole('heading', { name: 'Type' }).locator('..').getByRole('link')).toHaveText(['Resins', 'Wooden Frames', 'Pigments']);
+    await expect(footer.getByRole('heading', { name: 'Type' }).locator('..').getByRole('link')).toHaveText(['Resins', 'Wooden Frames', 'Multiwood Frames', 'Hoops', 'Silica Gel', 'Pigments', 'Glitters', 'Resin Art Essentials']);
     await expect(footer).toContainText(`© ${new Date().getFullYear()} ART Q. ALL RIGHTS RESERVED.`);
     await expect(page.getByRole('link', { name: 'Chat with us on WhatsApp (opens WhatsApp)' })).toHaveAttribute('href', 'https://wa.me/919847012345');
   });
@@ -54,8 +54,8 @@ test.describe('desktop 1440×900', () => {
     await page.goto('/');
     const shop = page.getByRole('navigation', { name: 'Main' }).getByRole('button', { name: 'Shop' });
     await shop.click();
-    await page.getByRole('link', { name: 'Mica Powder' }).click();
-    await expect(page).toHaveURL(/\/category\/mica-powder$/);
+    await page.getByRole('link', { name: 'Mica Powder Pigments' }).click();
+    await expect(page).toHaveURL(/\/category\/mica-powder-pigments$/);
     await expect(page.getByRole('heading', { name: 'We couldn’t find that page' })).toBeVisible();
     await expect(shop).toHaveAttribute('aria-expanded', 'false');
     await expect(page.locator('footer')).toBeVisible();
@@ -118,7 +118,7 @@ test.describe('phone 390×844', () => {
     const box = await drawer.boundingBox();
     expect(box!.width).toBeLessThanOrEqual(390 * 0.85 + 1);
     await drawer.getByRole('button', { name: 'Pigments' }).click();
-    await expect(drawer.getByRole('link', { name: 'Alcohol Inks' })).toBeVisible();
+    await expect(drawer.getByRole('link', { name: 'Gel Pigments' })).toBeVisible();
     await axeClean(page);
     for (let i = 0; i < 30; i++) await page.keyboard.press('Tab');
     expect(await drawer.evaluate((d) => d.contains(document.activeElement))).toBe(true);

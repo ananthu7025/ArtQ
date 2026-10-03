@@ -1,5 +1,6 @@
-// Storefront browser tests (task 3.1+): the built API on :4001 against a fresh artq_e2e database (plus the storefront
-// fixture: types, categories, settings), and the production storefront build (`.next-e2e`) on :3100 built from it.
+// Storefront browser tests (task 3.1+): the built API on :4001 against a fresh artq_e2e database loaded like a local
+// demo (the client's workbook through the real import + the published showcase, scripts/seed-demo.ts) plus the layout
+// fixture (scripts/e2e-storefront-seed.ts), and the production storefront build (`.next-e2e`) on :3100 built from it.
 //   docker compose up -d --wait && pnpm --filter @artq/api build && pnpm --filter @artq/web e2e
 // Pages are prerendered from the API at build time (ISR), so the data is seeded before the storefront is built.
 import { readFileSync } from 'node:fs';
@@ -27,15 +28,16 @@ export default defineConfig({
   use: { baseURL: webOrigin, trace: 'retain-on-failure' },
   webServer: [
     {
-      command: 'pnpm --dir ../api exec tsx scripts/e2e-setup.ts && pnpm --dir ../api exec tsx scripts/e2e-storefront-seed.ts && (node ../api/dist/worker.js & exec node ../api/dist/server.js)',
+      command: 'pnpm --dir ../api exec tsx scripts/e2e-setup.ts && DATABASE_URL=$E2E_DATABASE_URL pnpm --dir ../api exec tsx scripts/seed-demo.ts && pnpm --dir ../api exec tsx scripts/e2e-storefront-seed.ts && (node ../api/dist/worker.js & exec node ../api/dist/server.js)',
       url: `${API}/health/ready`,
       env: apiEnv,
       reuseExistingServer: false,
       timeout: 120_000,
     },
     {
-      // Waits for the API so the build prerenders real data, then serves the production build.
-      command: `node -e "const u='${API}/health/ready';(async()=>{for(let i=0;i<240;i++){try{if((await fetch(u)).ok)process.exit(0)}catch{}await new Promise(r=>setTimeout(r,500))}process.exit(1)})()" && pnpm exec next build && pnpm exec next start --port ${webPort}`,
+      // Waits for the API so the build prerenders real data, then serves the production build. next build rewrites
+      // next-env.d.ts to point at its output folder; the original is put back so a fresh checkout still typechecks.
+      command: `node -e "const u='${API}/health/ready';(async()=>{for(let i=0;i<240;i++){try{if((await fetch(u)).ok)process.exit(0)}catch{}await new Promise(r=>setTimeout(r,500))}process.exit(1)})()" && cp next-env.d.ts .next-env.d.ts.keep && pnpm exec next build; s=$?; mv .next-env.d.ts.keep next-env.d.ts; [ $s -eq 0 ] && pnpm exec next start --port ${webPort}`,
       url: webOrigin,
       env: { NEXT_PUBLIC_API_URL: `${API}/v1`, NEXT_DIST_DIR: '.next-e2e' },
       reuseExistingServer: false,

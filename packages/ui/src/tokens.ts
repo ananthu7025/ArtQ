@@ -23,6 +23,7 @@ export const color = {
   'danger-300': '#fca5a5',
   'sidebar-text': '#e5e7eb',
   'sidebar-muted': '#9ca3af',
+  'star': '#f5b301',
 } as const;
 export type ColorToken = keyof typeof color;
 

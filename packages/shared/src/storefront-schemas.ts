@@ -47,6 +47,44 @@ export function toPublicSettings(get: <K extends SettingKey>(key: K) => SettingV
 }
 export const DEFAULT_PUBLIC_SETTINGS: PublicSettings = toPublicSettings((key) => DEFAULT_SETTINGS[key]);
 
+/** Home page sections (product.md §5.1), in the default order of the HOME_SECTIONS setting. */
+export const HOME_SECTION_KEYS = ['hero', 'types', 'new-arrivals', 'reels', 'trending', 'techniques', 'testimonials', 'instagram'] as const;
+export type HomeSectionKey = (typeof HOME_SECTION_KEYS)[number];
+
+/** A READY public image (api.md §2): `url` is a mid-size rendition, `srcset` lists every width for `sizes`. */
+export type MediaRef = { id: number; url: string; width: number; height: number; alt: string; placeholder: string | null; srcset: { webp: string } };
+/** A READY public video (hero, reels). */
+export type VideoRef = { id: number; url: string; mime: string; width: number | null; height: number | null };
+
+/** api.md §2 ProductCard: prices in paise over the product's active variants; only ACTIVE products are ever returned. */
+export type ProductCard = {
+  id: number; slug: string; name: string;
+  image: MediaRef | null; hoverImage: MediaRef | null;
+  fromPrice: number; maxPrice: number; mrp: number | null; discountPercent: number | null;
+  inStock: boolean; isNew: boolean; isTrending: boolean;
+  variantCount: number; defaultVariantId: number | null;
+  type: { slug: string; name: string };
+};
+
+export type HomeHeroSlide = { id: number; heading: string | null; subheading: string | null; ctaText: string | null; ctaLink: string | null; image: MediaRef | null; mobileImage: MediaRef | null; video: VideoRef | null };
+export type HomeTypeTile = { id: number; name: string; slug: string; href: string; image: MediaRef | null };
+export type HomeReel = { id: number; title: string | null; video: VideoRef; poster: MediaRef | null; product: { slug: string; name: string } | null; instagramUrl: string | null };
+export type HomeTechnique = { id: number; name: string; slug: string; image: MediaRef | null };
+export type HomeTestimonial = { id: number; name: string; location: string | null; quote: string; rating: number; avatar: MediaRef | null; product: { slug: string; name: string } | null };
+
+/** GET /v1/home. `sections` is the HOME_SECTIONS order without hidden or empty sections (the hero always has a fallback). */
+export type HomeView = {
+  sections: HomeSectionKey[];
+  hero: { slides: HomeHeroSlide[]; intervalMs: number };
+  types: HomeTypeTile[];
+  newArrivals: ProductCard[];
+  trending: ProductCard[];
+  reels: HomeReel[];
+  techniques: HomeTechnique[];
+  testimonials: HomeTestimonial[];
+  instagram: { handle: string | null; url: string | null };
+};
+
 /** WhatsApp chat link for a stored number ("+91 98470 12345", "919847012345", "09847012345"); null when it is not a usable Indian or international number. */
 export function whatsappHref(number: string | null | undefined, text?: string): string | null {
   if (!number) return null;
