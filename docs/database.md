@@ -100,7 +100,7 @@ erDiagram
 |-------|-----------------|
 | `countries`, `states` | India + 36 states/UTs with GST state code (`gst_code`, Kerala = `32`) and `shipping_zone_id` |
 | `postal_codes` | **Geography only** (India Post directory): pincode → office, district, state. Used to auto-fill city/state. *Existence of a pincode does not mean ArtQ can deliver there* |
-| `pincode_serviceability` | **Commercial delivery rules**: deliverable?, COD allowed?, surface-only?, EDD range, source (`MANUAL` at launch, courier API later). Resolution order: explicit row → default policy setting `SHIPPING.defaultServiceable` / `SHIPPING.defaultCod` (business decision D-6, product.md §11) |
+| `pincode_serviceability` | **Commercial delivery rules**: deliverable?, COD allowed?, EDD range, source (`MANUAL` or `CSV` at launch, courier API later). Resolution order: explicit row → default policy setting `SHIPPING.defaultServiceable` / `SHIPPING.defaultCod` (business decision D-6, product.md §11). **Surface reach (D-7, settled in task 4.4):** whether surface transport reaches a pincode comes from `SHIPPING.airOnlyPincodePrefixes` (default `744` Andaman & Nicobar, `68255` Lakshadweep; owner + courier to confirm), not from this table: SURFACE_ONLY items (resin) cannot ship to an air-only pincode (`SHIPPING_RESTRICTED`). The `surface_only` column cannot express "air only", so it is informational only and not used by the shipping algorithm (dropping it would be a contract-phase migration) |
 | `addresses` | Customer address book (max 10, one default). Orders never reference addresses; they snapshot them |
 
 ### 3.3 Catalogue
@@ -254,7 +254,7 @@ Other order rules:
 | `STORE_INFO` | `{name:"ArtQ", legalName, gstin, address, stateCode:"32", phone, email, whatsapp}` | partly |
 | `ANNOUNCEMENT_BAR` | `{enabled:true, messages:["Shipping all over India","Free shipping on orders above ₹1000"]}` | ✓ |
 | `HOME_SECTIONS`, `HERO`, `INSTAGRAM_MOMENTS`, `SOCIAL` | home layout & content | ✓ |
-| `SHIPPING` | `{freeThreshold:100000, packagingWeightG:150, volumetricDivisor:5000, heavyCapG:10000, heavyCapEnabled:true, defaultServiceable:true, defaultCod:true, estimatedDays:{min:4,max:7}}` | ✓ (subset) |
+| `SHIPPING` | `{freeThreshold:100000, packagingWeightG:150, volumetricDivisor:5000, heavyCapG:10000, heavyCapEnabled:true, defaultServiceable:true, defaultCod:true, estimatedDays:{min:4,max:7}, airOnlyPincodePrefixes:['744','68255']}` (edited on the admin Shipping Rates page; a stored value without `airOnlyPincodePrefixes` reads as the default) | ✓ (subset) |
 | `PAYMENT` | `{razorpayEnabled:true, codEnabled:true, codFee:4000, codMin:20000, codMax:500000, pendingExpiryMinutes:30, autoRefundExcessCapture:true}` | ✓ (no secrets) |
 | `ORDER` | `{customerCancelUntil:"UNFULFILLED", returnWindowHours:48, completeAfterDays:7}` | ✓ |
 | `TAX` | `{pricesIncludeTax:true, shippingTaxRule:"CA_DECISION", invoiceAt:"DISPATCH"}` | |

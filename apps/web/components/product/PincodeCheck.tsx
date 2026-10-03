@@ -41,6 +41,7 @@ export function PincodeCheck() {
             <span>Delivers to {result.place ? `${title(result.place.district)}, ${result.place.state}` : result.pincode}{result.estimatedDays ? ` in ${result.estimatedDays.min}–${result.estimatedDays.max} days` : ''}.{' '}
               {result.codAvailable ? 'Cash on delivery available.' : 'Prepaid only (no cash on delivery here).'}</span></p>
         )}
+        {result && result.serviceable && !result.surfaceAvailable && <p className="mt-1 text-ink-700">Resin and other liquids travel by road only, so they can’t be delivered here.</p>}
         {result && result.reason === 'NOT_SERVICEABLE' && <p className="flex gap-2 text-danger-700"><XCircle aria-hidden size={18} className="shrink-0" />Sorry, we don’t deliver to {result.pincode} yet.</p>}
         {result && result.reason === 'UNKNOWN_PINCODE' && <p className="flex gap-2 text-danger-700"><XCircle aria-hidden size={18} className="shrink-0" />We couldn’t find pincode {result.pincode}. Please check the number.</p>}
       </div>

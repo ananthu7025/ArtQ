@@ -13,6 +13,7 @@ import { ImportsPage } from './pages/imports/ImportsPage';
 import { InventoryPage } from './pages/inventory/InventoryPage';
 import { CouponEditorPage } from './pages/coupons/CouponEditorPage';
 import { CouponsPage } from './pages/coupons/CouponsPage';
+import { ShippingPage } from './pages/shipping/ShippingPage';
 import { ProductEditorPage } from './pages/products/editor/ProductEditorPage';
 import { DashboardPage, ForbiddenPage, FullPageSpinner, ModulePlaceholder, NotFoundPage } from './pages/simple';
 
@@ -41,6 +42,7 @@ const BUILT: Record<string, () => React.ReactNode> = {
   '/imports': () => <ImportsPage />,
   '/inventory': () => <InventoryPage />,
   '/coupons': () => <CouponsPage />,
+  '/shipping-rates': () => <ShippingPage />,
 };
 const PRODUCTS = ALL_NAV_ITEMS.find((i) => i.path === '/products')!;
 const IMPORTS = ALL_NAV_ITEMS.find((i) => i.path === '/imports')!;

@@ -124,7 +124,9 @@ export const pincodeForm = z.strictObject({ pincode: pincodeField });
 /** GET /v1/pincodes/:pincode/serviceability (no-store). */
 export type PincodeCheck = {
   pincode: string; place: { district: string; state: string } | null;
-  serviceable: boolean; codAvailable: boolean; surfaceOnly: boolean; estimatedDays: { min: number; max: number } | null;
+  serviceable: boolean; codAvailable: boolean; surfaceOnly: boolean;
+  /** False in an air-only area (SHIPPING.airOnlyPincodePrefixes, D-7): surface-only items such as resin cannot ship there. */
+  surfaceAvailable: boolean; estimatedDays: { min: number; max: number } | null;
   reason: 'UNKNOWN_PINCODE' | 'NOT_SERVICEABLE' | null;
 };
 export type Availability = { variants: { id: number; price: number; mrp: number | null; discountPercent: number | null; stockStatus: StockStatus; maxQuantity: number }[] };
