@@ -93,8 +93,8 @@ export function errorText(e: unknown): string {
 /** A browser API call as the current customer (Bearer + refresh when signed in), or as a guest. */
 export function useApi() {
   const { session } = useAuth();
-  return useCallback(<T,>(method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE', path: string, body?: unknown) =>
-    (session ? session.request<T>(method, path, body) : clientRequest<T>(method, path, body)), [session]);
+  return useCallback(<T,>(method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE', path: string, body?: unknown, headers: Record<string, string> = {}) =>
+    (session ? session.request<T>(method, path, body, headers) : clientRequest<T>(method, path, body, fetch, headers)), [session]);
 }
 
 export type WishlistView = { productIds: number[]; data: ProductCard[] };

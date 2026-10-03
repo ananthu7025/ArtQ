@@ -353,3 +353,58 @@ describe('cart: shipping estimate for a pincode (task 4.5, ?pincode= on every ca
     expect((await shopper().get('/v1/cart?pincode=682011')).body.totals.shipping).toMatchObject({ amount: null, pincode: null });   // empty cart: nothing to ship
   });
 });
+
+describe('checkout quote (task 4.6): the cart for a pincode and a payment method', () => {
+  const quote = (s: ReturnType<typeof shopper>, body: object) => {
+    const r = request(app).post('/v1/checkout/quote').set('Origin', WEB);
+    return (s.cookie ? r.set('Cookie', s.cookie) : r).send(body);
+  };
+  const setPayment = (o: object) => prisma.setting.update({ where: { key: 'PAYMENT' }, data: { value: { razorpayEnabled: true, codEnabled: true, codFee: 4000, codMin: 20_000, codMax: 500_000, pendingExpiryMinutes: 30, autoRefundExcessCapture: true, ...o } } });
+  beforeAll(async () => { await seedShipping(prisma); await seedGeo(prisma); await seedSettings(prisma); });
+
+  it('online: shipping in the total, COD offered with its fee; COD: the fee is added; nothing blocks', async () => {
+    const p = await liveProduct(prisma, { variants: [{ price: 49_900 }] });
+    const s = shopper();
+    await s.add(p.variantIds[0]!);
+    const online = await quote(s, { pincode: '682011' });
+    expect(online.status).toBe(200);
+    expect(online.body).toMatchObject({ onlineEnabled: true, cod: { available: true, reason: null, fee: 4000, min: 20_000, max: 500_000 }, blocking: [] });
+    expect(online.body.cart.totals).toMatchObject({ codFee: 0, total: 49_900 + 5000, shipping: { amount: 5000, pincode: '682011' } });
+    const cod = await quote(s, { pincode: '682011', paymentMethod: 'COD' });
+    expect(cod.body.cart.totals).toMatchObject({ codFee: 4000, total: 49_900 + 5000 + 4000 });
+    expect(cod.body.blocking).toEqual([]);
+  });
+
+  it('COD refused with the reason: pincode without COD, below the minimum, above the maximum, switched off', async () => {
+    const p = await liveProduct(prisma, { variants: [{ price: 15_000 }] });
+    const s = shopper();
+    await s.add(p.variantIds[0]!);
+    expect((await quote(s, { pincode: '682011', paymentMethod: 'COD' })).body).toMatchObject({ cod: { available: true }, blocking: [] });   // ₹150 + ₹50 + ₹40 = ₹240 ≥ ₹200
+    await setPayment({ codMin: 25_000 });
+    expect((await quote(s, { pincode: '682011', paymentMethod: 'COD' })).body).toMatchObject({ cod: { available: false, reason: 'BELOW_MIN' }, blocking: ['COD_NOT_AVAILABLE'] });
+    expect((await quote(s, { pincode: '682011' })).body.blocking).toEqual([]);                     // paying online is fine
+    await setPayment({ codMax: 20_000 });
+    expect((await quote(s, { pincode: '682011', paymentMethod: 'COD' })).body.cod.reason).toBe('ABOVE_MAX');
+    await setPayment({ codEnabled: false });
+    expect((await quote(s, { pincode: '682011', paymentMethod: 'COD' })).body.cod.reason).toBe('COD_DISABLED');
+    await setPayment({});
+    await prisma.pincodeServiceability.create({ data: { pincode: '682011', isServiceable: true, codAvailable: false } });
+    expect((await quote(s, { pincode: '682011', paymentMethod: 'COD' })).body.cod.reason).toBe('PINCODE_NO_COD');
+    await prisma.pincodeServiceability.delete({ where: { pincode: '682011' } });
+  });
+
+  it('blocking reasons: unknown pincode, online payments off, empty cart; malformed body 400; a saved address needs an account (404)', async () => {
+    const p = await liveProduct(prisma, { variants: [{ price: 30_000 }] });
+    const s = shopper();
+    await s.add(p.variantIds[0]!);
+    expect((await quote(s, { pincode: '999999' })).body.blocking).toEqual(['UNKNOWN_PINCODE']);
+    await setPayment({ razorpayEnabled: false });
+    expect((await quote(s, { pincode: '682011' })).body).toMatchObject({ onlineEnabled: false, blocking: ['ONLINE_DISABLED'] });
+    await setPayment({});
+    expect((await quote(shopper(), { pincode: '682011' })).body.blocking).toContain('CART_EMPTY');
+    expect((await quote(s, {})).status).toBe(400);
+    expect((await quote(s, { pincode: '682011', shippingAddressId: 1 })).status).toBe(400);
+    expect((await quote(s, { shippingAddressId: 1 })).status).toBe(404);
+    expect((await request(app).post('/v1/checkout/quote').send({ pincode: '682011' })).status).toBe(403);   // Origin guard
+  });
+});

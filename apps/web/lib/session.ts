@@ -64,8 +64,8 @@ export class StoreSession {
   }
   private get hinted() { try { return this.storage?.getItem(HINT_KEY) === '1'; } catch { return false; } }
 
-  private async raw(method: Method, path: string, body?: unknown, auth = true): Promise<Response> {
-    const headers: Record<string, string> = { Accept: 'application/json' };
+  private async raw(method: Method, path: string, body?: unknown, auth = true, extra: Record<string, string> = {}): Promise<Response> {
+    const headers: Record<string, string> = { Accept: 'application/json', ...extra };
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     if (auth && this.token) headers.Authorization = `Bearer ${this.token}`;
     try {
@@ -127,14 +127,14 @@ export class StoreSession {
   }
 
   /** An API call as this customer (Bearer when signed in; cookies always, for the cart). One refresh + retry on 401. */
-  async request<T>(method: Method, path: string, body?: unknown, retried = false): Promise<T> {
-    const res = await this.raw(method, path, body);
+  async request<T>(method: Method, path: string, body?: unknown, headers: Record<string, string> = {}, retried = false): Promise<T> {
+    const res = await this.raw(method, path, body, true, headers);
     if (res.ok) return (await res.json().catch(() => null)) as T;
     const err = await StoreSession.error(res);
     if (res.status === 401 && !retried && (err.code === 'UNAUTHENTICATED' || err.code === 'SESSION_INVALID') && (this.token || this.hinted)) {
-      if (await this.refresh()) return this.request(method, path, body, true);
+      if (await this.refresh()) return this.request(method, path, body, headers, true);
       if (path.startsWith('/me') || path.startsWith('/auth/')) throw err;
-      return this.request(method, path, body, true);   // the cart works without an account: retry as a guest
+      return this.request(method, path, body, headers, true);   // the cart works without an account: retry as a guest
     }
     throw err;
   }

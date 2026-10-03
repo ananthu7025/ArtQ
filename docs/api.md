@@ -201,7 +201,7 @@ Implemented in task 4.2 (bodies in `@artq/shared` auth-schemas, shared with the 
 | GET | `/orders/:orderNumber` | `OrderView` (requires the order cookie) |
 | POST | `/orders/:orderNumber/cancel` · `/orders/:orderNumber/returns` | Idempotency-Key; same rules as account |
 | GET | `/orders/:orderNumber/invoice` · `/orders/:orderNumber/attachments/:mediaId` | Private redirects |
-| POST | `/orders/:orderNumber/payment/retry` | Idempotency-Key (op `payment.retry`); order cookie, cart cookie or owner Bearer → new Razorpay order details |
+| POST | `/orders/:orderNumber/payment/retry` | Idempotency-Key (op `payment.retry`); order cookie, cart cookie or owner Bearer; `{paymentMethod:'RAZORPAY'\|'COD'}` (`paymentRetryBody`): `RAZORPAY` → new Razorpay order details (same shapes as initiate), `COD` → switch the pending order to cash on delivery when allowed → `{orderNumber, status:'PLACED', total}` |
 
 ### 3.7 Cart (cart cookie; Bearer optional)
 | Method | Path | Notes |
@@ -220,14 +220,14 @@ The cart's coupon is re-checked on every read: one that stops qualifying stays o
 ### 3.8 Checkout & payments
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/checkout/quote` | `{shippingAddressId | shippingAddress, paymentMethod}` → `CartView` + `codAvailable`, `codReason?` |
+| POST | `/checkout/quote` | `{shippingAddressId (the signed-in customer's own, else 404) \| pincode, paymentMethod:'RAZORPAY'\|'COD'}` (`checkoutQuoteBody`) → `CheckoutQuote` `{cart: CartView (shipping for that pincode; COD fee in the total when COD), onlineEnabled, cod:{available, reason:'COD_DISABLED'\|'PINCODE_NO_COD'\|'BELOW_MIN'\|'ABOVE_MAX'\|'NO_DESTINATION'\|null, fee, min, max}, blocking[]}` (e.g. `UNKNOWN_PINCODE`, `PINCODE_NOT_SERVICEABLE`, `SHIPPING_RESTRICTED`, `NO_ZONE`, `CART_EMPTY`, `UNAVAILABLE:<variantId>`, `COD_NOT_AVAILABLE`, `ONLINE_DISABLED`). 20/min per cart (account when signed in). Task 4.6 |
 | POST | `/checkout/initiate` | **Idempotency-Key required.** Creates or returns the order (below) |
 | POST | `/checkout/verify` | `{orderNumber, razorpayPaymentId, razorpaySignature}`. **`razorpay_order_id` from the client is ignored**: the server checks the signature against the stored provider order id, fetches the payment from Razorpay and calls the same `aq_apply_provider_payment` used by the webhook and reconciler. Response `200 {status:'PLACED'}` (also when the payment was already applied by the webhook) / `202 {status:'PROCESSING'}` (authorized, provider unreachable, or recorded `UNLINKED` because the provider order mapping is not saved yet; reconciliation recovers it) / `200 {status:'REVIEW'}` (held: amount/currency mismatch, partially refunded before apply, or identity conflict) / `200 {status:'PAYMENT_REFUNDED'}` (the payment was already fully refunded at the provider: the order is not placed) / `422 PAYMENT_VERIFICATION_FAILED` |
 | GET | `/checkout/status/:orderNumber` | `{status, paymentStatus, displayStatus}` for polling; authorized by the cart cookie that created the order or the owner's Bearer (guests with order access use `GET /orders/:orderNumber`) |
 | POST | `/checkout/payment-failed` | `{orderNumber, razorpayPaymentId?, error}`: informational log only, never changes state by itself |
 | POST | `/webhooks/razorpay` | Signature on raw body; inbox semantics (architecture.md §8.1) |
 
-**`POST /checkout/initiate`**
+**`POST /checkout/initiate`** (body: `checkoutInitiateBody` in `@artq/shared`; the checkout page sends the schema's output: mobile as `+91XXXXXXXXXX`, empty optional lines as `null`)
 ```json
 {
   "contact": { "email": "hema@example.com", "phone": "+919876543210", "sendSetPasswordLink": true },

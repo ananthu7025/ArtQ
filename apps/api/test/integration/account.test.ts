@@ -321,6 +321,21 @@ describe('the cart joins the account at sign-in (rest of task 4.1)', () => {
   });
 });
 
+describe('checkout quote with a saved address (task 4.6)', () => {
+  it('uses the address\'s pincode; another customer\'s address → 404', async () => {
+    const a = await account();
+    const b = await account();
+    const p = await liveProduct(prisma);
+    await send('post', '/cart/items', { bearer: a.access, body: { variantId: p.variantIds[0] } });
+    const addr = await send('post', '/me/addresses', { bearer: a.access, body: { fullName: 'Asha', phone: '+919847012345', line1: '12 MG Road', city: 'Kochi', stateId: kerala, pincode: '682011' } });
+    const q = await send('post', '/checkout/quote', { bearer: a.access, body: { shippingAddressId: addr.body.id } });
+    expect(q.status).toBe(200);
+    expect(q.body.cart.totals.shipping.pincode).toBe('682011');
+    expect(q.body.cart.items).toHaveLength(1);
+    expect((await send('post', '/checkout/quote', { bearer: b.access, body: { shippingAddressId: addr.body.id } })).status).toBe(404);
+  });
+});
+
 describe('address helpers', () => {
   it('states: active Indian states by name, publicly cacheable; pincode → district and state, unknown → 404, malformed → 400', async () => {
     const s = await request(app).get('/v1/states');

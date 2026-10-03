@@ -4,7 +4,7 @@
 // changes. Totals come from the shared pricing engine (§6.4) with the cart's coupon (task 4.3); shipping and COD arrive with
 // checkout.
 import { createHash, randomBytes } from 'node:crypto';
-import { formatINR, freeShippingRemaining, MAX_CART_QUANTITY, priceCart, type CartView, type PricingVariant, type PublicCoupon, type ShippingProblem } from '@artq/shared';
+import { formatINR, freeShippingRemaining, MAX_CART_QUANTITY, priceCart, type CartView, type CheckoutPaymentMethod, type CheckoutQuote, type PricingVariant, type PublicCoupon, type ShippingProblem } from '@artq/shared';
 import type { PrismaClient } from '@prisma/client';
 import { destinationFor } from '../shipping/destination.js';
 import { CouponService, couponMessage, summaryOf, toPricingCoupon, type CouponCustomer } from '../coupons/service.js';
@@ -161,7 +161,7 @@ export class CartService {
     const changed = rows.filter((r) => r.price !== null && r.price !== r.added_price).map((r) => r.item_id);
     for (const id of changed) { const r = rows.find((x) => x.item_id === id)!; await this.prisma.cartItem.update({ where: { id }, data: { addedPrice: r.price! } }); }
 
-    return { items, lines, variants, warnings, settings: { shipping: ship, payment: { codEnabled: pay.codEnabled, codFee: pay.codFee, codMin: pay.codMin, codMax: pay.codMax } } };
+    return { items, lines, variants, warnings, onlineEnabled: pay.razorpayEnabled, settings: { shipping: ship, payment: { codEnabled: pay.codEnabled, codFee: pay.codFee, codMin: pay.codMin, codMax: pay.codMax } } };
   }
 
   /** Who the coupon checks are for: the account, or the email given at checkout. */
@@ -176,7 +176,12 @@ export class CartService {
    * itself once the cart qualifies.
    */
   async view(cartId: number | null, pincode: string | null = null): Promise<CartView> {
-    const { items, lines, variants, warnings, settings } = await this.load(cartId);
+    return (await this.compute(cartId, pincode, null)).view;
+  }
+
+  /** The cart priced for an optional pincode and payment method, with the pricing engine's full output. */
+  private async compute(cartId: number | null, pincode: string | null, paymentMethod: CheckoutPaymentMethod | null) {
+    const { items, lines, variants, warnings, settings, onlineEnabled } = await this.load(cartId);
     const { couponId, who } = cartId === null ? { couponId: null, who: { userId: null, email: null } } : await this.customerOf(cartId);
     const coupon = couponId === null ? null : await this.coupons.findById(couponId);
     if (couponId !== null && !coupon) await this.prisma.cart.update({ where: { id: cartId! }, data: { couponId: null } });   // deleted meanwhile
@@ -188,7 +193,7 @@ export class CartService {
     else if (dest && !dest.serviceability.serviceable) shipProblem = 'PINCODE_NOT_SERVICEABLE';
     else if (dest && !dest.zone) shipProblem = 'NO_ZONE';
     const destination = dest?.zone && !shipProblem ? { gstStateCode: dest.place?.gstStateCode ?? '', zone: dest.zone, serviceability: dest.serviceability } : null;
-    const priced = priceCart({ lines, variants, coupon: coupon && check?.ok ? toPricingCoupon(coupon) : null, destination, paymentMethod: null, settings });
+    const priced = priceCart({ lines, variants, coupon: coupon && check?.ok ? toPricingCoupon(coupon) : null, destination, paymentMethod, settings });
     let couponView: CartView['coupon'] = null;
     if (coupon) {
       let problem: NonNullable<CartView['coupon']>['problem'] = null;
@@ -210,15 +215,38 @@ export class CartService {
     if (quote && !quote.ok) shipProblem = quote.error;
     const amount = quote?.ok ? quote.shipping : null;
     const freeApplied = quote?.ok ? quote.freeShippingApplied : priced.subtotal > 0 && (couponView?.freeShipping === true || priced.subtotal - couponDiscount >= ship.freeThreshold);
-    return {
+    const view: CartView = {
       items, coupon: couponView, warnings,
       totals: {
         itemCount: lines.reduce((s, l) => s + l.quantity, 0), subtotal: priced.subtotal, mrpTotal: priced.mrpTotal, mrpDiscount: priced.mrpDiscount, couponDiscount,
         shipping: { amount, estimated: amount === null, freeApplied, heavySurcharge: quote?.ok ? quote.heavySurcharge : 0, pincode: dest ? pincode : null, problem: shipProblem },
-        codFee: 0, total: priced.subtotal - couponDiscount + (amount ?? 0), savings: priced.mrpDiscount + couponDiscount + (quote?.ok ? quote.rate - quote.shipping : 0),
+        codFee: priced.codFee, total: priced.subtotal - couponDiscount + (amount ?? 0) + priced.codFee, savings: priced.mrpDiscount + couponDiscount + (quote?.ok ? quote.rate - quote.shipping : 0),
         freeShippingThreshold: ship.freeThreshold,
         freeShippingRemaining: priced.subtotal === 0 ? ship.freeThreshold : freeApplied ? 0 : freeShippingRemaining(priced.subtotal, couponDiscount, ship.freeThreshold),
       },
+    };
+    // Why the order cannot be placed as it stands: the engine's reasons, with the real delivery problem when known.
+    const blocking = [...(shipProblem ? [shipProblem] : []), ...priced.blocking.filter((b) => !(shipProblem && b === 'DESTINATION_REQUIRED'))];
+    return { view, priced, settings, onlineEnabled, blocking };
+  }
+
+  /**
+   * POST /checkout/quote (task 4.6): the cart priced for a delivery pincode (a saved address of this customer, or the
+   * pincode being typed) and a payment method, with COD availability and what still blocks the order.
+   */
+  async quote(cartId: number | null, userId: number | null, body: { shippingAddressId?: number | undefined; pincode?: string | undefined; paymentMethod: CheckoutPaymentMethod }): Promise<CheckoutQuote> {
+    let pincode = body.pincode ?? null;
+    if (body.shippingAddressId !== undefined) {
+      const a = userId === null ? null : await this.prisma.address.findFirst({ where: { id: body.shippingAddressId, userId }, select: { pincode: true } });
+      if (!a) throw new AppError(404, 'NOT_FOUND', 'Address not found');
+      pincode = a.pincode;
+    }
+    const { view, priced, settings, onlineEnabled, blocking } = await this.compute(cartId, pincode, body.paymentMethod);
+    const pay = settings.payment;
+    return {
+      cart: view, onlineEnabled,
+      cod: { available: priced.cod.available, reason: priced.cod.available ? null : priced.cod.reason, fee: pay.codFee, min: pay.codMin, max: pay.codMax },
+      blocking: [...blocking, ...(body.paymentMethod === 'RAZORPAY' && !onlineEnabled ? ['ONLINE_DISABLED'] : [])],
     };
   }
 

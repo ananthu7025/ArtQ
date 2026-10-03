@@ -14,12 +14,12 @@ export class ApiError extends Error {
 type Fetch = (input: string, init?: RequestInit & { next?: { revalidate?: number } }) => Promise<Response>;
 
 /** Browser call with the customer's cookies, never cached. Throws ApiError with the API's code; NETWORK when unreachable. */
-export async function clientRequest<T>(method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE', path: string, body?: unknown, fetchImpl: Fetch = fetch): Promise<T> {
+export async function clientRequest<T>(method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE', path: string, body?: unknown, fetchImpl: Fetch = fetch, extraHeaders: Record<string, string> = {}): Promise<T> {
   let res: Response;
   try {
     res = await fetchImpl(`${API_URL}${path}`, {
       method, credentials: 'include', cache: 'no-store',
-      headers: { Accept: 'application/json', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+      headers: { Accept: 'application/json', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...extraHeaders },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
   } catch {

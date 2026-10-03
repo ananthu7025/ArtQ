@@ -1,6 +1,6 @@
 // /v1/cart (api.md §3.7) and the cart's coupon (task 4.3). The cart cookie is created on the first add; reading without a cart returns an empty cart and
 // sets nothing. Every response is the re-priced CartView (no-store via the cache policy).
-import { cartAddBody, cartCouponBody, cartUpdateBody, pincodeField } from '@artq/shared';
+import { cartAddBody, cartCouponBody, cartUpdateBody, checkoutQuoteBody, pincodeField } from '@artq/shared';
 import type { PrismaClient } from '@prisma/client';
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
@@ -10,7 +10,7 @@ import { AppError } from '../lib/errors.js';
 import { RATE_LIMITS, rateLimit, type RateLimiter } from '../middleware/rateLimit.js';
 import { validate } from '../middleware/validate.js';
 import type { MediaUrl } from '../storefront/home.js';
-import { CART_TTL_S, CartService } from './service.js';
+import { CART_TTL_S, CartService, hashToken } from './service.js';
 
 const itemParam = z.strictObject({ itemId: z.coerce.number().int().positive() });
 /** `?pincode=` on any cart call adds the shipping estimate for that pincode (task 4.5). */
@@ -69,6 +69,12 @@ export function cartRouter(d: AuthDeps & { env: DeployEnv; mediaUrl: MediaUrl; l
   });
   r.delete('/cart/coupon', validate({ query: cartQuery }), async (req, res) => { res.json(await carts.removeCoupon(await cartFor(req, res, false), pin(req))); });
   r.get('/cart/coupons', async (req, res) => { res.json({ data: await carts.publicCoupons(await cartFor(req, res, false)) }); });
+  // Checkout quote (task 4.6). Same cart resolution; limited per cart (signed in: per account) like every /checkout call.
+  r.use('/checkout', optionalCustomer(d));
+  const checkoutLimit = d.limiter ? rateLimit({ limiter: d.limiter, name: 'checkout', rule: RATE_LIMITS.checkout, key: async (req) => (req.auth ? `u:${req.auth.userId}` : token(req) ? `c:${hashToken(token(req)!)}` : null), ...(d.onRateLimitError ? { onError: d.onRateLimitError } : {}) }) : (_q: Request, _s: Response, n: () => void) => n();
+  r.post('/checkout/quote', checkoutLimit, validate({ body: checkoutQuoteBody }), async (req, res) => {
+    res.json(await carts.quote(await cartFor(req, res, false), req.auth?.userId ?? null, req.body as z.output<typeof checkoutQuoteBody>));
+  });
   r.delete('/cart', validate({ query: cartQuery }), async (req, res) => {
     const id = await cartFor(req, res, false);
     if (id !== null) await carts.clear(id);
