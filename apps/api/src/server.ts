@@ -98,7 +98,7 @@ const app = createApp({
     adminAuthRouter({ prisma, cache, jwt, service, env: env.NODE_ENV, limiter, onRateLimitError }),
     customerMediaRouter({ prisma, cache, jwt }, media),
     cartRouter({ prisma, cache, jwt, env: env.NODE_ENV, mediaUrl, limiter, onRateLimitError, checkout: { provider: razorpay, storeName: 'ArtQ', log } }),
-    checkoutPaymentRouter({ prisma, cache, jwt, env: env.NODE_ENV, provider: razorpay, log, limiter, onRateLimitError, checkout: new CheckoutService({ prisma, carts: new CartService(prisma, mediaUrl), provider: razorpay, mediaUrl, storeName: 'ArtQ' }) }),
+    checkoutPaymentRouter({ prisma, cache, jwt, env: env.NODE_ENV, provider: razorpay, log, limiter, onRateLimitError, links: { webUrl: env.WEB_URL, linkSecret: env.AUTH_LINK_SECRET, setPasswordTtlS: DEFAULT_AUTH_TIMINGS.setPasswordTtlS }, checkout: new CheckoutService({ prisma, carts: new CartService(prisma, mediaUrl), provider: razorpay, mediaUrl, storeName: 'ArtQ' }) }),
     accountRouter({ prisma, cache, jwt, service, env: env.NODE_ENV, mediaUrl, limiter, onRateLimitError }),
     storefrontRouter({ prisma, cache: appCache, mediaUrl, limiter, onRateLimitError, onInvalidSetting: (key) => log.warn({ key }, 'stored setting is invalid; serving the default'), onSearchLogError: (err) => log.warn({ err: String(err) }, 'search log not written') }),
     webhookRouter({ prisma, queue: webhookQueue, providers: [razorpayProvider(env.RAZORPAY_WEBHOOK_SECRET || undefined)], log }),

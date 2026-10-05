@@ -59,7 +59,11 @@ test('guest places a cash-on-delivery order: confirmation page, the cart is empt
   await main.getByLabel(/I agree to the/).check();
   await main.getByRole('button', { name: /^Place order · ₹/ }).click();
   await expect(page).toHaveURL(/\/checkout\/success\/AQ\d+$/);
-  await expect(page.getByRole('heading', { name: 'Thank you! Your order is placed.' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Thank you, Hema! Your order is placed.' })).toBeVisible();
+  await expect(page.getByText(/^Cash on delivery: please keep ₹[\d,]+ ready\.$/)).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Delivering to' })).toContainText('12 Rose Villa');
+  await page.getByRole('button', { name: 'Set a password' }).click();
+  await expect(page.getByText(/^Link sent\. Check your inbox/)).toBeVisible();
   await expect(page.getByRole('banner').getByRole('link', { name: /^Cart, \d+ items?$/ })).toHaveAccessibleName('Cart, 0 items');
   await axeClean(page);
 });

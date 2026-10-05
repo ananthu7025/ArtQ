@@ -23,6 +23,7 @@ import { expirePending, reconcileAttempts, reconcileDaily } from './payments/rec
 import { razorpayHandlers } from './payments/webhook-handlers.js';
 import { mediaServiceFromEnv } from './media/factory.js';
 import { createWorkerRuntime } from './worker/runtime.js';
+import { DEFAULT_AUTH_TIMINGS } from './auth/service.js';
 import { redisConnection } from './lib/redis-url.js';
 
 let env;
@@ -39,7 +40,7 @@ const transport: EmailTransport = env.EMAIL_TRANSPORT === 'resend'
   ? new ResendTransport({ apiKey: env.RESEND_API_KEY! })
   : new SmtpTransport({ host: env.SMTP_HOST, port: env.SMTP_PORT });
 const email = (consumer: EmailConsumer) => async (job: Job<OutboxJobData>) =>
-  processEmailDelivery({ prisma, transport, from: env.EMAIL_FROM, log }, consumer, job.data.deliveryId);
+  processEmailDelivery({ prisma, transport, from: env.EMAIL_FROM, log, links: { webUrl: env.WEB_URL, linkSecret: env.AUTH_LINK_SECRET, setPasswordTtlS: DEFAULT_AUTH_TIMINGS.setPasswordTtlS } }, consumer, job.data.deliveryId);
 
 // Razorpay (task 4.9): webhook handlers and the payment jobs need the API keys; without them online payments are off.
 const razorpay = env.RAZORPAY_KEY_ID && env.RAZORPAY_KEY_SECRET ? new RazorpayClient(env.RAZORPAY_KEY_ID, env.RAZORPAY_KEY_SECRET) : null;

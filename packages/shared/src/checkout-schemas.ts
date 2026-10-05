@@ -82,3 +82,15 @@ export type InitiateResult =
 export type VerifyResult = { status: 'PLACED' | 'PROCESSING' | 'REVIEW' | 'PAYMENT_REFUNDED' };
 /** GET /checkout/status/:orderNumber (polled while PROCESSING). */
 export type CheckoutStatus = { status: 'PENDING_PAYMENT' | 'PLACED' | 'CONFIRMED' | 'COMPLETED' | 'CANCELLED' | 'EXPIRED'; paymentStatus: string; displayStatus: string };
+
+/** GET /checkout/orders/:orderNumber: the confirmation page (product.md §5.8). */
+export type OrderConfirmation = {
+  orderNumber: string; status: CheckoutStatus['status']; paymentStatus: string; displayStatus: string; paymentMethod: CheckoutPaymentMethod;
+  firstName: string; contactEmail: string;
+  items: { name: string; label: string; quantity: number; lineTotal: number; imageUrl: string | null }[];
+  totals: { subtotal: number; couponDiscount: number; couponCode: string | null; shipping: number; codFee: number; total: number };
+  address: { name: string; lines: string[] };
+  estimatedDays: { min: number; max: number };
+  /** A guest order whose email has no password yet: the page offers "Set a password". */
+  canSetPassword: boolean;
+};

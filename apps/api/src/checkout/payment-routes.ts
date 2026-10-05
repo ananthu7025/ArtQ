@@ -5,7 +5,7 @@
 //   POST /checkout/payment-failed  informational only
 //   POST /orders/:n/payment/retry  Idempotency-Key (op payment.retry): pay again online, or switch to COD
 // An order is reachable by the cart cookie that created it or by its owner's Bearer; anyone else gets 404.
-import { paymentRetryBody, type CheckoutStatus, type VerifyResult } from '@artq/shared';
+import { parseSetting, paymentRetryBody, type CheckoutStatus, type OrderConfirmation, type VerifyResult } from '@artq/shared';
 import type { Order } from '@prisma/client';
 import { Router, type Request, type Response } from 'express';
 import type { Logger } from 'pino';
@@ -20,6 +20,10 @@ import { validate } from '../middleware/validate.js';
 import { fetchAndApply } from '../payments/apply.js';
 import { ProviderError, type PaymentProvider } from '../payments/razorpay.js';
 import type { CheckoutService } from './initiate.js';
+import { signLink } from '../auth/tokens.js';
+import type { EmailLinks } from '../email/consumer.js';
+import { firstName } from '../email/order-data.js';
+import * as fn from '../db/functions.js';
 
 const orderParam = z.strictObject({ orderNumber: z.string().regex(/^AQ\d{1,15}$/, 'Not an order number') });
 const verifyBody = z.strictObject({
@@ -43,6 +47,8 @@ export function displayStatus(o: Pick<Order, 'status' | 'paymentStatus'>): strin
 
 export type PaymentRoutesDeps = AuthDeps & {
   env: DeployEnv; checkout: CheckoutService; provider: PaymentProvider | null; log: Logger;
+  /** Signs the guest's set-password link (task 4.10); without it the offer is not made. */
+  links?: EmailLinks;
   limiter?: RateLimiter; onRateLimitError?: (e: unknown) => void; lockSeconds?: number;
 };
 
@@ -101,6 +107,43 @@ export function checkoutPaymentRouter(d: PaymentRoutesDeps): Router {
     const o = await orderFor(req, b.orderNumber);
     d.log.info({ order: o.orderNumber, paymentId: b.razorpayPaymentId ?? null, error: b.error }, 'checkout: payment failed or closed in the browser');
     noStore(res).json({ ok: true });
+  });
+
+  // ── The confirmation page (task 4.10, product.md §5.8) ──
+  const guestCanSetPassword = async (o: Order) => d.links !== undefined && o.userId === null
+    && (await d.prisma.user.findFirst({ where: { email: o.contactEmail, deletedAt: null, passwordHash: { not: null } }, select: { id: true } })) === null;
+
+  r.get('/checkout/orders/:orderNumber', validate({ params: orderParam }), async (req, res) => {
+    const found = await orderFor(req, (req.params as { orderNumber: string }).orderNumber);
+    const o = await d.prisma.order.findUniqueOrThrow({ where: { id: found.id }, include: { items: { orderBy: { id: 'asc' } } } });
+    const ship = await d.prisma.setting.findUnique({ where: { key: 'SHIPPING' } });
+    const days = ship ? parseSetting('SHIPPING', ship.value).estimatedDays : { min: 4, max: 7 };
+    const view: OrderConfirmation = {
+      orderNumber: o.orderNumber, status: o.status, paymentStatus: o.paymentStatus, displayStatus: displayStatus(o), paymentMethod: o.paymentMethod,
+      firstName: firstName(o.shipName), contactEmail: o.contactEmail,
+      items: o.items.map((i) => ({ name: i.productName, label: i.variantLabel, quantity: i.quantity, lineTotal: i.lineTotal, imageUrl: i.imageUrl })),
+      totals: { subtotal: o.subtotal, couponDiscount: o.couponDiscount, couponCode: o.couponCode, shipping: o.shippingFee, codFee: o.codFee, total: o.total },
+      address: { name: o.shipName, lines: [o.shipLine1, ...(o.shipLine2 ? [o.shipLine2] : []), ...(o.shipLandmark ? [`Near ${o.shipLandmark}`] : []), `${o.shipCity}, ${o.shipState} ${o.shipPincode}`] },
+      estimatedDays: days,
+      canSetPassword: ['PLACED', 'CONFIRMED', 'COMPLETED'].includes(o.status) && (await guestCanSetPassword(o)),
+    };
+    noStore(res).json(view);
+  });
+
+  /** "Set a password" for a guest order: the link goes to the order's email (at most once every 10 minutes). */
+  r.post('/checkout/orders/:orderNumber/set-password-link', limit, validate({ params: orderParam }), async (req, res) => {
+    const o = await orderFor(req, (req.params as { orderNumber: string }).orderNumber);
+    if (['PLACED', 'CONFIRMED', 'COMPLETED'].includes(o.status) && (await guestCanSetPassword(o))) {
+      const email = o.contactEmail.toLowerCase();
+      const [recent] = await d.prisma.$queryRaw<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM outbox_events WHERE event_type = 'email.auth' AND payload->>'template' = 'set_password_link'
+           AND payload->>'to' = ${email} AND created_at > now() - interval '10 minutes'`;
+      if (recent!.n === 0) {
+        const link = `${d.links!.webUrl.replace(/\/$/, '')}/set-password?token=${signLink(d.links!.linkSecret, 'set_password', { e: email }, d.links!.setPasswordTtlS)}`;
+        await d.prisma.$transaction((tx) => fn.emit(tx, { aggregateType: 'user', aggregateId: '0', type: 'email.auth', payload: { template: 'set_password_link', to: email, data: { link } }, consumers: ['email.customer'] }));
+      }
+    }
+    noStore(res).json({ sent: true });   // the same answer whether or not an email went out
   });
 
   const orderOf = (req: Request) => (req.res!.locals as { orderNumber: string }).orderNumber;

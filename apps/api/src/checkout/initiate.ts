@@ -91,7 +91,7 @@ export class CheckoutService {
           shippingFee: quote.shipping, codFee: q.priced.codFee, total: q.priced.total, taxTotal: lines.reduce((s, l) => s + (l.tax?.tax ?? 0), 0),
           couponId: q.coupon?.id ?? null, couponCode: q.coupon?.code ?? null,
           actualWeightG: quote.actualWeightG, chargeableWeightG: quote.chargeableWeightG, shippingZoneId: quote.zoneId,
-          pricingSnapshot: JSON.parse(JSON.stringify({ ...q.priced, coupon: q.coupon ? { id: q.coupon.id, code: q.coupon.code, type: q.coupon.type, value: q.coupon.value, maxDiscount: q.coupon.maxDiscount, minOrderValue: q.coupon.minOrderValue, appliesTo: q.coupon.appliesTo } : null, zone: { id: q.dest!.zone!.id, name: q.dest!.zone!.name }, settings: q.settings })) as Prisma.InputJsonValue,
+          pricingSnapshot: JSON.parse(JSON.stringify({ ...q.priced, coupon: q.coupon ? { id: q.coupon.id, code: q.coupon.code, type: q.coupon.type, value: q.coupon.value, maxDiscount: q.coupon.maxDiscount, minOrderValue: q.coupon.minOrderValue, appliesTo: q.coupon.appliesTo } : null, zone: { id: q.dest!.zone!.id, name: q.dest!.zone!.name }, settings: q.settings, contact: { sendSetPasswordLink: p.userId === null && b.contact.sendSetPasswordLink } })) as Prisma.InputJsonValue,
           shipName: ship.fullName, shipPhone: ship.phone, shipLine1: ship.line1, shipLine2: ship.line2, shipLandmark: ship.landmark, shipCity: ship.city,
           shipState: ship.state, shipStateCode: ship.stateCode, shipPincode: ship.pincode,
           billSameAsShip: b.billingSameAsShipping, ...(bill ? { billingSnapshot: bill as unknown as Prisma.InputJsonValue } : {}), gstin: b.gstin, businessName: b.businessName,
