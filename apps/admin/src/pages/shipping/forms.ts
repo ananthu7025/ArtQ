@@ -46,7 +46,9 @@ export const settingsForm = convertedForm<SettingsForm, typeof shippingSettingsB
   shippingSettingsBody,
   (path) => (path[0] === 'airOnlyPincodePrefixes' ? ['airOnlyPincodePrefixes'] : path),
 );
-export const SETTINGS_FIELDS = ['freeThreshold', 'packagingWeightG', 'volumetricDivisor', 'heavyCapG', 'heavyCapEnabled', 'defaultServiceable', 'defaultCod', 'estimatedDays.min', 'estimatedDays.max', 'airOnlyPincodePrefixes'] as const;
+/** Fields on the Settings tab; the rest of the SHIPPING setting is the default delivery policy (Delivery areas tab). */
+export const SETTINGS_FIELDS = ['freeThreshold', 'packagingWeightG', 'volumetricDivisor', 'heavyCapG', 'heavyCapEnabled'] as const;
+export const DEFAULT_POLICY_FIELDS = ['defaultServiceable', 'defaultCod', 'estimatedDays.min', 'estimatedDays.max', 'airOnlyPincodePrefixes'] as const;
 
 // ── Pincode rule ──
 export type RuleForm = { pincode: string; isServiceable: boolean; codAvailable: boolean; eddMinDays: string; eddMaxDays: string; note: string };

@@ -1,6 +1,6 @@
 // Shipping Rates (product.md §7 "Shipping Rates", §8.2, api.md §4.8) [shipping:write]: zones (weight slabs + extra ₹/kg),
-// which zone each state ships at, the shipping settings (free-shipping threshold, heavy cap, packaging, default delivery
-// policy, air-only areas), delivery areas per pincode (AreasTab) and a preview calculator. Rates are entered in rupees
+// which zone each state ships at, the shipping settings (free-shipping threshold, heavy cap, packaging), delivery areas
+// (AreasTab: the default delivery policy, every known pincode and per-pincode rules) and a preview calculator. Rates are entered in rupees
 // and weights in grams; every form validates with the shared schema after converting (forms.ts).
 import { formatINR, type ShippingAdminView, type ShippingPreview, type ZoneView } from '@artq/shared';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -8,22 +8,19 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus, Trash2 } from 'lucide-react';
 import { useState } from 'react';
 import { useFieldArray, useForm } from 'react-hook-form';
-import { useSearchParams } from 'react-router';
+import { Link, useSearchParams } from 'react-router';
 import { toast } from 'sonner';
-import { ApiError } from '../../api/client';
 import { useAuth } from '../../auth/AuthProvider';
 import { btn, ConfirmDialog } from '../../components/dialogs';
 import { errorMessage } from '../../components/feedback';
 import { applyServerErrors, FormAlert, SelectField, TextField } from '../../components/form';
 import { PageHeader } from '../simple';
 import { AreasTab } from './AreasTab';
+import { card, Check, primary, quiet } from './parts';
 import { EMPTY_PREVIEW, previewForm, SETTINGS_FIELDS, settingsForm, settingsToForm, zoneFields, zoneForm, zoneToForm, type PreviewForm, type SettingsForm, type ZoneForm } from './forms';
 
 const TABS = [{ key: 'rates', label: 'Rates & zones' }, { key: 'areas', label: 'Delivery areas' }, { key: 'settings', label: 'Settings' }, { key: 'preview', label: 'Preview' }] as const;
 type Tab = (typeof TABS)[number]['key'];
-const card = 'rounded-lg border border-surface-200 bg-white p-5';
-const primary = `${btn} bg-brand-700 text-white disabled:opacity-80`;
-const quiet = `${btn} text-ink-900 hover:bg-surface-100`;
 export const SHIPPING_KEY = ['shipping'] as const;
 
 export function useShipping() {
@@ -190,15 +187,6 @@ function SettingsTab() {
   return <Loaded>{(data) => <SettingsFormView key={JSON.stringify(data.settings)} settings={data.settings} />}</Loaded>;
 }
 
-function Check({ id, label, help, ...input }: { id: string; label: string; help?: string } & React.InputHTMLAttributes<HTMLInputElement> & { ref?: React.Ref<HTMLInputElement> }) {
-  return (
-    <div className="flex items-start gap-3 text-sm text-ink-900">
-      <input id={id} type="checkbox" className="mt-0.5 h-5 w-5 accent-brand-700" aria-describedby={help ? `${id}-help` : undefined} {...input} />
-      <div><label htmlFor={id} className="font-medium">{label}</label>{help && <p id={`${id}-help`} className="text-ink-700">{help}</p>}</div>
-    </div>
-  );
-}
-
 function SettingsFormView({ settings }: { settings: ShippingAdminView['settings'] }) {
   const { api } = useAuth();
   const qc = useQueryClient();
@@ -208,9 +196,7 @@ function SettingsFormView({ settings }: { settings: ShippingAdminView['settings'
     setProblem(null);
     try { qc.setQueryData(SHIPPING_KEY, await api.request<ShippingAdminView>('PUT', '/admin/shipping/settings', { body })); toast.success('Shipping settings saved'); }
     catch (e) {
-      // One text box holds the whole prefix list: an error on one prefix goes on the box.
-      if (e instanceof ApiError && Array.isArray(e.details)) for (const d of e.details as { path?: string }[]) if (d.path?.startsWith('airOnlyPincodePrefixes')) d.path = 'airOnlyPincodePrefixes';
-      if (!applyServerErrors(e, setError, SETTINGS_FIELDS)) setProblem(errorMessage(e));
+      if (!applyServerErrors(e, setError, SETTINGS_FIELDS)) setProblem(errorMessage(e));   // a default-policy error has no field here: shown above the button
     }
   });
   return (
@@ -230,20 +216,7 @@ function SettingsFormView({ settings }: { settings: ShippingAdminView['settings'
           <TextField id="s-div" label="Volumetric divisor" inputMode="numeric" hint="L × W × H (cm) ÷ this = kg. Couriers usually use 5,000." {...register('volumetricDivisor')} error={errors.volumetricDivisor?.message} />
         </div>
       </section>
-      <section aria-labelledby="s-areas" className={card}>
-        <h2 id="s-areas" className="mb-4 font-semibold text-ink-900">Where we deliver by default</h2>
-        <div className="space-y-3">
-          <Check id="s-serviceable" label="Deliver to every pincode unless it is blocked" help="Off: only pincodes listed under Delivery areas as deliverable." {...register('defaultServiceable')} />
-          <Check id="s-cod" label="Cash on delivery wherever we deliver" help="Pincodes can still turn it off one by one." {...register('defaultCod')} />
-        </div>
-        <div className="mt-4 grid gap-4 sm:grid-cols-2">
-          <TextField id="s-days-min" label="Usual delivery: from (days)" inputMode="numeric" {...register('estimatedDays.min')} error={errors.estimatedDays?.min?.message} />
-          <TextField id="s-days-max" label="Usual delivery: to (days)" inputMode="numeric" {...register('estimatedDays.max')} error={errors.estimatedDays?.max?.message} />
-        </div>
-        <div className="mt-4">
-          <TextField id="s-air" label="Areas only reachable by air (pincode starts)" hint="Resin and other surface-only items cannot ship here. Separate with commas, e.g. 744, 68255." {...register('airOnlyPincodePrefixes')} error={errors.airOnlyPincodePrefixes?.message} />
-        </div>
-      </section>
+      <p className="text-sm text-ink-700">Where we deliver by default, cash on delivery, usual delivery days and air-only areas are set under <Link to="?tab=areas" className="font-medium text-brand-700 underline">Delivery areas</Link>.</p>
       {problem && <FormAlert>{problem}</FormAlert>}
       <button type="submit" disabled={isSubmitting} className={primary}>{isSubmitting ? 'Saving…' : 'Save settings'}</button>
     </form>

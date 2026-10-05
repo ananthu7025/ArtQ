@@ -256,3 +256,100 @@ describe('pincode CSV import (all rows or none)', () => {
     expect(fields(await call('post', '/shipping/pincodes/import', { csv: '' }))).toEqual({ csv: 'The file is empty' });
   });
 });
+
+describe('coverage: every known pincode and what checkout does there', () => {
+  type Row = { pincode: string; status: string; cod: boolean; airOnly: boolean; zone: { name: string } | null; place: { office: string; offices: number } | null; days: { min: number; max: number }; rule: { note: string | null } | null };
+  const list = async (q = '') => (await call('get', `/shipping/coverage${q}`)).body as { data: Row[]; meta: { total: number; totalPages: number } };
+  const pins = async (q: string) => (await list(q)).data.map((r) => r.pincode);
+  const summary = async () => (await call('get', '/shipping/coverage/summary')).body;
+  const rule = (pin: string, o: object) => call('put', `/shipping/pincodes/${pin}`, { isServiceable: true, codAvailable: true, ...o });
+  let settings: object;
+
+  beforeAll(async () => {
+    await prisma.pincodeServiceability.deleteMany({});
+    settings = (await call('get', '/shipping')).body.settings;
+    const [kerala, ka, mh] = await Promise.all(['Kerala', 'Karnataka', 'Maharashtra'].map((name) => prisma.state.findFirstOrThrow({ where: { name } })));
+    await prisma.postalCode.createMany({ data: [
+      { pincode: '682011', officeName: 'KADAVANTHRA S.O', district: 'ERNAKULAM', stateId: kerala!.id },   // a second office for 682011
+      { pincode: '560001', officeName: 'BANGALORE G.P.O', district: 'BENGALURU', stateId: ka!.id },
+      { pincode: '400001', officeName: 'MUMBAI G.P.O', district: 'MUMBAI', stateId: mh!.id },
+    ] });
+  });
+  afterAll(async () => { await prisma.pincodeServiceability.deleteMany({}); await call('put', '/shipping/settings', settings); });
+
+  it('the default policy everywhere: one row per pincode with place, zone, COD, delivery days and air-only; ADMIN only', async () => {
+    expect((await call('get', '/shipping/coverage', undefined, STAFF)).status).toBe(403);
+    expect((await call('get', '/shipping/coverage/summary', undefined, STAFF)).status).toBe(403);
+    const res = await call('get', '/shipping/coverage');
+    expect(res.headers['cache-control']).toBe('private, no-store');
+    const { data, meta } = res.body as { data: Row[]; meta: { total: number } };
+    expect(meta.total).toBe(5);
+    expect(data.map((r) => r.pincode)).toEqual(['110001', '400001', '560001', '682011', '744101']);
+    expect(data.find((r) => r.pincode === '682011')).toEqual({ pincode: '682011', place: { office: 'ERNAKULAM H.O', offices: 2, district: 'ERNAKULAM', stateId: expect.any(Number), state: 'Kerala' }, zone: { id: expect.any(Number), name: 'Kerala' },
+      status: 'DELIVERED', cod: true, airOnly: false, days: { min: 4, max: 7 }, rule: null });
+    expect(data.find((r) => r.pincode === '744101')).toMatchObject({ airOnly: true, zone: { name: 'NE / J&K / islands' }, status: 'DELIVERED' });
+    expect(await summary()).toEqual({ known: 5, delivered: 5, deliveredCod: 5, notDelivered: 0, noRate: 0, airOnly: 1, rules: 0, rulesOutsideDirectory: 0 });
+  });
+
+  it('rules: blocked, prepaid with own days, a rule outside the directory (UNKNOWN, as checkout says), each filter', async () => {
+    await rule('110001', { isServiceable: false, codAvailable: false });
+    await rule('560001', { codAvailable: false, eddMinDays: 2, eddMaxDays: 3, note: 'Prepaid only' });
+    await rule('695009', {});                                              // not in the directory
+    await rule('695010', { isServiceable: false, codAvailable: false });   // not in the directory, blocked anyway
+    const all = (await list()).data;
+    expect(all.map((r) => [r.pincode, r.status, r.cod])).toEqual([
+      ['110001', 'NOT_DELIVERED', false], ['400001', 'DELIVERED', true], ['560001', 'DELIVERED', false], ['682011', 'DELIVERED', true],
+      ['695009', 'UNKNOWN', false], ['695010', 'NOT_DELIVERED', false], ['744101', 'DELIVERED', true],
+    ]);
+    expect(all.find((r) => r.pincode === '560001')).toMatchObject({ days: { min: 2, max: 3 }, rule: { note: 'Prepaid only', codAvailable: false, eddMinDays: 2, source: 'MANUAL' } });
+    expect(all.find((r) => r.pincode === '695009')).toMatchObject({ place: null, zone: null, rule: { place: null } });
+    expect(await pins('?filter=delivered')).toEqual(['400001', '560001', '682011', '744101']);
+    expect(await pins('?filter=no_cod')).toEqual(['560001']);
+    expect(await pins('?filter=blocked')).toEqual(['110001', '695010']);
+    expect(await pins('?filter=own_rule')).toEqual(['110001', '560001', '695009', '695010']);
+    expect(await pins('?filter=own_days')).toEqual(['560001']);
+    expect(await pins('?filter=unknown')).toEqual(['695009']);
+    expect(await pins('?filter=air_only')).toEqual(['744101']);
+    expect(await summary()).toEqual({ known: 5, delivered: 4, deliveredCod: 3, notDelivered: 1, noRate: 0, airOnly: 1, rules: 4, rulesOutsideDirectory: 2 });
+    // The preview agrees: a deliverable rule cannot give a pincode a state, a blocking one still blocks.
+    expect((await preview({ pincode: '695009' })).body.quote).toEqual({ ok: false, error: 'UNKNOWN_PINCODE' });
+    expect((await preview({ pincode: '695010' })).body.quote).toEqual({ ok: false, error: 'PINCODE_NOT_SERVICEABLE' });
+    await prisma.pincodeServiceability.deleteMany({});
+  });
+
+  it('a zone turned off → its pincodes have no rate; default policy off → only rules deliver; default COD off', async () => {
+    const z = await zoneNamed('Rest of India');
+    await call('put', `/shipping/zones/${z.id}`, { name: 'Rest of India', extraPerKg: 5500, isActive: false, slabs: [{ maxWeightG: 5000, rate: 30_000 }] });
+    expect(await pins('?filter=no_rate')).toEqual(['110001', '400001']);
+    expect((await list('?filter=no_rate')).data[0]!.zone).toBeNull();
+    expect(await summary()).toMatchObject({ delivered: 3, noRate: 2 });
+    await call('put', `/shipping/zones/${z.id}`, { name: 'Rest of India', extraPerKg: 5500, isActive: true, slabs: [{ maxWeightG: 5000, rate: 30_000 }] });
+
+    await call('put', '/shipping/settings', { ...settings, defaultServiceable: false });
+    await rule('682011', { codAvailable: false });
+    expect(await pins('?filter=delivered')).toEqual(['682011']);
+    expect(await summary()).toMatchObject({ delivered: 1, deliveredCod: 0, notDelivered: 4 });
+    await call('put', '/shipping/settings', { ...settings, defaultCod: false, estimatedDays: { min: 3, max: 5 } });
+    expect(await summary()).toMatchObject({ delivered: 5, deliveredCod: 0 });
+    expect((await list('?q=400001')).data[0]).toMatchObject({ cod: false, days: { min: 3, max: 5 } });
+    await call('put', '/shipping/settings', settings);
+    await prisma.pincodeServiceability.deleteMany({});
+  });
+
+  it('search by pincode start, office or district (any office of the pincode), by state; pages; bad queries refused', async () => {
+    expect(await pins('?q=68')).toEqual(['682011']);
+    expect(await pins('?q=kadavanthra')).toEqual(['682011']);
+    expect(await pins('?q=Bengal')).toEqual(['560001']);
+    expect(await pins('?q=nowhere')).toEqual([]);
+    const kerala = await prisma.state.findFirstOrThrow({ where: { name: 'Kerala' } });
+    expect(await pins(`?state=${kerala.id}`)).toEqual(['682011']);
+    const p2 = await list('?limit=2&page=2');
+    expect(p2.data.map((r) => r.pincode)).toEqual(['560001', '682011']);
+    expect(p2.meta).toMatchObject({ total: 5, totalPages: 3 });
+    expect((await call('get', `/shipping/coverage?q=${'a'.repeat(60)}`)).status).toBe(200);
+    expect((await call('get', `/shipping/coverage?q=${'a'.repeat(61)}`)).status).toBe(400);
+    expect((await call('get', '/shipping/coverage?q=%25')).status).toBe(400);       // "%" is not a place name
+    expect((await call('get', '/shipping/coverage?filter=everything')).status).toBe(400);
+    expect((await call('get', '/shipping/coverage?limit=101')).status).toBe(400);
+  });
+});

@@ -1,6 +1,6 @@
 // Shipping Rates (task 4.4) against a fake API: rupee/gram text converted and checked with the shared schemas, errors
 // under their fields (client and server), zones and slabs, state mapping, settings, pincode rules, CSV import, preview.
-import { DEFAULT_SETTINGS, permissionsFor, type PincodeRuleView, type ShippingAdminView } from '@artq/shared';
+import { DEFAULT_SETTINGS, permissionsFor, type CoverageRow, type CoverageSummary, type PincodeRuleView, type ShippingAdminView } from '@artq/shared';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import axe from 'axe-core';
@@ -20,6 +20,10 @@ const view = (): ShippingAdminView => ({
   settings: { ...DEFAULT_SETTINGS.SHIPPING },
 });
 const rule = (o: Partial<PincodeRuleView> & { pincode: string }): PincodeRuleView => ({ place: { district: 'ERNAKULAM', state: 'Kerala' }, isServiceable: true, codAvailable: true, eddMinDays: null, eddMaxDays: null, note: null, source: 'MANUAL', updatedAt: '2026-10-03T10:00:00Z', ...o });
+const cov = (o: Partial<CoverageRow> & { pincode: string }): CoverageRow => ({
+  place: { office: 'ERNAKULAM H.O', offices: 1, district: 'ERNAKULAM', stateId: 32, state: 'Kerala' }, zone: { id: 1, name: 'Kerala' }, status: 'DELIVERED', cod: true, airOnly: false, days: { min: 4, max: 7 }, rule: null, ...o,
+});
+const SUMMARY: CoverageSummary = { known: 5, delivered: 3, deliveredCod: 2, notDelivered: 1, noRate: 0, airOnly: 1, rules: 3, rulesOutsideDirectory: 1 };
 const page = <T,>(rows: T[]) => [200, { data: rows, meta: { page: 1, limit: 50, total: rows.length, totalPages: 1 } }] as [number, unknown];
 
 function setup(o: { path: string; role?: 'STAFF' | 'ADMIN'; extra?: Record<string, Handler> }) {
@@ -126,40 +130,132 @@ describe('Shipping Rates page', () => {
     await waitFor(() => expect(sent(server, 'PUT', '/admin/shipping/state-zones')[0]?.body).toEqual({ assignments: [{ stateId: 35, zoneId: 2 }] }));
   });
 
-  it('settings: saved in paise; a server error on one prefix shows on the prefix box', async () => {
+  it('settings: saved in paise (the default-delivery fields go back unchanged); those fields are edited under Delivery areas', async () => {
     const u = userEvent.setup();
     const { server } = setup({ path: '/shipping-rates?tab=settings', extra: { 'PUT /admin/shipping/settings': () => [200, view()] } });
     const threshold = await screen.findByLabelText('Free shipping from (₹)');
     expect((threshold as HTMLInputElement).value).toBe('1000');
+    expect(screen.queryByLabelText('Areas only reachable by air (pincode starts)')).toBeNull();
+    expect(screen.getByRole('link', { name: 'Delivery areas' }).getAttribute('href')).toBe('/shipping-rates?tab=areas');
     await u.clear(threshold);
     await u.type(threshold, '1499.50');
     await u.click(screen.getByRole('button', { name: 'Save settings' }));
     await waitFor(() => expect(sent(server, 'PUT', '/admin/shipping/settings')).toHaveLength(1));
     expect(sent(server, 'PUT', '/admin/shipping/settings')[0]!.body).toEqual({ ...DEFAULT_SETTINGS.SHIPPING, freeThreshold: 149_950 });
-    server.routes['PUT /admin/shipping/settings'] = () => err(400, 'VALIDATION_ERROR', 'Request validation failed', [{ location: 'body', path: 'airOnlyPincodePrefixes.1', message: 'Use 2 to 6 digits of a pincode, e.g. 744' }]);
+    server.routes['PUT /admin/shipping/settings'] = () => err(400, 'VALIDATION_ERROR', 'Request validation failed', [{ location: 'body', path: 'freeThreshold', message: 'At most ₹1,00,000' }]);
     await u.click(screen.getByRole('button', { name: 'Save settings' }));
-    await waitFor(() => expectFieldError('Areas only reachable by air (pincode starts)', 'Use 2 to 6 digits of a pincode, e.g. 744'));
-    await u.clear(screen.getByLabelText('Usual delivery: to (days)'));
-    await u.type(screen.getByLabelText('Usual delivery: to (days)'), '2');
-    await u.click(screen.getByRole('button', { name: 'Save settings' }));
-    await waitFor(() => expectFieldError('Usual delivery: to (days)', 'Use at least the minimum'));
+    await waitFor(() => expectFieldError('Free shipping from (₹)', 'At most ₹1,00,000'));
   });
 
-  it('delivery areas: list, add a rule (COD needs delivery), remove one', async () => {
+  it('delivery areas: the default for every other pincode, edited in a dialog with errors under its fields', async () => {
     const u = userEvent.setup();
-    const rows = [rule({ pincode: '110001', place: { district: 'NEW DELHI', state: 'Delhi' }, isServiceable: false, codAvailable: false, note: 'Courier strike' })];
+    const { container, server } = setup({ path: '/shipping-rates?tab=areas', extra: {
+      'GET /admin/shipping/coverage': () => page([cov({ pincode: '682011' })]), 'GET /admin/shipping/coverage/summary': () => [200, SUMMARY],
+      'PUT /admin/shipping/settings': (c) => [200, { ...view(), settings: c.body }],
+    } });
+    const def = within(await screen.findByRole('region', { name: 'Every other pincode' }));
+    expect(def.getByText('Delivered, with cash on delivery')).toBeTruthy();
+    expect(def.getByText('4–7 days')).toBeTruthy();
+    expect(def.getByText('744…, 68255…')).toBeTruthy();
+    await screen.findByRole('table', { name: 'Pincodes' });
+    await noAxe(container);
+    await u.click(def.getByRole('button', { name: 'Edit default' }));
+    let dialog = within(await screen.findByRole('dialog', { name: 'Default delivery' }));
+    await u.clear(dialog.getByLabelText('Usual delivery: to (days)'));
+    await u.type(dialog.getByLabelText('Usual delivery: to (days)'), '2');
+    await u.click(dialog.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expectFieldError('Usual delivery: to (days)', 'Use at least the minimum', dialog));
+    await u.clear(dialog.getByLabelText('Usual delivery: to (days)'));
+    await u.type(dialog.getByLabelText('Usual delivery: to (days)'), '8');
+    await u.clear(dialog.getByLabelText('Areas only reachable by air (pincode starts)'));
+    await u.type(dialog.getByLabelText('Areas only reachable by air (pincode starts)'), 'x1');
+    await u.click(dialog.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expectFieldError('Areas only reachable by air (pincode starts)', 'Use 2 to 6 digits of a pincode, e.g. 744', dialog));
+    // The server's error on one prefix lands on the prefix box.
+    server.routes['PUT /admin/shipping/settings'] = () => err(400, 'VALIDATION_ERROR', 'Request validation failed', [{ location: 'body', path: 'airOnlyPincodePrefixes.1', message: 'Each prefix only once' }]);
+    await u.clear(dialog.getByLabelText('Areas only reachable by air (pincode starts)'));
+    await u.type(dialog.getByLabelText('Areas only reachable by air (pincode starts)'), '744, 68255');
+    await u.click(dialog.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expectFieldError('Areas only reachable by air (pincode starts)', 'Each prefix only once', dialog));
+    server.routes['PUT /admin/shipping/settings'] = (c) => [200, { ...view(), settings: c.body }];
+    await u.click(dialog.getByLabelText('Cash on delivery wherever we deliver'));
+    await u.click(dialog.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(sent(server, 'PUT', '/admin/shipping/settings').at(-1)!.body).toEqual({ ...DEFAULT_SETTINGS.SHIPPING, defaultCod: false, estimatedDays: { min: 4, max: 8 } }));
+    const card = within(screen.getByRole('region', { name: 'Every other pincode' }));
+    expect(await card.findByText('Delivered, prepaid only')).toBeTruthy();
+    expect(card.getByText('4–8 days')).toBeTruthy();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    // Turning delivery off by default is spelled out.
+    await u.click(screen.getByRole('button', { name: 'Edit default' }));
+    dialog = within(await screen.findByRole('dialog', { name: 'Default delivery' }));
+    await u.click(dialog.getByLabelText('Deliver to every pincode unless it is blocked'));
+    await u.click(dialog.getByRole('button', { name: 'Save' }));
+    expect(await card.findByText('Not delivered (only pincodes with their own rule)')).toBeTruthy();
+  });
+
+  it('delivery areas: coverage counts, the warning for rules outside the directory, filters sent to the API', async () => {
+    const u = userEvent.setup();
     const { server } = setup({ path: '/shipping-rates?tab=areas', extra: {
-      'GET /admin/shipping/pincodes': () => page(rows), 'PUT /admin/shipping/pincodes/682011': (c) => [200, rule({ pincode: '682011', ...(c.body as object) })],
+      'GET /admin/shipping/coverage': () => page([cov({ pincode: '695009', place: null, zone: null, status: 'UNKNOWN', cod: false, rule: rule({ pincode: '695009', place: null }) })]),
+      'GET /admin/shipping/coverage/summary': () => [200, SUMMARY],
+    } });
+    const summary = await screen.findByRole('region', { name: 'Coverage' });
+    expect(within(summary).getByRole('alert').textContent).toMatch(/^1 rule is for pincodes missing from the postal directory/);
+    expect(within(summary).getByText('Known pincodes').nextElementSibling!.textContent).toBe('5');
+    await u.click(within(summary).getByRole('button', { name: 'Show them' }));
+    await waitFor(() => expect(sent(server, 'GET', '/admin/shipping/coverage').at(-1)!.query.get('filter')).toBe('unknown'));
+    expect((screen.getByLabelText('Show') as HTMLSelectElement).value).toBe('unknown');
+    const row = within(await screen.findByRole('table', { name: 'Pincodes' }));
+    expect(row.getAllByText('Not in the postal directory')).toBeTruthy();
+    expect(row.getByText('Not in postal directory')).toBeTruthy();
+    await u.click(within(summary).getByRole('button', { name: 'Prepaid only: 1. Show them' }));
+    await waitFor(() => expect(sent(server, 'GET', '/admin/shipping/coverage').at(-1)!.query.get('filter')).toBe('no_cod'));
+    await u.selectOptions(screen.getByLabelText('State'), '32');
+    await u.type(screen.getByLabelText('Pincode or place'), 'kochi{Enter}');
+    await waitFor(() => {
+      const q = sent(server, 'GET', '/admin/shipping/coverage').at(-1)!.query;
+      expect([q.get('state'), q.get('q'), q.get('filter'), q.get('limit')]).toEqual(['32', 'kochi', 'no_cod', '50']);
+    });
+    // A count stands for all such pincodes: the search and state are cleared.
+    await u.click(within(summary).getByRole('button', { name: 'Not delivered: 1. Show them' }));
+    await waitFor(() => {
+      const q = sent(server, 'GET', '/admin/shipping/coverage').at(-1)!.query;
+      expect([q.get('state'), q.get('q'), q.get('filter')]).toEqual([null, null, 'blocked']);
+    });
+    expect((screen.getByLabelText('Pincode or place') as HTMLInputElement).value).toBe('');
+  });
+
+  it('delivery areas: every pincode with its status; add a rule from a row, a new one, edit and remove', async () => {
+    const u = userEvent.setup();
+    const blocked = rule({ pincode: '110001', place: { district: 'NEW DELHI', state: 'Delhi' }, isServiceable: false, codAvailable: false, note: 'Courier strike' });
+    const rows = [
+      cov({ pincode: '110001', place: { office: 'NEW DELHI G.P.O', offices: 1, district: 'NEW DELHI', stateId: 7, state: 'Delhi' }, zone: { id: 2, name: 'Rest of India' }, status: 'NOT_DELIVERED', cod: false, rule: blocked }),
+      cov({ pincode: '400001', place: { office: 'MUMBAI G.P.O', offices: 3, district: 'MUMBAI', stateId: 20, state: 'Maharashtra' }, zone: null, status: 'NO_RATE', cod: false }),
+      cov({ pincode: '682011' }),
+      cov({ pincode: '744101', place: { office: 'PORT BLAIR H.O', offices: 1, district: 'SOUTH ANDAMAN', stateId: 35, state: 'Andaman and Nicobar Islands' }, zone: { id: 3, name: 'Remote' }, airOnly: true, cod: false }),
+    ];
+    const { server } = setup({ path: '/shipping-rates?tab=areas', extra: {
+      'GET /admin/shipping/coverage': () => page(rows), 'GET /admin/shipping/coverage/summary': () => [200, { ...SUMMARY, rulesOutsideDirectory: 0 }],
+      'PUT /admin/shipping/pincodes/682011': (c) => [200, rule({ pincode: '682011', ...(c.body as object) })],
+      'PUT /admin/shipping/pincodes/695009': (c) => [200, rule({ pincode: '695009', place: null, ...(c.body as object) })],
+      'PUT /admin/shipping/pincodes/110001': (c) => [200, { ...blocked, ...(c.body as object) }],
       'DELETE /admin/shipping/pincodes/110001': () => [200, { ok: true }],
     } });
-    const table = await screen.findByRole('table', { name: 'Pincode rules' });
-    await within(table).findByText('110001');
-    expect(within(table).getByText('Not delivered')).toBeTruthy();
-    await u.click(screen.getByRole('button', { name: 'Add pincode' }));
-    const dialog = within(await screen.findByRole('dialog', { name: 'Add a pincode rule' }));
-    await u.click(dialog.getByRole('button', { name: 'Save' }));
-    await waitFor(() => expectFieldError('Pincode', 'Enter a 6-digit pincode', dialog));
-    await u.type(dialog.getByLabelText('Pincode'), '682011');
+    const table = within(await screen.findByRole('table', { name: 'Pincodes' }));
+    await table.findByText('682011');
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(table.getByText('MUMBAI G.P.O +2 · MUMBAI, Maharashtra')).toBeTruthy();
+    expect(table.getByText('No shipping rate')).toBeTruthy();
+    expect(table.getByText('Its state has no zone, or the zone is off.')).toBeTruthy();
+    expect(table.getByText('Not delivered')).toBeTruthy();
+    expect(table.getByText('Courier strike')).toBeTruthy();
+    expect(table.getByText('Air-only: no resin')).toBeTruthy();
+    expect(table.getAllByText('4–7 days')).toHaveLength(2);   // delivered rows only
+
+    // From a row: the pincode is fixed; COD needs delivery (shared rule).
+    await u.click(table.getByRole('button', { name: 'Add a rule for 682011' }));
+    let dialog = within(await screen.findByRole('dialog', { name: 'Pincode 682011' }));
+    expect((dialog.getByLabelText('Pincode') as HTMLInputElement).readOnly).toBe(true);
     await u.click(dialog.getByLabelText('We deliver here'));
     await u.click(dialog.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(dialog.getByText('Cash on delivery needs delivery to this pincode')).toBeTruthy());
@@ -169,15 +265,52 @@ describe('Shipping Rates page', () => {
     await u.type(dialog.getByLabelText('Delivery to (days)'), '3');
     await u.click(dialog.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(sent(server, 'PUT', '/admin/shipping/pincodes/682011')[0]?.body).toEqual({ isServiceable: true, codAvailable: false, eddMinDays: 2, eddMaxDays: 3, note: null }));
-    await u.click(await screen.findByRole('button', { name: 'Remove the rule for 110001' }));
+    expect(await screen.findByText('682011 saved')).toBeTruthy();
+
+    // A new rule: empty → message under the field; a pincode outside the directory is saved with a warning.
+    await u.click(screen.getByRole('button', { name: 'Add rule' }));
+    dialog = within(await screen.findByRole('dialog', { name: 'Add a pincode rule' }));
+    await u.click(dialog.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expectFieldError('Pincode', 'Enter a 6-digit pincode', dialog));
+    await u.type(dialog.getByLabelText('Pincode'), '695009');
+    await u.click(dialog.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByText('695009 saved, but it isn’t in the postal directory, so checkout can’t charge shipping there.')).toBeTruthy();
+
+    // Edit keeps the rule's values; a server field error lands on its field.
+    server.routes['PUT /admin/shipping/pincodes/110001'] = () => err(400, 'VALIDATION_ERROR', 'Request validation failed', [{ location: 'body', path: 'note', message: 'Use at most 200 characters' }]);
+    await u.click(table.getByRole('button', { name: 'Edit the rule for 110001' }));
+    dialog = within(await screen.findByRole('dialog', { name: 'Pincode 110001' }));
+    expect((dialog.getByLabelText('Note (staff only, optional)') as HTMLInputElement).value).toBe('Courier strike');
+    await u.click(dialog.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expectFieldError('Note (staff only, optional)', 'Use at most 200 characters', dialog));
+    await u.click(dialog.getByRole('button', { name: 'Cancel' }));
+
+    await u.click(table.getByRole('button', { name: 'Remove the rule for 110001' }));
     await u.click(within(await screen.findByRole('dialog', { name: 'Remove the rule for 110001?' })).getByRole('button', { name: 'Remove' }));
     await waitFor(() => expect(sent(server, 'DELETE', '/admin/shipping/pincodes/110001')).toHaveLength(1));
+    expect(await screen.findByText('110001 follows the default again')).toBeTruthy();
+    // Every change reloads the list and the counts.
+    expect(sent(server, 'GET', '/admin/shipping/coverage/summary').length).toBeGreaterThan(1);
+  });
+
+  it('delivery areas: an empty postal directory is called out; a coverage failure offers Retry', async () => {
+    const u = userEvent.setup();
+    let fail = true;
+    setup({ path: '/shipping-rates?tab=areas', extra: {
+      'GET /admin/shipping/coverage': () => page([]),
+      'GET /admin/shipping/coverage/summary': () => (fail ? err(503, 'UNAVAILABLE') : [200, { known: 0, delivered: 0, deliveredCod: 0, notDelivered: 0, noRate: 0, airOnly: 0, rules: 0, rulesOutsideDirectory: 0 }]),
+    } });
+    expect(await screen.findByText(/Couldn’t load the coverage/, undefined, { timeout: 4000 })).toBeTruthy();   // after the one 5xx retry
+    fail = false;
+    await u.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText(/The postal directory is empty/)).toBeTruthy();
+    expect(await screen.findByText('No pincodes yet. Load the postal directory, or add a rule.')).toBeTruthy();
   });
 
   it('CSV import: checked first (problems by line, nothing saved), then saved on request', async () => {
     const u = userEvent.setup();
     let result = { rows: 2, created: 0, updated: 0, unchanged: 0, errors: [{ line: 3, message: 'deliverable must be yes or no' }], saved: false };
-    const { server } = setup({ path: '/shipping-rates?tab=areas', extra: { 'GET /admin/shipping/pincodes': () => page([]), 'POST /admin/shipping/pincodes/import': (c) => [200, (c.body as { dryRun: boolean }).dryRun ? result : { ...result, saved: true }] } });
+    const { server } = setup({ path: '/shipping-rates?tab=areas', extra: { 'GET /admin/shipping/coverage': () => page([]), 'GET /admin/shipping/coverage/summary': () => [200, SUMMARY], 'POST /admin/shipping/pincodes/import': (c) => [200, (c.body as { dryRun: boolean }).dryRun ? result : { ...result, saved: true }] } });
     await u.click(await screen.findByRole('button', { name: 'Import CSV' }));
     const dialog = within(await screen.findByRole('dialog', { name: 'Import pincode rules' }));
     const file = new File(['pincode,deliverable,cod\n560001,yes,yes\n560002,maybe,no\n'], 'rules.csv', { type: 'text/csv' });

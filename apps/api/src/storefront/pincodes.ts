@@ -13,7 +13,8 @@ export async function checkPincode(prisma: PrismaClient, pincode: string): Promi
     setting(prisma, 'SHIPPING'),
   ]);
   const place = office ? { district: office.district, state: office.state.name } : null;
-  if (!office && !rule) return { pincode, place: null, serviceable: false, codAvailable: false, surfaceOnly: false, surfaceAvailable: false, estimatedDays: null, reason: 'UNKNOWN_PINCODE' };
+  // Not in the directory: no state, so no zone or rate, even with a rule that says deliverable (checkout agrees).
+  if (!office && (!rule || rule.isServiceable)) return { pincode, place: null, serviceable: false, codAvailable: false, surfaceOnly: false, surfaceAvailable: false, estimatedDays: null, reason: 'UNKNOWN_PINCODE' };
   const serviceable = rule ? rule.isServiceable : ship.defaultServiceable;
   if (!serviceable) return { pincode, place, serviceable: false, codAvailable: false, surfaceOnly: false, surfaceAvailable: false, estimatedDays: null, reason: 'NOT_SERVICEABLE' };
   return {

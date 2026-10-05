@@ -198,7 +198,7 @@ export class CartService {
     // Shipping estimate for a pincode (task 4.5): the one algorithm with the destination's zone and delivery rule.
     const dest = pincode && lines.length ? await destinationFor(this.prisma, pincode) : null;
     let shipProblem: ShippingProblem | null = null;
-    if (dest && !dest.place && !dest.fromRule) shipProblem = 'UNKNOWN_PINCODE';
+    if (dest && !dest.place && dest.serviceability.serviceable) shipProblem = 'UNKNOWN_PINCODE';   // no state → no zone, whatever a rule says
     else if (dest && !dest.serviceability.serviceable) shipProblem = 'PINCODE_NOT_SERVICEABLE';
     else if (dest && !dest.zone) shipProblem = 'NO_ZONE';
     const destination = dest?.zone && !shipProblem ? { gstStateCode: dest.place?.gstStateCode ?? '', zone: dest.zone, serviceability: dest.serviceability } : null;

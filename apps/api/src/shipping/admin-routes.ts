@@ -2,10 +2,10 @@
 // slabs and extra ₹/kg, state → zone mapping, the SHIPPING setting (free-shipping threshold, heavy cap, packaging,
 // default delivery policy, air-only areas), per-pincode delivery rules with CSV import, and a preview calculator.
 import {
-  PINCODE_CSV_HEADER, PINCODE_CSV_MAX_ROWS, pincodeField, pincodeImportBody, pincodeListQuery, pincodeRuleBody, shippingCharge, shippingPreviewBody,
-  shippingSettingsBody, stateZonesBody, zoneBody, type Permission, type PincodeImportResult, type PincodeRuleView, type ShippingAdminView, type ShippingPreview,
+  coverageQuery, PINCODE_CSV_HEADER, PINCODE_CSV_MAX_ROWS, pincodeField, pincodeImportBody, pincodeListQuery, pincodeRuleBody, shippingCharge, shippingPreviewBody,
+  shippingSettingsBody, stateZonesBody, zoneBody, type Permission, type CoverageRow, type CoverageSummary, type PincodeImportResult, type PincodeRuleView, type SettingValue, type ShippingAdminView, type ShippingPreview,
 } from '@artq/shared';
-import type { Prisma, PrismaClient } from '@prisma/client';
+import { Prisma, type PrismaClient } from '@prisma/client';
 import type { RequestHandler, Router } from 'express';
 import { z } from 'zod';
 import { markReadOnly, recordAudit } from '../admin/router.js';
@@ -155,12 +155,59 @@ export function registerShippingRoutes(admin: AdminRoutes, prisma: PrismaClient,
     noStore(res).json(result);   // `saved: false` with the line errors when the file has problems
   });
 
+  // ── Coverage: every known pincode and what checkout does there (same rules as destinationFor) ──
+  r.get('/shipping/coverage/summary', can, async (_req, res) => {
+    const [s] = await prisma.$queryRaw<Record<keyof CoverageSummary, number>[]>`${coverageSql(await setting(prisma, 'SHIPPING'))}
+      SELECT count(*) FILTER (WHERE office IS NOT NULL)::int AS known,
+             count(*) FILTER (WHERE status = 'DELIVERED')::int AS delivered,
+             count(*) FILTER (WHERE status = 'DELIVERED' AND cod)::int AS "deliveredCod",
+             count(*) FILTER (WHERE status = 'NOT_DELIVERED' AND office IS NOT NULL)::int AS "notDelivered",
+             count(*) FILTER (WHERE status = 'NO_RATE')::int AS "noRate",
+             count(*) FILTER (WHERE air_only AND office IS NOT NULL)::int AS "airOnly",
+             count(*) FILTER (WHERE has_rule)::int AS rules,
+             count(*) FILTER (WHERE has_rule AND office IS NULL)::int AS "rulesOutsideDirectory"
+        FROM x`;
+    noStore(res).json(s! satisfies CoverageSummary);
+  });
+  r.get('/shipping/coverage', can, validate({ query: coverageQuery }), async (req, res) => {
+    const q = req.query as unknown as z.infer<typeof coverageQuery>;
+    const settings = await setting(prisma, 'SHIPPING');
+    const conds: Prisma.Sql[] = [];
+    if (q.q && /^\d+$/.test(q.q)) conds.push(Prisma.sql`pincode LIKE ${`${q.q.slice(0, 6)}%`}`);
+    else if (q.q) {
+      const like = `%${q.q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+      conds.push(Prisma.sql`pincode IN (SELECT pincode FROM postal_codes WHERE office_name ILIKE ${like} OR district ILIKE ${like})`);
+    }
+    if (q.state) conds.push(Prisma.sql`state_id = ${q.state}`);
+    const f = q.filter;
+    if (f) conds.push({
+      delivered: Prisma.sql`status = 'DELIVERED'`, no_cod: Prisma.sql`status = 'DELIVERED' AND NOT cod`, blocked: Prisma.sql`status = 'NOT_DELIVERED'`,
+      no_rate: Prisma.sql`status = 'NO_RATE'`, air_only: Prisma.sql`air_only`, own_rule: Prisma.sql`has_rule`, own_days: Prisma.sql`edd_min_days IS NOT NULL`,
+      unknown: Prisma.sql`status = 'UNKNOWN'`,
+    }[f]);
+    const where = conds.length ? Prisma.sql`WHERE ${Prisma.join(conds, ' AND ')}` : Prisma.empty;
+    const base = coverageSql(settings);
+    const [[{ total }], rows] = await Promise.all([
+      prisma.$queryRaw<[{ total: number }]>`${base} SELECT count(*)::int AS total FROM x ${where}`,
+      prisma.$queryRaw<CoverageDbRow[]>`${base} SELECT * FROM x ${where} ORDER BY pincode LIMIT ${q.limit} OFFSET ${(q.page - 1) * q.limit}`,
+    ]);
+    const data: CoverageRow[] = rows.map((x) => ({
+      pincode: x.pincode,
+      place: x.office ? { office: x.office, offices: x.offices, district: x.district!, stateId: x.state_id!, state: x.state_name! } : null,
+      zone: x.zone_id ? { id: x.zone_id, name: x.zone_name! } : null,
+      status: x.status, cod: x.status === 'DELIVERED' && x.cod, airOnly: x.air_only,
+      days: x.edd_min_days !== null ? { min: x.edd_min_days, max: x.edd_max_days! } : settings.estimatedDays,
+      rule: x.has_rule ? { pincode: x.pincode, place: x.office ? { district: x.district!, state: x.state_name! } : null, isServiceable: x.is_serviceable!, codAvailable: x.cod_available!, eddMinDays: x.edd_min_days, eddMaxDays: x.edd_max_days, note: x.note, source: x.source!, updatedAt: x.updated_at!.toISOString() } : null,
+    }));
+    noStore(res).json({ data, meta: { page: q.page, limit: q.limit, total, totalPages: Math.max(1, Math.ceil(total / q.limit)) } });
+  });
+
   r.post('/shipping/preview', can, validate({ body: shippingPreviewBody }), async (req, res) => {
     const b = req.body as z.output<typeof shippingPreviewBody>;
     const d = await destinationFor(prisma, b.pincode);
     const base = { pincode: b.pincode, place: d.place ? { district: d.place.district, state: d.place.state } : null, zone: d.zone ? { id: d.zone.id, name: d.zone.name } : null, surfaceAvailable: d.serviceability.surfaceAvailable, serviceability: { serviceable: d.serviceability.serviceable, codAvailable: d.serviceability.codAvailable, fromRule: d.fromRule } };
     let quote: ShippingPreview['quote'];
-    if (!d.place && !d.fromRule) quote = { ok: false, error: 'UNKNOWN_PINCODE' };
+    if (!d.place && d.serviceability.serviceable) quote = { ok: false, error: 'UNKNOWN_PINCODE' };
     else if (!d.zone) quote = { ok: false, error: d.serviceability.serviceable ? 'NO_ZONE' : 'PINCODE_NOT_SERVICEABLE' };
     else {
       const q = shippingCharge({ lines: [{ quantity: b.quantity, weightG: b.weightG, dimsCm: b.dimsCm, shippingClass: b.shippingClass }], zone: d.zone, serviceability: d.serviceability, subtotal: b.subtotal, couponDiscount: b.couponDiscount, freeShippingCoupon: b.freeShippingCoupon, settings: d.settings });
@@ -169,6 +216,43 @@ export function registerShippingRoutes(admin: AdminRoutes, prisma: PrismaClient,
     markReadOnly(res);   // a calculation: nothing changes
     noStore(res).json({ ...base, quote } satisfies ShippingPreview);
   });
+}
+
+type CoverageDbRow = {
+  pincode: string; office: string | null; offices: number; district: string | null; state_id: number | null; state_name: string | null; zone_id: number | null; zone_name: string | null;
+  has_rule: boolean; is_serviceable: boolean | null; cod_available: boolean | null; edd_min_days: number | null; edd_max_days: number | null; note: string | null; source: string | null; updated_at: Date | null;
+  cod: boolean; air_only: boolean; status: CoverageRow['status'];
+};
+
+/**
+ * One row per pincode (the postal directory, plus pincodes that only have a rule) as CTE `x`, with what checkout does
+ * there: the rule or the default policy, the state's zone (active with slabs = a rate), the air-only prefixes. Status
+ * follows the cart (cart/service.ts): unknown place → UNKNOWN (unless a rule blocks it), not deliverable → NOT_DELIVERED,
+ * no zone rate → NO_RATE, else DELIVERED.
+ */
+function coverageSql(s: SettingValue<'SHIPPING'>): Prisma.Sql {
+  const air = s.airOnlyPincodePrefixes.map((p) => `${p}%`);
+  return Prisma.sql`
+    WITH dir AS (
+      SELECT DISTINCT ON (pincode) pincode, office_name AS office, district, state_id, count(*) OVER (PARTITION BY pincode)::int AS offices
+        FROM postal_codes ORDER BY pincode, office_name
+    ), rated AS (
+      SELECT z.id, z.name, z.is_active AND EXISTS (SELECT 1 FROM shipping_rate_slabs sl WHERE sl.zone_id = z.id) AS has_rate FROM shipping_zones z
+    ), c AS (
+      SELECT coalesce(d.pincode, r.pincode)::text AS pincode, d.office, coalesce(d.offices, 0) AS offices, d.district, s.id AS state_id, s.name AS state_name,
+             CASE WHEN z.has_rate THEN z.id END AS zone_id, CASE WHEN z.has_rate THEN z.name END AS zone_name, coalesce(z.has_rate, false) AS has_rate,
+             r.pincode IS NOT NULL AS has_rule, r.is_serviceable, r.cod_available, r.edd_min_days, r.edd_max_days, r.note, r.source, r.updated_at,
+             coalesce(r.is_serviceable, ${s.defaultServiceable}) AS serviceable,
+             coalesce(r.is_serviceable, ${s.defaultServiceable}) AND coalesce(r.cod_available, ${s.defaultCod}) AS cod
+        FROM dir d
+        FULL JOIN pincode_serviceability r ON r.pincode = d.pincode
+        LEFT JOIN states s ON s.id = d.state_id
+        LEFT JOIN rated z ON z.id = s.shipping_zone_id
+    ), x AS (
+      SELECT c.*, coalesce(c.pincode LIKE ANY (${air}::text[]), false) AS air_only,
+             CASE WHEN c.office IS NULL AND c.serviceable THEN 'UNKNOWN' WHEN NOT c.serviceable THEN 'NOT_DELIVERED' WHEN NOT c.has_rate THEN 'NO_RATE' ELSE 'DELIVERED' END AS status
+        FROM c
+    )`;
 }
 
 type Rule = z.output<typeof pincodeRuleBody> & { pincode: string };

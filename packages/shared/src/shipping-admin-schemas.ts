@@ -59,6 +59,41 @@ export const pincodeListQuery = z.strictObject({
   limit: z.coerce.number().int().min(1).max(100).default(50),
 });
 
+/**
+ * GET /admin/shipping/coverage: every pincode the store knows (the postal directory plus pincodes that only have a
+ * rule), with what checkout would do there. `q` is pincode digits (prefix) or part of a place / district name.
+ */
+export const COVERAGE_FILTERS = ['delivered', 'no_cod', 'blocked', 'no_rate', 'air_only', 'own_rule', 'own_days', 'unknown'] as const;
+export const coverageQuery = z.strictObject({
+  q: z.string().trim().max(60, 'Use at most 60 characters').regex(/^[\p{L}\d .'()-]*$/u, 'Use a pincode or a place name').optional(),
+  state: z.coerce.number().int().positive().optional(),
+  filter: z.enum(COVERAGE_FILTERS).optional(),
+  page: z.coerce.number().int().min(1).max(10_000).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+});
+/** What checkout does for a pincode: UNKNOWN = not in the postal directory, so no state, zone or rate. */
+export type CoverageStatus = 'DELIVERED' | 'NOT_DELIVERED' | 'NO_RATE' | 'UNKNOWN';
+export type CoverageRow = {
+  pincode: string;
+  place: { office: string; offices: number; district: string; stateId: number; state: string } | null;
+  zone: { id: number; name: string } | null;
+  status: CoverageStatus;
+  /** Cash on delivery (only when delivered). */
+  cod: boolean;
+  /** Inside an air-only prefix: surface-only items (resin) cannot ship here. */
+  airOnly: boolean;
+  days: { min: number; max: number };
+  /** The pincode's own rule; null = it follows the default. */
+  rule: PincodeRuleView | null;
+};
+export type CoverageSummary = {
+  /** Pincodes in the postal directory. */
+  known: number; delivered: number; deliveredCod: number; notDelivered: number; noRate: number; airOnly: number;
+  rules: number;
+  /** Rules for pincodes missing from the postal directory: checkout cannot place or charge them. */
+  rulesOutsideDirectory: number;
+};
+
 export const PINCODE_CSV_MAX_ROWS = 20_000;
 export const PINCODE_CSV_HEADER = ['pincode', 'deliverable', 'cod', 'edd_min_days', 'edd_max_days', 'note'] as const;
 /** POST /admin/shipping/pincodes/import: the CSV text; `dryRun` checks without saving. All rows or none are saved. */

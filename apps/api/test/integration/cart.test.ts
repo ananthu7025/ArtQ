@@ -344,6 +344,11 @@ describe('cart: shipping estimate for a pincode (task 4.5, ?pincode= on every ca
     const s = shopper();
     await s.add(p.variantIds[0]!);
     expect((await s.get('/v1/cart?pincode=999999')).body.totals).toMatchObject({ shipping: { amount: null, problem: 'UNKNOWN_PINCODE', pincode: '999999' }, total: 20_000 });
+    // A deliverable rule for a pincode outside the directory is still unknown (no state → no zone); a blocking rule blocks.
+    await prisma.pincodeServiceability.createMany({ data: [{ pincode: '999998', isServiceable: true, codAvailable: true }, { pincode: '999997', isServiceable: false, codAvailable: false }] });
+    expect((await s.get('/v1/cart?pincode=999998')).body.totals.shipping.problem).toBe('UNKNOWN_PINCODE');
+    expect((await s.get('/v1/cart?pincode=999997')).body.totals.shipping.problem).toBe('PINCODE_NOT_SERVICEABLE');
+    await prisma.pincodeServiceability.deleteMany({ where: { pincode: { in: ['999998', '999997'] } } });
     expect((await s.get('/v1/cart?pincode=744101')).body.totals.shipping).toMatchObject({ amount: null, problem: 'SHIPPING_RESTRICTED' });
     await prisma.pincodeServiceability.create({ data: { pincode: '682011', isServiceable: false, codAvailable: false } });
     expect((await s.get('/v1/cart?pincode=682011')).body.totals.shipping.problem).toBe('PINCODE_NOT_SERVICEABLE');

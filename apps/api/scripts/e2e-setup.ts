@@ -1,4 +1,4 @@
-// Prepares the end-to-end database: drop/create, real migrations, real seed (super admin), plus a STAFF user.
+// Prepares the end-to-end database: drop/create, real migrations, real seed (super admin, sample postal codes), plus a STAFF user.
 //   E2E_DATABASE_URL=postgresql://artq:artq@localhost:55432/artq_e2e tsx scripts/e2e-setup.ts
 // Refuses to touch any database whose name is not artq_e2e.
 import { execFileSync } from 'node:child_process';
@@ -32,7 +32,8 @@ const prismaCli = join(dirname(createRequire(join(api, 'package.json')).resolve(
 execFileSync(process.execPath, [prismaCli, 'migrate', 'deploy', '--schema', join(api, 'prisma', 'schema.prisma')], { env: { ...process.env, DATABASE_URL: url }, stdio: 'pipe' });
 
 const prisma = new PrismaClient({ datasourceUrl: url });
-await runSeed(prisma, { admin: E2E_USERS.superAdmin });
+// The repo's 16-row India Post sample, so pincodes resolve to a state (the full directory is loaded at deploy).
+await runSeed(prisma, { admin: E2E_USERS.superAdmin, postalFile: join(api, 'prisma', 'seed-data', 'postal-codes.sample.csv') });
 await prisma.user.create({
   data: { email: E2E_USERS.staff.email, name: E2E_USERS.staff.name, role: 'STAFF', status: 'ACTIVE', emailVerifiedAt: new Date(), passwordHash: await hashPassword(E2E_USERS.staff.password) },
 });

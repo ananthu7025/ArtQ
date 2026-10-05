@@ -122,8 +122,15 @@ describe('pincode check', () => {
   });
 
   it('a pincode not in the postal directory is reported as unknown (probably mistyped), not as deliverable', async () => {
+    const an = await prisma.state.create({ data: { countryId: (await prisma.country.findUniqueOrThrow({ where: { iso2: 'IN' } })).id, name: 'Andaman and Nicobar Islands', code: 'AN', gstCode: '35' } });
+    await prisma.postalCode.create({ data: { pincode: '744101', officeName: 'PORT BLAIR H.O', district: 'SOUTH ANDAMAN', stateId: an.id } });
     await prisma.pincodeServiceability.create({ data: { pincode: '744101', isServiceable: true, codAvailable: false } });   // Port Blair: air-only area (D-7)
     expect((await check('744101')).body).toMatchObject({ serviceable: true, surfaceAvailable: false });
+    // A rule cannot stand in for the directory: without a state there is no zone or rate, so checkout could not charge it.
+    await prisma.pincodeServiceability.create({ data: { pincode: '999998', isServiceable: true, codAvailable: true } });
+    expect((await check('999998')).body).toMatchObject({ place: null, serviceable: false, reason: 'UNKNOWN_PINCODE' });
+    await prisma.pincodeServiceability.create({ data: { pincode: '999997', isServiceable: false, codAvailable: false } });
+    expect((await check('999997')).body).toMatchObject({ serviceable: false, reason: 'NOT_SERVICEABLE' });
     expect((await check('999999')).body).toEqual({ pincode: '999999', place: null, serviceable: false, codAvailable: false, surfaceOnly: false, surfaceAvailable: false, estimatedDays: null, reason: 'UNKNOWN_PINCODE' });
   });
 
