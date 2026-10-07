@@ -15,6 +15,8 @@ const DATA: Record<string, Record<string, unknown>> = {
   account_deleted: {},
   order_placed: { orderNumber: 'AQ10234', firstName: 'Hema', paymentMethod: 'COD', lines: [{ name: 'Epoxy <Resin>', label: '500 ml', quantity: 2, total: 99_800 }],
     totals: { subtotal: 99_800, couponDiscount: 5000, couponCode: 'WELCOME10', shipping: 7000, codFee: 4000, total: 105_800 }, address: ['Hema R', '12 Rose Villa', 'Kochi, Kerala 682011'], estimate: '4–7 days', setPasswordLink: null },
+  order_confirmed: { orderNumber: 'AQ1', firstName: 'Hema', estimate: '4–7 days' },
+  order_delivered: { orderNumber: 'AQ1', firstName: 'Hema' },
   order_expired: { orderNumber: 'AQ1' },
   order_cancelled: { orderNumber: 'AQ1' },
   payment_refund_notice: { orderNumber: 'AQ1', reason: 'EXCESS', amount: 49_900 },
@@ -82,6 +84,12 @@ describe('email templates', () => {
     expect(withLink.text).toContain('Your payment is confirmed.');
     expect(withLink.html).toContain('href="https://artq.in/set-password?token=t&quot;x"');
     expect(() => render('order_placed', { ...DATA.order_placed!, lines: [] })).toThrow('lines');
+  });
+  it('confirmed / delivered: greet by name, name the order; missing data fails', () => {
+    expect(render('order_confirmed', DATA.order_confirmed!)).toMatchObject({ subject: 'Order AQ1 confirmed', text: expect.stringContaining('We usually deliver in 4–7 days') });
+    expect(render('order_delivered', DATA.order_delivered!)).toMatchObject({ subject: 'Order AQ1 delivered', text: expect.stringMatching(/^Hi Hema, your order AQ1 has been delivered/) });
+    expect(() => render('order_confirmed', { orderNumber: 'AQ1', firstName: 'Hema' })).toThrow(/estimate/);
+    expect(render('order_delivered', { orderNumber: 'AQ1', firstName: '<b>' }).html).toContain('&lt;b&gt;');
   });
   it('refund notice explains why (paid twice / arrived late)', () => {
     expect(render('payment_refund_notice', DATA.payment_refund_notice!).text).toMatch(/two payments for order AQ1\. The extra payment of ₹499/);

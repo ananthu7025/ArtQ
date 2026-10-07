@@ -116,6 +116,16 @@ const TEMPLATES: Record<string, (d: Record<string, unknown>) => Rendered> = {
       html: orderHtml(`Order ${n} placed`, intro, lines(d.lines), t, strs(d.address, 'address'), outro, action),
     };
   },
+  order_confirmed: (d) => {
+    const n = str(d.orderNumber, 'orderNumber');
+    const intro = [`Hi ${str(d.firstName, 'firstName')}, we’ve confirmed your order ${n} and are getting it ready.`, `We usually deliver in ${str(d.estimate, 'estimate')}. We’ll email you again when it ships.`];
+    return { subject: `Order ${n} confirmed`, text: intro.join(' '), html: layout(`Order ${n} confirmed`, intro) };
+  },
+  order_delivered: (d) => {
+    const n = str(d.orderNumber, 'orderNumber');
+    const intro = [`Hi ${str(d.firstName, 'firstName')}, your order ${n} has been delivered.`, 'We hope you enjoy creating with it. If anything is wrong with your order, reply to this email and we’ll help.'];
+    return { subject: `Order ${n} delivered`, text: intro.join(' '), html: layout(`Order ${n} delivered`, intro) };
+  },
   order_expired: (d) => {
     const n = str(d.orderNumber, 'orderNumber');
     return {

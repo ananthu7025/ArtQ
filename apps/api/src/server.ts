@@ -26,6 +26,7 @@ import { importEnqueue } from './imports/queues.js';
 import { registerImportRoutes } from './imports/routes.js';
 import { registerInventoryRoutes } from './inventory/routes.js';
 import { registerCouponRoutes } from './coupons/admin-routes.js';
+import { registerOrderRoutes } from './orders/admin-routes.js';
 import { registerShippingRoutes } from './shipping/admin-routes.js';
 import { ImportService } from './imports/service.js';
 import { razorpayProvider } from './webhooks/provider.js';
@@ -84,6 +85,7 @@ for (const q of [importValidateQueue, importApplyQueue]) q.on('error', (err) => 
 registerInventoryRoutes(admin, prisma);
 registerCouponRoutes(admin, prisma);
 registerShippingRoutes(admin, prisma, appCache);
+registerOrderRoutes(admin, prisma);
 registerImportRoutes(admin, prisma, new ImportService({ prisma, readFile: (m) => media.read(m), enqueue: importEnqueue(importValidateQueue, importApplyQueue) }));
 
 const app = createApp({

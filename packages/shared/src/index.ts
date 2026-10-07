@@ -19,3 +19,4 @@ export * from './cache-policy.js';
 export * from './coupon-schemas.js';
 export * from './shipping-admin-schemas.js';
 export * from './checkout-schemas.js';
+export * from './order-admin-schemas.js';

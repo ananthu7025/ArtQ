@@ -522,6 +522,7 @@ Domain transactions call `aq_emit(…)`, which inserts one `outbox_events` row a
 |-------|-----------|
 | `order.placed` | customer email, admin email + notification, analytics server event (post-launch) |
 | `order.status_changed` (confirmed/shipped/delivered/cancelled/expired) | customer email (respecting notify flag) |
+| `order.email_resend` (task 5.1) | customer email (an admin sends `order_placed` / `order_confirmed` / `order_delivered` again) |
 | `payment.exception_raised` | admin notification + email |
 | `refund.requested` | refund sender (provider call) |
 | `refund.processed` / `refund.failed` | customer email, credit-note issuer, admin notification |

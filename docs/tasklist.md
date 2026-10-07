@@ -199,7 +199,8 @@ Reconciliation, refund safety, authorization and inventory correctness are **MVP
 - [ ] **M2 demo** on staging.
 
 ## Phase 5: Merchant operations (19 d) → **M3**
-- [ ] **5.1 Admin Orders** (2.5 d): list filters (4 dimensions + exceptions), detail, transitions, packing slip, address correction, resend email.
+- [x] **5.1 Admin Orders** (2.5 d): list filters (4 dimensions + exceptions), detail, transitions, packing slip, address correction, resend email.
+  **Done 2026-10-07:** API list/detail (contact masked without `customers:write`), confirm / pack / out for delivery / delivered (COD → cash collected) as conditional updates with history, audit and `order.status_changed` emails (`order_confirmed`, `order_delivered`; "email the customer" switch), address correction checked like checkout (only before packing, `version`), staff note, resend (`order.email_resend`), packing slip PDF on request (@react-pdf). Email logs now carry `order_id`. Admin Orders list (filters, four status pills) and order detail (next step as one button, refused steps explained and reloaded, address dialog on the shared schema with server field errors, note, emails, timeline). Ship / cancel / RTO / lost are 5.2, 5.3, 5.6. Tests: 13 API integration (guard mutation-checked), 2 email-unit, 7 component, 1 Playwright (real worker email).
 - [ ] **5.2 Dispatch & invoices** (2 d): convert database.md §8.4 into an `aq_dispatch_order` function (consume reservations, shipment, invoice numbering + immutable snapshot, outbox) **and add a doc-validation check for it**; PDF render (private).
   ✅ Invoice sequence gap-free under 20 concurrent dispatches.
 - [ ] **5.3 Cancellation** (1.5 d): customer/admin, release, automatic refund for prepaid, coupon reversal policy.

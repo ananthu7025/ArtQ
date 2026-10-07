@@ -31,7 +31,7 @@ export class EmailInProgressError extends Error {
   constructor(key: string) { super(`email ${key} is being sent by another worker`); this.name = 'EmailInProgressError'; }
 }
 
-type Message = { to: string; template: string; rendered: Rendered; userId: number | null; dedupeKey: string };
+type Message = { to: string; template: string; rendered: Rendered; userId: number | null; orderId: number | null; dedupeKey: string };
 
 const dedupeKey = (deliveryId: number, to: string) => `outbox-${deliveryId}-${createHash('sha256').update(to.toLowerCase()).digest('hex').slice(0, 12)}`;
 
@@ -40,6 +40,19 @@ const CUSTOMER_ORDER_EMAIL: Record<string, string> = {
   'order.placed': 'order_placed', 'order.expired': 'order_expired', 'order.cancelled': 'order_cancelled',
   'payment.refund_notice': 'payment_refund_notice', 'refund.processed': 'refund_processed',
 };
+/** `order.status_changed` (task 5.1): the new value → the customer's email. */
+const STATUS_EMAIL: Record<string, string> = { CONFIRMED: 'order_confirmed', DELIVERED: 'order_delivered' };
+/** `order.email_resend` (task 5.1): an admin sends one of these again; a new delivery, so a new dedupe key. */
+const RESEND_EMAIL = new Set(['order_placed', 'order_confirmed', 'order_delivered']);
+
+/** The order email template for a customer event, or null when the event is not an order email. */
+function orderTemplate(ev: OutboxEventRow): string | null {
+  const p = (ev.payload ?? {}) as Record<string, unknown>;
+  if (CUSTOMER_ORDER_EMAIL[ev.eventType]) return CUSTOMER_ORDER_EMAIL[ev.eventType]!;
+  if (ev.eventType === 'order.status_changed') return STATUS_EMAIL[String(p.to)] ?? null;
+  if (ev.eventType === 'order.email_resend') return RESEND_EMAIL.has(String(p.template)) ? String(p.template) : null;
+  return null;
+}
 
 async function orderMessage(tx: Prisma.TransactionClient, ev: OutboxEventRow, template: string, links: EmailLinks | undefined): Promise<Message[]> {
   const p = (ev.payload ?? {}) as Record<string, unknown>;
@@ -47,17 +60,18 @@ async function orderMessage(tx: Prisma.TransactionClient, ev: OutboxEventRow, te
   const o = Number.isSafeInteger(id) && id > 0 ? await tx.order.findUnique({ where: { id }, include: { items: { orderBy: { id: 'asc' } } } }) : null;
   if (!o) throw new TypeError(`${ev.eventType} event ${ev.eventId}: order ${String(p.order_id)} not found`);
   const data = await orderEmailData(tx, o, p, links);
-  return [{ to: o.contactEmail, template, rendered: render(template, data), userId: o.userId, dedupeKey: dedupeKey(ev.deliveryId, o.contactEmail) }];
+  return [{ to: o.contactEmail, template, rendered: render(template, data), userId: o.userId, orderId: o.id, dedupeKey: dedupeKey(ev.deliveryId, o.contactEmail) }];
 }
 
 async function messagesFor(tx: Prisma.TransactionClient, consumer: EmailConsumer, ev: OutboxEventRow, links?: EmailLinks): Promise<Message[]> {
   const p = (ev.payload ?? {}) as Record<string, unknown>;
-  if (consumer === 'email.customer' && CUSTOMER_ORDER_EMAIL[ev.eventType]) return orderMessage(tx, ev, CUSTOMER_ORDER_EMAIL[ev.eventType]!, links);
+  const orderTpl = consumer === 'email.customer' ? orderTemplate(ev) : null;
+  if (orderTpl) return orderMessage(tx, ev, orderTpl, links);
   if (consumer === 'email.admin' && ev.eventType === 'order.placed') {
     const o = await tx.order.findUnique({ where: { id: Number(p.order_id) }, include: { items: true } });
     if (!o) throw new TypeError(`order.placed event ${ev.eventId}: order not found`);
     const rendered = render('admin_order_placed', { orderNumber: o.orderNumber, total: o.total, paymentMethod: o.paymentMethod, itemCount: o.items.reduce((n, i) => n + i.quantity, 0), customer: `${o.shipName}, ${o.shipCity}` });
-    return (await adminRecipients(tx)).map((to) => ({ to, template: 'admin_order_placed', rendered, userId: null, dedupeKey: dedupeKey(ev.deliveryId, to) }));
+    return (await adminRecipients(tx)).map((to) => ({ to, template: 'admin_order_placed', rendered, userId: null, orderId: o.id, dedupeKey: dedupeKey(ev.deliveryId, to) }));
   }
   if (consumer === 'email.customer') {
     if (ev.eventType !== 'email.auth') throw new UnsupportedEmailEventError(consumer, ev.eventType);
@@ -65,11 +79,11 @@ async function messagesFor(tx: Prisma.TransactionClient, consumer: EmailConsumer
     const template = String(p.template ?? '');
     if (!to.includes('@')) throw new TypeError(`email.auth event ${ev.eventId} has no recipient`);
     const userId = /^\d+$/.test(ev.aggregateId) && ev.aggregateId !== '0' ? Number(ev.aggregateId) : null;
-    return [{ to, template, rendered: render(template, (p.data ?? {}) as Record<string, unknown>), userId, dedupeKey: dedupeKey(ev.deliveryId, to) }];
+    return [{ to, template, rendered: render(template, (p.data ?? {}) as Record<string, unknown>), userId, orderId: null, dedupeKey: dedupeKey(ev.deliveryId, to) }];
   }
   if (ev.eventType !== 'payment.exception_raised') throw new UnsupportedEmailEventError(consumer, ev.eventType);
   const rendered = render('admin_payment_exception', p);
-  return (await adminRecipients(tx)).map((to) => ({ to, template: 'admin_payment_exception', rendered, userId: null, dedupeKey: dedupeKey(ev.deliveryId, to) }));
+  return (await adminRecipients(tx)).map((to) => ({ to, template: 'admin_payment_exception', rendered, userId: null, orderId: null, dedupeKey: dedupeKey(ev.deliveryId, to) }));
 }
 
 async function adminRecipients(tx: Prisma.TransactionClient): Promise<string[]> {
@@ -99,8 +113,8 @@ export async function processEmailDelivery(d: EmailDeps, consumer: EmailConsumer
             UPDATE email_logs SET status = 'SENDING', attempts = attempts + 1, error = NULL, updated_at = now()
              WHERE id = ${row.id} RETURNING id, floor(extract(epoch FROM created_at))::int AS created`
         : await tx.$queryRaw<{ id: number; created: number }[]>`
-            INSERT INTO email_logs (dedupe_key, outbox_delivery_id, to_email, template, subject, status, attempts, user_id, updated_at)
-            VALUES (${m.dedupeKey}, ${deliveryId}::bigint, ${m.to}, ${m.template}, ${m.rendered.subject.slice(0, 200)}, 'SENDING', 1, ${m.userId}::int, now())
+            INSERT INTO email_logs (dedupe_key, outbox_delivery_id, to_email, template, subject, status, attempts, user_id, order_id, updated_at)
+            VALUES (${m.dedupeKey}, ${deliveryId}::bigint, ${m.to}, ${m.template}, ${m.rendered.subject.slice(0, 200)}, 'SENDING', 1, ${m.userId}::int, ${m.orderId}::int, now())
             RETURNING id, floor(extract(epoch FROM created_at))::int AS created`;
       // Stable across retries of this row, unique across database resets (provider keys live for 24 h).
       pending.push({ m, logId: log!.id, idempotencyKey: `artq-${m.dedupeKey}-${log!.id}-${log!.created}` });
