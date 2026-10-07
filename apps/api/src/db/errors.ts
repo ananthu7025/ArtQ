@@ -20,6 +20,8 @@ export const DB_ERROR_CODES = [
   'STOCK_ALREADY_SET',
   'NOT_PUBLISHABLE',
   'INVALID_TRANSITION',
+  'AWB_IN_USE',
+  'INVOICE_INVALID',
   'INVARIANT',
 ] as const;
 export type DbErrorCode = (typeof DB_ERROR_CODES)[number];

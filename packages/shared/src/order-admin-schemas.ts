@@ -32,6 +32,17 @@ export const adminOrderListQuery = z.strictObject({
 
 /** POST /admin/orders/:id/confirm and /deliver: email the customer about it (default yes). */
 export const orderNotifyBody = z.strictObject({ notifyCustomer: z.boolean().default(true) });
+/** POST /admin/orders/:id/ship (task 5.2): dispatch issues the tax invoice and consumes the stock. */
+export const shipOrderBody = z.strictObject({
+  courierName: z.string({ error: 'Enter the courier' }).trim().min(2, 'Enter the courier').max(80, 'Use at most 80 characters'),
+  awbNumber: z.string({ error: 'Enter the AWB / tracking number' }).trim().toUpperCase()
+    .regex(/^[A-Z0-9-]{4,40}$/, 'Use 4 to 40 letters, digits or dashes'),
+  trackingUrl: z.string().trim().max(500, 'Use at most 500 characters').transform((v) => v || null)
+    .pipe(z.url({ protocol: /^https$/, error: 'Enter a full https:// link' }).nullable()).nullable().default(null),
+  weightG: z.number({ error: 'Enter the weight in grams' }).int('Use whole grams').min(1, 'Use at least 1 g').max(100_000, 'At most 100 kg').nullable().default(null),
+  notifyCustomer: z.boolean().default(true),
+});
+export type ShipOrderInput = z.input<typeof shipOrderBody>;
 /** POST /admin/orders/:id/pack and /out-for-delivery. */
 export const orderEmptyBody = z.strictObject({});
 
@@ -49,12 +60,12 @@ export const orderPatchBody = z.strictObject({
 export type OrderPatchInput = z.input<typeof orderPatchBody>;
 
 /** Customer emails an admin can send again (POST /admin/orders/:id/resend-email). */
-export const RESENDABLE_EMAILS = ['order_placed', 'order_confirmed', 'order_delivered'] as const;
+export const RESENDABLE_EMAILS = ['order_placed', 'order_confirmed', 'order_shipped', 'order_delivered'] as const;
 export type ResendableEmail = (typeof RESENDABLE_EMAILS)[number];
 export const resendEmailBody = z.strictObject({ template: z.enum(RESENDABLE_EMAILS, { error: 'Choose an email' }) });
 
 /** What staff can do to the order now (the server checks again). */
-export type OrderAction = 'confirm' | 'pack' | 'out-for-delivery' | 'deliver' | 'edit-address';
+export type OrderAction = 'confirm' | 'pack' | 'ship' | 'out-for-delivery' | 'deliver' | 'edit-address';
 
 export type AdminOrderRow = {
   id: number; orderNumber: string; createdAt: string; placedAt: string | null;

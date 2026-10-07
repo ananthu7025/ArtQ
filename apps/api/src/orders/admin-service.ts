@@ -5,7 +5,7 @@
 // Every transition is one conditional UPDATE (the order row is the lock, database.md §4.1), so two people pressing the
 // same button change the order once and the second gets INVALID_TRANSITION. Each change writes order_status_history,
 // bumps `version`, is audited, and (confirm, deliver) emits `order.status_changed` for the customer email.
-// Ship (dispatch: stock and invoice) is task 5.2, cancellation 5.3, RTO and lost 5.6.
+// Ship (dispatch: stock and invoice) is in dispatch.ts (task 5.2); cancellation 5.3, RTO and lost 5.6.
 import {
   maskContact, parseSetting, type orderAddressBody, type orderPatchBody, surfaceAvailable, type AdminOrderDetail, type AdminOrderRow, type OrderAction, type ResendableEmail, type adminOrderListQuery,
 } from '@artq/shared';
@@ -28,6 +28,7 @@ export function actionsFor(o: OrderState): OrderAction[] {
   const paid = FULFILLABLE_PAYMENT.includes(o.paymentStatus);
   if (o.status === 'PLACED' && paid) a.push('confirm');
   if (o.status === 'CONFIRMED' && o.fulfilmentStatus === 'UNFULFILLED' && paid) a.push('pack');
+  if (o.status === 'CONFIRMED' && o.fulfilmentStatus === 'PACKED' && paid) a.push('ship');
   if (o.status === 'CONFIRMED' && o.fulfilmentStatus === 'SHIPPED') a.push('out-for-delivery');
   if (o.status === 'CONFIRMED' && ['SHIPPED', 'OUT_FOR_DELIVERY'].includes(o.fulfilmentStatus)) a.push('deliver');
   if (['PLACED', 'CONFIRMED'].includes(o.status) && o.fulfilmentStatus === 'UNFULFILLED') a.push('edit-address');
@@ -37,6 +38,7 @@ export function resendableFor(o: OrderState): ResendableEmail[] {
   const r: ResendableEmail[] = [];
   if (['PLACED', 'CONFIRMED', 'COMPLETED'].includes(o.status)) r.push('order_placed');
   if (['CONFIRMED', 'COMPLETED'].includes(o.status)) r.push('order_confirmed');
+  if (['SHIPPED', 'OUT_FOR_DELIVERY', 'DELIVERED'].includes(o.fulfilmentStatus)) r.push('order_shipped');
   if (o.fulfilmentStatus === 'DELIVERED') r.push('order_delivered');
   return r;
 }

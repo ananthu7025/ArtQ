@@ -4,8 +4,9 @@ Executable checks for the **schema, integrity SQL and money/stock database funct
 `docs/database.md`**. This is not the application test suite (no application code exists yet).
 
 ## What it does
-1. Extracts the blocks marked `<!-- validate:schema.prisma -->`, `<!-- validate:0002.sql -->` and
-   `<!-- validate:0003.sql -->` from `docs/database.md` into `.fixtures/` (git-ignored).
+1. Extracts the blocks marked `<!-- validate:schema.prisma -->`, `<!-- validate:0002.sql -->`,
+   `<!-- validate:0003.sql -->` and any later doc-owned migration (`<!-- validate:0008.sql -->`, task 5.2) from
+   `docs/database.md` into `.fixtures/` (git-ignored); later blocks are applied after 0003 in number order.
 2. `prisma validate`, then `prisma migrate diff --from-empty` → `0001.sql`.
 3. Starts a throwaway PostgreSQL (default: the pinned **16.14** binaries from `embedded-postgres`;
    override with `PG_BIN_DIR`) and applies 0001 + 0002 + 0003 to a template database.
@@ -43,6 +44,7 @@ Requirements: Node 24, `redis-server` on PATH (or `REDIS_SERVER`), and a platfor
 | C14 | UNLINKED payment recovery: capture before mapping, concurrent recovery once, identity conflicts rejected |
 | C15 | Payments first observed refunded/partially refunded; CAPTURED→REFUNDED; out-of-order and concurrent observations |
 | C16 | AUTHORIZED→REFUNDED returns the order to UNPAID and expiry releases once; later provider refunds gate refund capacity until reconciled (no double counting) |
+| C17 | `aq_dispatch_order` (0008): gap-free invoice numbers under 20 concurrent dispatches with refusals racing among them; one order ships and consumes stock once; not-packed / reused-AWB / bad-total refusals leave no trace; a new financial year starts its own series |
 
 ## What a PASS does and does not prove
 - **Proves:** the embedded schema compiles; the SQL applies on the tested PostgreSQL versions; the database

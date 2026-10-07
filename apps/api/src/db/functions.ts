@@ -171,6 +171,17 @@ export function reverseCoupon(db: Db, orderId: number) {
 }
 
 /** Migration 0007: a pending COD order → PLACED + COD_PENDING (coupon redeemed, cart converted, order.placed); 'DUPLICATE' if already. Raises INVALID_TRANSITION. */
+/** The invoice content the API computes for dispatch (database.md §8.4); amounts in paise. */
+export type DispatchInvoice = {
+  fy: string; seller: unknown; buyer: unknown; place_of_supply: string;
+  lines: { kind: 'ITEM' | 'SHIPPING' | 'COD_FEE'; taxable: number; cgst: number; sgst: number; igst: number; [k: string]: unknown }[];
+  taxable_total: number; cgst_total: number; sgst_total: number; igst_total: number; rounding_adjustment: number; grand_total: number;
+};
+export function dispatchOrder(db: Db, a: { orderId: number; courier: string; awb: string; trackingUrl: string | null; weightG: number | null; invoice: DispatchInvoice; notify: boolean; actorId: number }) {
+  return scalar<{ invoice_id: number; invoice_number: string; shipment_id: number }>(db, Prisma.sql`SELECT aq_dispatch_order(${a.orderId}::int, ${a.courier}, ${a.awb}, ${a.trackingUrl},
+    ${a.weightG}::int, ${json(a.invoice)}, ${a.notify}, ${a.actorId}::int) AS r`);
+}
+
 export function placeCodOrder(db: Db, orderId: number, actor: ActorType) {
   return scalar<'PLACED' | 'DUPLICATE'>(db, Prisma.sql`SELECT aq_place_cod_order(${orderId}::int, ${actor}) AS r`);
 }

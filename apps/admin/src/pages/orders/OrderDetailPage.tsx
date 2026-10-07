@@ -1,15 +1,16 @@
 // Order detail (task 5.1; product.md §7.5 "Orders", api.md §4.3) [orders:read; actions orders:fulfil]: the four status
-// dimensions, the next step as one button (Confirm → Pack; Out for delivery → Mark delivered), the packing slip, items
+// dimensions, the next step as one button (Confirm → Pack → Ship → Out for delivery → Mark delivered), the packing slip
+// and (once shipped) the tax invoice, items
 // and totals, payments and refunds, the timeline, customer and delivery address (correctable before packing), the
-// staff note, and the emails sent (any fitting one can be sent again). Ship, cancel, refunds, RTO and returns arrive
-// with tasks 5.2–5.6. A refused step (someone else moved the order) explains itself and reloads.
+// staff note, and the emails sent (any fitting one can be sent again). Cancel, refunds, RTO and returns arrive with
+// tasks 5.3–5.6. A refused step (someone else moved the order) explains itself and reloads.
 import {
-  adminNoteField, formatINR, orderAddressBody, type AdminOrderDetail, type OrderAction, type ResendableEmail,
+  adminNoteField, formatINR, orderAddressBody, shipOrderBody, type AdminOrderDetail, type OrderAction, type ResendableEmail,
 } from '@artq/shared';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, ArrowLeft, Printer } from 'lucide-react';
-import { useState } from 'react';
+import { AlertTriangle, ArrowLeft, FileText, Printer, Truck } from 'lucide-react';
+import { Fragment, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { Link, useParams } from 'react-router';
@@ -20,6 +21,7 @@ import { useAuth } from '../../auth/AuthProvider';
 import { btn, FormDialog } from '../../components/dialogs';
 import { errorMessage } from '../../components/feedback';
 import { applyServerErrors, FormAlert, SelectField, TextField } from '../../components/form';
+import { convertedForm, optionalNumber, wholeProblems } from '../../components/form-schema';
 import { NotFoundPage } from '../simple';
 import { FULFILMENT_LABEL, ORDER_LABEL, PAYMENT_LABEL, Pill, RETURN_LABEL, when } from './labels';
 
@@ -29,14 +31,14 @@ const outline = `${btn} border border-border-input bg-white`;
 const quiet = `${btn} text-ink-900 hover:bg-surface-100`;
 const h2 = 'mb-3 font-semibold text-ink-900';
 
-type Step = { action: Exclude<OrderAction, 'edit-address'>; label: string; title: string; description: string; notify: boolean };
+type Step = { action: Exclude<OrderAction, 'edit-address' | 'ship'>; label: string; title: string; description: string; notify: boolean };
 const STEPS: Step[] = [
   { action: 'confirm', label: 'Confirm order', title: 'Confirm this order?', description: 'You’ve checked the order and will pack it. The customer is told it’s confirmed.', notify: true },
   { action: 'pack', label: 'Mark packed', title: 'Mark as packed?', description: 'Every item is in the box with the packing slip. The address can’t be changed after this.', notify: false },
   { action: 'out-for-delivery', label: 'Out for delivery', title: 'Mark out for delivery?', description: 'The courier says the parcel is out for delivery today.', notify: false },
   { action: 'deliver', label: 'Mark delivered', title: 'Mark as delivered?', description: 'The courier confirmed delivery. For cash on delivery, the cash is now recorded as collected by the courier.', notify: true },
 ];
-const EMAIL_LABEL: Record<ResendableEmail, string> = { order_placed: 'Order placed', order_confirmed: 'Order confirmed', order_delivered: 'Order delivered' };
+const EMAIL_LABEL: Record<ResendableEmail, string> = { order_placed: 'Order placed', order_confirmed: 'Order confirmed', order_shipped: 'Order shipped', order_delivered: 'Order delivered' };
 const TEMPLATE_LABEL: Record<string, string> = { ...EMAIL_LABEL, order_expired: 'Order not completed', order_cancelled: 'Order cancelled', payment_refund_notice: 'Refund notice', refund_processed: 'Refund processed', set_password_link: 'Set a password', admin_order_placed: 'New order (staff)' };
 const DIMENSION: Record<string, string> = { ORDER: 'Order', PAYMENT: 'Payment', FULFILMENT: 'Fulfilment', RETURN: 'Return' };
 const VALUE: Record<string, string> = Object.fromEntries([...Object.entries(ORDER_LABEL), ...Object.entries(PAYMENT_LABEL), ...Object.entries(FULFILMENT_LABEL), ...Object.entries(RETURN_LABEL)].map(([k, [v]]) => [k, v]));
@@ -50,6 +52,7 @@ export function OrderDetailPage() {
   const [step, setStep] = useState<Step | null>(null);
   const [editing, setEditing] = useState(false);
   const [resending, setResending] = useState(false);
+  const [shipping, setShipping] = useState(false);
   if (!Number.isSafeInteger(id) || id <= 0 || (q.error instanceof ApiError && q.error.status === 404)) return <NotFoundPage />;
   if (q.isPending) return <p role="status" className="text-ink-700">Loading the order…</p>;
   if (q.isError) return <FormAlert>Couldn’t load this order. <button type="button" className="underline" onClick={() => void q.refetch()}>Retry</button></FormAlert>;
@@ -68,6 +71,12 @@ export function OrderDetailPage() {
     } catch (e) { toast.error(errorMessage(e)); }
   };
   const canSlip = ['PLACED', 'CONFIRMED', 'COMPLETED'].includes(o.status);
+  const invoice = async () => {
+    // Open the tab now (still inside the click), then point it at the signed link: pop-up blockers allow this.
+    const tab = window.open('', '_blank');
+    try { const { url } = await api.request<{ url: string }>('GET', `/admin/orders/${id}/invoice`); if (tab) tab.location.href = url; else window.location.assign(url); }
+    catch (e) { tab?.close(); toast.error(errorMessage(e)); }
+  };
 
   return (
     <div className="space-y-5">
@@ -83,6 +92,8 @@ export function OrderDetailPage() {
         </div>
         <div className="flex flex-wrap gap-2">
           {canSlip && <button type="button" className={outline} onClick={() => void slip()}><Printer size={16} aria-hidden className="mr-1" />Packing slip</button>}
+          {o.invoices.some((v) => v.kind === 'TAX_INVOICE') && <button type="button" className={outline} onClick={() => void invoice()}><FileText size={16} aria-hidden className="mr-1" />Invoice</button>}
+          {fulfil && o.actions.includes('ship') && <button type="button" className={primary} onClick={() => setShipping(true)}><Truck size={16} aria-hidden className="mr-1" />Ship</button>}
           {fulfil && o.resendable.length > 0 && <button type="button" className={outline} onClick={() => setResending(true)}>Resend email</button>}
           {fulfil && next.map((s) => <button key={s.action} type="button" className={primary} onClick={() => setStep(s)}>{s.label}</button>)}
         </div>
@@ -130,6 +141,7 @@ export function OrderDetailPage() {
                 <dt className="text-ink-700">AWB</dt><dd className="font-mono">{o.shipment.trackingUrl ? <a href={o.shipment.trackingUrl} target="_blank" rel="noreferrer" className="text-brand-700 underline">{o.shipment.awbNumber}</a> : o.shipment.awbNumber}</dd>
                 {o.shipment.shippedAt && <><dt className="text-ink-700">Shipped</dt><dd>{when(o.shipment.shippedAt)}</dd></>}
                 {o.shipment.deliveredAt && <><dt className="text-ink-700">Delivered</dt><dd>{when(o.shipment.deliveredAt)}</dd></>}
+                {o.invoices.map((v) => <Fragment key={v.id}><dt className="text-ink-700">{v.kind === 'TAX_INVOICE' ? 'Invoice' : 'Credit note'}</dt><dd className="font-mono">{v.number}</dd></Fragment>)}
               </dl>
             </section>
           )}
@@ -140,6 +152,7 @@ export function OrderDetailPage() {
 
       {step && <StepDialog key={step.action} step={step} o={o} onClose={() => setStep(null)} onDone={set} onRefused={refused} />}
       {editing && <AddressDialog o={o} onClose={() => setEditing(false)} onDone={set} onRefused={refused} />}
+      {shipping && <ShipDialog o={o} onClose={() => setShipping(false)} onDone={set} onRefused={refused} />}
       {resending && <ResendDialog o={o} onClose={() => setResending(false)} onDone={set} onRefused={refused} />}
     </div>
   );
@@ -379,6 +392,49 @@ function ResendDialog({ o, onClose, onDone, onRefused }: { o: AdminOrderDetail; 
           <button type="button" className={primary} disabled={busy} onClick={() => void send()}>{busy ? 'Sending…' : 'Send'}</button>
         </div>
       </div>
+    </FormDialog>
+  );
+}
+
+type ShipForm = { courierName: string; awbNumber: string; trackingUrl: string; weightG: string; notifyCustomer: boolean };
+const shipForm = convertedForm<ShipForm, typeof shipOrderBody>(
+  (v) => wholeProblems([[['weightG'], v.weightG]], 'Use whole grams'),
+  (v) => ({ ...v, weightG: optionalNumber(v.weightG) }),
+  shipOrderBody,
+);
+const SHIP_FIELDS = ['courierName', 'awbNumber', 'trackingUrl', 'weightG'] as const;
+
+function ShipDialog({ o, onClose, onDone, onRefused }: { o: AdminOrderDetail; onClose: () => void; onDone: (d: AdminOrderDetail) => void; onRefused: (e: unknown) => void }) {
+  const { api } = useAuth();
+  const [problem, setProblem] = useState<string | null>(null);
+  const { register, handleSubmit, setError, formState: { errors, isSubmitting } } = useForm<ShipForm, unknown, ReturnType<typeof shipForm.parse>>({
+    resolver: zodResolver(shipForm), defaultValues: { courierName: '', awbNumber: '', trackingUrl: '', weightG: String(o.weights.chargeableG), notifyCustomer: true },
+  });
+  const save = handleSubmit(async (body) => {
+    setProblem(null);
+    try { onDone(await api.request<AdminOrderDetail>('POST', `/admin/orders/${o.id}/ship`, { body })); toast.success(`${o.orderNumber} shipped; invoice issued`); onClose(); }
+    catch (e) {
+      if (applyServerErrors(e, setError, SHIP_FIELDS)) return;
+      if (e instanceof ApiError && ['INVALID_TRANSITION', 'VERSION_CONFLICT'].includes(e.code)) { onRefused(e); onClose(); return; }
+      setProblem(errorMessage(e));
+    }
+  });
+  return (
+    <FormDialog open onOpenChange={(v) => { if (!v) onClose(); }} title="Ship this order" description="Hands the parcel to the courier: the stock leaves the shelf and the tax invoice is issued with the next number. This can’t be undone.">
+      <form noValidate onSubmit={(e) => { void save(e); }} className="space-y-3">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <TextField id="s-courier" label="Courier" autoComplete="off" {...register('courierName')} error={errors.courierName?.message} />
+          <TextField id="s-awb" label="AWB / tracking number" autoComplete="off" {...register('awbNumber')} error={errors.awbNumber?.message} />
+        </div>
+        <TextField id="s-url" label="Tracking link (optional)" inputMode="url" placeholder="https://" {...register('trackingUrl')} error={errors.trackingUrl?.message} />
+        <TextField id="s-weight" label="Parcel weight (grams, optional)" inputMode="numeric" {...register('weightG')} error={errors.weightG?.message} />
+        <label className="flex items-center gap-3 text-sm text-ink-900"><input type="checkbox" className="h-5 w-5 accent-brand-700" {...register('notifyCustomer')} />Email the customer the tracking details</label>
+        {problem && <FormAlert>{problem}</FormAlert>}
+        <div className="flex justify-end gap-3 pt-2">
+          <button type="button" className={quiet} onClick={onClose}>Cancel</button>
+          <button type="submit" className={primary} disabled={isSubmitting}>{isSubmitting ? 'Shipping…' : 'Ship and issue invoice'}</button>
+        </div>
+      </form>
     </FormDialog>
   );
 }

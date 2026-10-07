@@ -21,7 +21,8 @@ import { CheckoutService } from './checkout/initiate.js';
 import { RazorpayClient } from './payments/razorpay.js';
 import { expirePending, reconcileAttempts, reconcileDaily } from './payments/reconcile.js';
 import { razorpayHandlers } from './payments/webhook-handlers.js';
-import { mediaServiceFromEnv } from './media/factory.js';
+import { mediaServiceFromEnv, mediaStorageFromEnv } from './media/factory.js';
+import { DispatchService, processInvoiceRender } from './orders/dispatch.js';
 import { createWorkerRuntime } from './worker/runtime.js';
 import { DEFAULT_AUTH_TIMINGS } from './auth/service.js';
 import { redisConnection } from './lib/redis-url.js';
@@ -49,6 +50,7 @@ const checkout = new CheckoutService({ prisma, carts: new CartService(prisma, me
 const payments = razorpay ? { prisma, provider: razorpay, checkout, log } : null;
 const providers = [razorpayProvider(env.RAZORPAY_WEBHOOK_SECRET || undefined, razorpay ? razorpayHandlers(razorpay) : undefined)];
 // Uploads are queued by the API; images downloaded by catalogue imports are queued here. Retries: BullMQ attempts.
+const invoices = new DispatchService(prisma, mediaStorageFromEnv(env));
 const media = mediaServiceFromEnv(env, prisma, async (id) => { await runtime.queues.get(QUEUE.mediaProcess)!.add('media.process', { id }, { jobId: jobId('media', id, Date.now()), attempts: 3, backoff: { type: 'exponential', delay: 10_000 }, removeOnComplete: true }); });
 const appCache = new RedisAppCache(redis, (op, err) => log.warn({ op, err: String(err) }, 'app cache unavailable'));
 const imports = new ImportService({
@@ -92,6 +94,7 @@ const runtime = createWorkerRuntime({
     } },
     { name: QUEUE.importApply, concurrency: 1, attempts: 1, processor: async (job) => imports.apply((job.data as { id: number }).id) },
     { name: OUTBOX_CONSUMERS['email.customer'], concurrency: 5, processor: email('email.customer') },
+    { name: OUTBOX_CONSUMERS['invoice.render'], concurrency: 2, processor: async (job) => processInvoiceRender({ prisma, dispatch: invoices, log }, (job.data as OutboxJobData).deliveryId) },
     { name: OUTBOX_CONSUMERS['email.admin'], concurrency: 2, processor: email('email.admin') },
   ],
   // Consumers implemented in later phases: their jobs wait in Redis (and PostgreSQL) until a worker exists.

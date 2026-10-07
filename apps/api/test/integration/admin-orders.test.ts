@@ -20,6 +20,8 @@ import { MemoryTransport } from '../../src/email/transport.js';
 import { hashPassword } from '../../src/lib/password.js';
 import type { RateLimiter } from '../../src/middleware/rateLimit.js';
 import { registerOrderRoutes } from '../../src/orders/admin-routes.js';
+import { DispatchService } from '../../src/orders/dispatch.js';
+import { MemoryObjectStore } from '../helpers/memory-store.js';
 import { seedGeo, seedSettings, seedShipping } from '../../src/seed/steps.js';
 import { createMigratedDatabase, type TestDb } from '../helpers/db.js';
 import { attempt, capture, catalog, order, race, tx, uniq } from '../helpers/fixtures.js';
@@ -52,7 +54,7 @@ beforeAll(async () => {
   const service = new AuthService(prisma, cache, { ...DEFAULT_AUTH_TIMINGS, jwt: JWT, otpPepper: 'test-otp-pepper-0123', linkSecret: 'test-link-secret-0123456789abcdef0123', webUrl: 'http://localhost:3000', adminUrl: ORIGIN });
   const deps = { prisma, cache, jwt: JWT };
   const admin = createAdminRouter({ ...deps, limiter: NO_LIMIT, log, hasRecentStepUp: (sid) => service.hasRecentStepUp(sid), onMissingAudit: (req) => missingAudit.push(`${req.method} ${req.originalUrl}`) });
-  registerOrderRoutes(admin, prisma);
+  registerOrderRoutes(admin, prisma, new DispatchService(prisma, { store: new MemoryObjectStore(), buckets: { PUBLIC: 'pub', PRIVATE: 'priv' } }));
   app = createApp({ version: 't', origins: { storefront: ['http://localhost:3000'], admin: [ORIGIN] }, readiness: { database: async () => {}, redis: async () => {} }, routes: [adminAuthRouter({ ...deps, service, env: 'test', limiter: NO_LIMIT }), admin.router] });
   [ADMIN, STAFF] = [await login('ADMIN'), await login('STAFF')];
 }, 180_000);
@@ -162,7 +164,7 @@ describe('transitions', () => {
     expect(c.body).toMatchObject({ status: 'CONFIRMED', fulfilmentStatus: 'UNFULFILLED', version: v0 + 1, actions: ['pack', 'edit-address'], resendable: ['order_placed', 'order_confirmed'] });
     expect(c.body.history.at(-1)).toMatchObject({ dimension: 'ORDER', from: 'PLACED', to: 'CONFIRMED', actor: 'ADMIN', actorName: 'STAFF person' });
     const p = await call('post', `/orders/${o.orderId}/pack`, {}, STAFF);
-    expect(p.body).toMatchObject({ fulfilmentStatus: 'PACKED', actions: [] });
+    expect(p.body).toMatchObject({ fulfilmentStatus: 'PACKED', actions: ['ship'] });
     expect(await prisma.auditLog.count({ where: { entity: 'order', entityId: String(o.orderId), action: { in: ['order.confirm', 'order.pack'] } } })).toBe(2);
     const sent = await emails(o.orderNumber);
     expect(sent.map((m) => m.subject)).toEqual([`Order ${o.orderNumber} confirmed`]);
@@ -202,7 +204,7 @@ describe('transitions', () => {
     expect((await call('get', `/orders/${o.orderId}`)).body.actions).toEqual(['out-for-delivery', 'deliver']);
     expect((await call('post', `/orders/${o.orderId}/out-for-delivery`, {}, STAFF)).body).toMatchObject({ fulfilmentStatus: 'OUT_FOR_DELIVERY', shipment: { status: 'OUT_FOR_DELIVERY' }, actions: ['deliver'] });
     const d = await call('post', `/orders/${o.orderId}/deliver`, {}, STAFF);
-    expect(d.body).toMatchObject({ fulfilmentStatus: 'DELIVERED', paymentStatus: 'COD_COLLECTED', shipment: { status: 'DELIVERED', deliveredAt: expect.any(String) }, actions: [], resendable: ['order_placed', 'order_confirmed', 'order_delivered'] });
+    expect(d.body).toMatchObject({ fulfilmentStatus: 'DELIVERED', paymentStatus: 'COD_COLLECTED', shipment: { status: 'DELIVERED', deliveredAt: expect.any(String) }, actions: [], resendable: ['order_placed', 'order_confirmed', 'order_shipped', 'order_delivered'] });
     expect(d.body.history.slice(-2).map((h: { dimension: string; from: string; to: string }) => `${h.dimension}:${h.from}→${h.to}`).sort()).toEqual(['FULFILMENT:OUT_FOR_DELIVERY→DELIVERED', 'PAYMENT:COD_PENDING→COD_COLLECTED']);
     expect((await emails(o.orderNumber)).map((m) => m.subject)).toEqual([`Order ${o.orderNumber} delivered`]);
     expect((await call('post', `/orders/${o.orderId}/deliver`, {})).body.error.code).toBe('INVALID_TRANSITION');   // once

@@ -121,6 +121,14 @@ const TEMPLATES: Record<string, (d: Record<string, unknown>) => Rendered> = {
     const intro = [`Hi ${str(d.firstName, 'firstName')}, we’ve confirmed your order ${n} and are getting it ready.`, `We usually deliver in ${str(d.estimate, 'estimate')}. We’ll email you again when it ships.`];
     return { subject: `Order ${n} confirmed`, text: intro.join(' '), html: layout(`Order ${n} confirmed`, intro) };
   },
+  order_shipped: (d) => {
+    const n = str(d.orderNumber, 'orderNumber');
+    const ship = (d.shipment ?? null) as { courier?: string; awb?: string; trackingUrl?: string | null } | null;
+    if (!ship?.courier || !ship.awb) throw new TypeError('order_shipped: shipment is required');
+    const intro = [`Hi ${str(d.firstName, 'firstName')}, your order ${n} is on its way with ${ship.courier}.`, `Tracking number: ${ship.awb}.`, `It usually arrives in ${str(d.estimate, 'estimate')}. Your tax invoice is available from us on request.`];
+    const action = ship.trackingUrl ? { label: 'Track your parcel', href: ship.trackingUrl } : undefined;
+    return { subject: `Order ${n} shipped`, text: [...intro, ...(action ? [action.href] : [])].join(' '), html: layout(`Order ${n} shipped`, intro, action) };
+  },
   order_delivered: (d) => {
     const n = str(d.orderNumber, 'orderNumber');
     const intro = [`Hi ${str(d.firstName, 'firstName')}, your order ${n} has been delivered.`, 'We hope you enjoy creating with it. If anything is wrong with your order, reply to this email and we’ll help.'];

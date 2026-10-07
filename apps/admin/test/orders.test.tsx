@@ -183,4 +183,58 @@ describe('Order detail', () => {
     setup('/orders/9', { 'GET /admin/orders/9': () => err(404, 'NOT_FOUND', 'Order not found') });
     expect(await screen.findByRole('heading', { name: /not found/i })).toBeTruthy();
   });
+
+  it('ship: shared rules under each field (empty, AWB format, https link, whole grams), an AWB already used lands on its field, then ships', async () => {
+    const u = userEvent.setup();
+    const packed = detail({ status: 'CONFIRMED', fulfilmentStatus: 'PACKED', actions: ['ship'] });
+    let reply: [number, unknown] = err(400, 'VALIDATION_ERROR', 'Request validation failed', [{ location: 'body', path: 'awbNumber', message: 'This AWB number is already used for another DTDC shipment' }]);
+    const { server } = setup('/orders/7', { 'GET /admin/orders/7': () => [200, packed], 'POST /admin/orders/7/ship': () => reply });
+    await u.click(await screen.findByRole('button', { name: 'Ship' }));
+    const dialog = within(await screen.findByRole('dialog', { name: 'Ship this order' }));
+    expect((dialog.getByLabelText('Parcel weight (grams, optional)') as HTMLInputElement).value).toBe('1150');
+    await u.click(dialog.getByRole('button', { name: 'Ship and issue invoice' }));
+    await waitFor(() => expectFieldError('Courier', 'Enter the courier', dialog));
+    expectFieldError('AWB / tracking number', 'Use 4 to 40 letters, digits or dashes', dialog);
+    await u.type(dialog.getByLabelText('Courier'), 'DTDC');
+    await u.type(dialog.getByLabelText('AWB / tracking number'), 'd12');
+    await u.type(dialog.getByLabelText('Tracking link (optional)'), 'http://track.test/x');
+    await u.clear(dialog.getByLabelText('Parcel weight (grams, optional)'));
+    await u.type(dialog.getByLabelText('Parcel weight (grams, optional)'), '12.5');
+    await u.click(dialog.getByRole('button', { name: 'Ship and issue invoice' }));
+    await waitFor(() => expectFieldError('Parcel weight (grams, optional)', 'Use whole grams', dialog));
+    await u.clear(dialog.getByLabelText('Parcel weight (grams, optional)'));
+    await u.type(dialog.getByLabelText('Parcel weight (grams, optional)'), '1400');
+    await u.click(dialog.getByRole('button', { name: 'Ship and issue invoice' }));
+    await waitFor(() => expectFieldError('AWB / tracking number', 'Use 4 to 40 letters, digits or dashes', dialog));
+    expectFieldError('Tracking link (optional)', 'Enter a full https:// link', dialog);
+    expect(sent(server, 'POST', '/admin/orders/7/ship')).toHaveLength(0);
+    await u.type(dialog.getByLabelText('AWB / tracking number'), '345');
+    await u.clear(dialog.getByLabelText('Tracking link (optional)'));
+    await u.click(dialog.getByRole('button', { name: 'Ship and issue invoice' }));
+    await waitFor(() => expectFieldError('AWB / tracking number', 'This AWB number is already used for another DTDC shipment', dialog));
+    expect(sent(server, 'POST', '/admin/orders/7/ship')[0]!.body).toEqual({ courierName: 'DTDC', awbNumber: 'D12345', trackingUrl: null, weightG: 1400, notifyCustomer: true });
+    reply = [200, detail({ status: 'CONFIRMED', fulfilmentStatus: 'SHIPPED', actions: ['out-for-delivery', 'deliver'], invoices: [{ id: 3, kind: 'TAX_INVOICE', number: 'AQ/26-27/000003', issuedAt: '2026-10-07T06:00:00Z', grandTotal: 111_000 }],
+      shipment: { courierName: 'DTDC', awbNumber: 'D12346', trackingUrl: null, status: 'SHIPPED', weightG: 1400, shippedAt: '2026-10-07T06:00:00Z', deliveredAt: null } })];
+    await u.clear(dialog.getByLabelText('AWB / tracking number'));
+    await u.type(dialog.getByLabelText('AWB / tracking number'), 'D12346');
+    await u.click(dialog.getByRole('button', { name: 'Ship and issue invoice' }));
+    expect(await screen.findByText('AQ10234 shipped; invoice issued')).toBeTruthy();
+    expect(screen.getByText('AQ/26-27/000003')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Out for delivery' })).toBeTruthy();
+  });
+
+  it('invoice: opens the signed link in a new tab; an error closes the tab and says why', async () => {
+    const u = userEvent.setup();
+    const tab = { location: { href: '' }, close: vi.fn() };
+    vi.spyOn(window, 'open').mockReturnValue(tab as unknown as Window);
+    let reply: [number, unknown] = [200, { number: 'AQ/26-27/000003', url: 'https://storage.test/priv/inv.pdf?exp=300' }];
+    setup('/orders/7', { 'GET /admin/orders/7': () => [200, detail({ status: 'CONFIRMED', fulfilmentStatus: 'SHIPPED', invoices: [{ id: 3, kind: 'TAX_INVOICE', number: 'AQ/26-27/000003', issuedAt: '2026-10-07T06:00:00Z', grandTotal: 111_000 }] })],
+      'GET /admin/orders/7/invoice': () => reply });
+    await u.click(await screen.findByRole('button', { name: 'Invoice' }));
+    await waitFor(() => expect(tab.location.href).toBe('https://storage.test/priv/inv.pdf?exp=300'));
+    reply = err(503, 'UNAVAILABLE', 'Storage is unavailable. Try again shortly.');
+    await u.click(screen.getByRole('button', { name: 'Invoice' }));
+    expect(await screen.findByText('Storage is unavailable. Try again shortly.', undefined, { timeout: 4000 })).toBeTruthy();
+    expect(tab.close).toHaveBeenCalled();
+  });
 });

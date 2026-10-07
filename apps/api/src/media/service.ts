@@ -229,14 +229,14 @@ export class MediaService {
   private async mayRead(m: Media, actor: Actor): Promise<boolean> {
     if (actor.audience === 'admin') {
       const need: Permission[] = m.ownerScope === 'import' ? ['imports:catalog']
-        : m.ownerScope.startsWith('return:') ? ['returns:decide', 'returns:receive', 'orders:read']
+        : m.ownerScope.startsWith('return:') || m.ownerScope.startsWith('invoice:') ? ['returns:decide', 'returns:receive', 'orders:read']
         : m.ownerScope.startsWith('custom-work:') ? ['content:write']
         : ['media:write'];
       return actor.role !== undefined && need.some((p) => can(actor.role!, p));
     }
     if (actor.userId === null) return m.uploadedBy === null && m.ownerScope === actor.scope;      // guest: same scope only
     if (m.uploadedBy === actor.userId) return true;
-    const order = /^return:(\d+)$/.exec(m.ownerScope);
+    const order = /^(?:return|invoice):(\d+)$/.exec(m.ownerScope);
     if (order) return (await this.prisma.order.count({ where: { id: Number(order[1]), userId: actor.userId } })) === 1;
     return false;
   }

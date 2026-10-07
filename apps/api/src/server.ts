@@ -15,7 +15,7 @@ import { RedisAppCache } from './lib/app-cache.js';
 import { redisConnection } from './lib/redis-url.js';
 import { jobId } from './jobs/ids.js';
 import { BULLMQ_BASE, QUEUE } from './jobs/registry.js';
-import { mediaServiceFromEnv } from './media/factory.js';
+import { mediaServiceFromEnv, mediaStorageFromEnv } from './media/factory.js';
 import { customerMediaRouter, registerAdminMediaRoutes } from './media/routes.js';
 import { registerAuditRoutes } from './admin/audit-routes.js';
 import { registerStaffRoutes } from './admin/staff-routes.js';
@@ -27,6 +27,7 @@ import { registerImportRoutes } from './imports/routes.js';
 import { registerInventoryRoutes } from './inventory/routes.js';
 import { registerCouponRoutes } from './coupons/admin-routes.js';
 import { registerOrderRoutes } from './orders/admin-routes.js';
+import { DispatchService } from './orders/dispatch.js';
 import { registerShippingRoutes } from './shipping/admin-routes.js';
 import { ImportService } from './imports/service.js';
 import { razorpayProvider } from './webhooks/provider.js';
@@ -85,7 +86,7 @@ for (const q of [importValidateQueue, importApplyQueue]) q.on('error', (err) => 
 registerInventoryRoutes(admin, prisma);
 registerCouponRoutes(admin, prisma);
 registerShippingRoutes(admin, prisma, appCache);
-registerOrderRoutes(admin, prisma);
+registerOrderRoutes(admin, prisma, new DispatchService(prisma, mediaStorageFromEnv(env)));
 registerImportRoutes(admin, prisma, new ImportService({ prisma, readFile: (m) => media.read(m), enqueue: importEnqueue(importValidateQueue, importApplyQueue) }));
 
 const app = createApp({

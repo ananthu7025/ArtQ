@@ -1,9 +1,10 @@
 // Packing slip (task 5.1; architecture.md §3 PDF, product.md §7.5): what goes in the box and where it goes. Built on
 // request from the order as it is now (so a corrected address prints correctly) and never stored; it is not a tax
 // document (the invoice is issued at dispatch, task 5.2). No prices except the cash to collect on a COD order.
-import { formatINR, type SettingValue } from '@artq/shared';
+import type { SettingValue } from '@artq/shared';
 import type { Order, OrderItem } from '@prisma/client';
 import { Document, Page, StyleSheet, Text, View, renderToBuffer } from '@react-pdf/renderer';
+import { pdfINR } from './invoice-pdf.js';
 
 const s = StyleSheet.create({
   page: { padding: 36, fontSize: 10, fontFamily: 'Helvetica', color: '#111827' },
@@ -67,7 +68,7 @@ export function renderPackingSlip(o: Order & { items: OrderItem[] }, store: Sett
           ))}
         </View>
 
-        {o.paymentMethod === 'COD' && <Text style={s.cod}>Collect {formatINR(o.total)} on delivery</Text>}
+        {o.paymentMethod === 'COD' && <Text style={s.cod}>Collect {pdfINR(o.total)} on delivery</Text>}
         {o.customerNote && <View style={[s.box, { marginTop: 12 }]}><Text style={s.h}>Customer note</Text><Text>{o.customerNote}</Text></View>}
         <Text style={[s.muted, { marginTop: 24 }]}>Thank you for shopping with {store?.name ?? 'ArtQ'}.</Text>
       </Page>

@@ -10,7 +10,7 @@ const only = process.argv.slice(2);
 const results = [];
 const log = (s) => process.stdout.write(s + '\n');
 
-extract();
+const blocks = extract();
 const prismaBin = join(ROOT, 'node_modules', '.bin', 'prisma');
 const env = { ...process.env, DATABASE_URL: 'postgresql://x@localhost/x', PRISMA_HIDE_UPDATE_MESSAGE: '1' };
 const schema = join(FIX, 'prisma', 'schema.prisma');
@@ -28,9 +28,10 @@ try {
   await admin.query('CREATE DATABASE artq_template');
   const t = new pg.Client(pgsrv.config('artq_template'));
   await t.connect();
-  for (const f of ['0001.sql', '0002.sql', '0003.sql']) await t.query(readFileSync(join(FIX, f), 'utf8'));
+  const migrations = ['0001.sql', '0002.sql', '0003.sql', ...blocks.later];
+  for (const f of migrations) await t.query(readFileSync(join(FIX, f), 'utf8'));
   await t.end();
-  results.push({ id: 'C01', title: `Migrations 0001+0002+0003 from docs/database.md on ${pgsrv.version}`, ok: true, detail: 'applied' });
+  results.push({ id: 'C01', title: `Migrations ${migrations.map((f) => f.slice(0, 4)).join('+')} from docs/database.md on ${pgsrv.version}`, ok: true, detail: 'applied' });
 
   const files = readdirSync(join(ROOT, 'checks')).filter((f) => f.endsWith('.mjs')).sort();
   for (const f of files) {

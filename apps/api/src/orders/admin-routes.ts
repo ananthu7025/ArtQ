@@ -1,8 +1,8 @@
-// Admin Orders routes (task 5.1; api.md §4.3). orders:read for the list, detail and packing slip; orders:fulfil for
-// confirm / pack / out for delivery / delivered, the address correction and staff note, and resending an email.
+// Admin Orders routes (tasks 5.1, 5.2; api.md §4.3). orders:read for the list, detail, packing slip and invoice;
+// orders:fulfil for confirm / pack / ship / out for delivery / delivered, the address correction and staff note, and resending an email.
 // Contact details are masked for staff without customers:write (architecture.md §5.9).
 import {
-  adminOrderListQuery, can, orderEmptyBody, orderNotifyBody, orderPatchBody, resendEmailBody, type Permission,
+  adminOrderListQuery, can, orderEmptyBody, orderNotifyBody, orderPatchBody, resendEmailBody, shipOrderBody, type Permission,
 } from '@artq/shared';
 import type { PrismaClient } from '@prisma/client';
 import type { Request, RequestHandler, Response, Router } from 'express';
@@ -10,12 +10,13 @@ import { z } from 'zod';
 import { recordAudit } from '../admin/router.js';
 import { validate } from '../middleware/validate.js';
 import { AdminOrderService, type Actor } from './admin-service.js';
+import type { DispatchService } from './dispatch.js';
 import { renderPackingSlip } from './packing-slip.js';
 
 type AdminRoutes = { routes: Router; can: (p: Permission) => RequestHandler };
 const idParam = z.strictObject({ id: z.coerce.number().int().positive().max(2_147_483_647) });
 
-export function registerOrderRoutes(admin: AdminRoutes, prisma: PrismaClient, service = new AdminOrderService(prisma)): void {
+export function registerOrderRoutes(admin: AdminRoutes, prisma: PrismaClient, dispatch: DispatchService, service = new AdminOrderService(prisma)): void {
   const r = admin.routes;
   const read = admin.can('orders:read');
   const fulfil = admin.can('orders:fulfil');
@@ -45,6 +46,14 @@ export function registerOrderRoutes(admin: AdminRoutes, prisma: PrismaClient, se
   });
   r.post('/orders/:id/pack', fulfil, validate({ params: idParam, body: orderEmptyBody }), async (req, res) => {
     noStore(res).json(await service.pack(idOf(req), actor(req, res)));
+  });
+  r.post('/orders/:id/ship', fulfil, validate({ params: idParam, body: shipOrderBody }), async (req, res) => {
+    await dispatch.ship(idOf(req), req.body as z.output<typeof shipOrderBody>, actor(req, res));
+    noStore(res).json(await service.detail(idOf(req), seeContact(req)));
+  });
+  /** The tax invoice PDF as a 5-minute signed link (rendered first if the worker has not yet). */
+  r.get('/orders/:id/invoice', read, validate({ params: idParam }), async (req, res) => {
+    noStore(res).json(await dispatch.invoiceUrl(idOf(req)));
   });
   r.post('/orders/:id/out-for-delivery', fulfil, validate({ params: idParam, body: orderEmptyBody }), async (req, res) => {
     noStore(res).json(await service.outForDelivery(idOf(req), actor(req, res)));

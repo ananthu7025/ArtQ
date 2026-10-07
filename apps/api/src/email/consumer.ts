@@ -41,9 +41,9 @@ const CUSTOMER_ORDER_EMAIL: Record<string, string> = {
   'payment.refund_notice': 'payment_refund_notice', 'refund.processed': 'refund_processed',
 };
 /** `order.status_changed` (task 5.1): the new value → the customer's email. */
-const STATUS_EMAIL: Record<string, string> = { CONFIRMED: 'order_confirmed', DELIVERED: 'order_delivered' };
+const STATUS_EMAIL: Record<string, string> = { CONFIRMED: 'order_confirmed', SHIPPED: 'order_shipped', DELIVERED: 'order_delivered' };
 /** `order.email_resend` (task 5.1): an admin sends one of these again; a new delivery, so a new dedupe key. */
-const RESEND_EMAIL = new Set(['order_placed', 'order_confirmed', 'order_delivered']);
+const RESEND_EMAIL = new Set(['order_placed', 'order_confirmed', 'order_shipped', 'order_delivered']);
 
 /** The order email template for a customer event, or null when the event is not an order email. */
 function orderTemplate(ev: OutboxEventRow): string | null {

@@ -16,6 +16,7 @@ const DATA: Record<string, Record<string, unknown>> = {
   order_placed: { orderNumber: 'AQ10234', firstName: 'Hema', paymentMethod: 'COD', lines: [{ name: 'Epoxy <Resin>', label: '500 ml', quantity: 2, total: 99_800 }],
     totals: { subtotal: 99_800, couponDiscount: 5000, couponCode: 'WELCOME10', shipping: 7000, codFee: 4000, total: 105_800 }, address: ['Hema R', '12 Rose Villa', 'Kochi, Kerala 682011'], estimate: '4–7 days', setPasswordLink: null },
   order_confirmed: { orderNumber: 'AQ1', firstName: 'Hema', estimate: '4–7 days' },
+  order_shipped: { orderNumber: 'AQ1', firstName: 'Hema', estimate: '4–7 days', shipment: { courier: 'DTDC', awb: 'D123', trackingUrl: 'https://track.test/D123' } },
   order_delivered: { orderNumber: 'AQ1', firstName: 'Hema' },
   order_expired: { orderNumber: 'AQ1' },
   order_cancelled: { orderNumber: 'AQ1' },
@@ -90,6 +91,14 @@ describe('email templates', () => {
     expect(render('order_delivered', DATA.order_delivered!)).toMatchObject({ subject: 'Order AQ1 delivered', text: expect.stringMatching(/^Hi Hema, your order AQ1 has been delivered/) });
     expect(() => render('order_confirmed', { orderNumber: 'AQ1', firstName: 'Hema' })).toThrow(/estimate/);
     expect(render('order_delivered', { orderNumber: 'AQ1', firstName: '<b>' }).html).toContain('&lt;b&gt;');
+  });
+  it('shipped: courier, tracking number and a tracking button when there is a link; needs the shipment', () => {
+    const r = render('order_shipped', DATA.order_shipped!);
+    expect(r.subject).toBe('Order AQ1 shipped');
+    expect(r.text).toContain('on its way with DTDC. Tracking number: D123.');
+    expect(r.html).toContain('href="https://track.test/D123"');
+    expect(render('order_shipped', { ...DATA.order_shipped!, shipment: { courier: 'DTDC', awb: 'D123', trackingUrl: null } }).html).not.toContain('Track your parcel');
+    expect(() => render('order_shipped', { ...DATA.order_shipped!, shipment: null })).toThrow(/shipment/);
   });
   it('refund notice explains why (paid twice / arrived late)', () => {
     expect(render('payment_refund_notice', DATA.payment_refund_notice!).text).toMatch(/two payments for order AQ1\. The extra payment of ₹499/);

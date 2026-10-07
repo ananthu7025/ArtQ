@@ -13,6 +13,7 @@ export const OUTBOX_CONSUMERS = {
   'email.customer': 'email.customer',     // task 1.8
   'email.admin': 'email.admin',           // task 1.8
   'notify.admin': 'notify.admin',         // admin notifications (Phase 2 dashboard)
+  'invoice.render': 'invoice.render',     // task 5.2: tax invoice PDF
   'invoice.credit_note': 'invoice.credit_note', // Phase 5
   'refund.send': 'refund.send',           // Phase 5
   'restock.notify': 'restock.notify',     // Phase 3/4
