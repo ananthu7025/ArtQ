@@ -169,7 +169,7 @@ Rules:
 
 ### 3.6 Cart
 
-`carts.token_hash` = sha256 of the `aq_cart` cookie value (raw token never stored). `contact_email/phone` captured at checkout step 1 are **unverified** and used only for that checkout and abandoned-cart reminders (post-launch, consent-gated). Cart items hold `added_price` only for "price changed" notices; checkout always re-prices.
+`carts.token_hash` = sha256 of the `aq_cart` cookie value (raw token never stored). `contact_email/phone` captured at checkout step 1 are **unverified** and used only for that checkout and abandoned-cart reminders (post-launch, consent-gated). Cart items hold `added_price` only for "price changed" notices; checkout always re-prices. **Retention** (hourly job, task 4.1): a cart idle 30 days that is a guest cart or no longer an account's `ACTIVE` cart is deleted when no order refers to it; otherwise it is kept (the guest's cookie still opens the order) but its items, coupon, pincode and contact are cleared and `ACTIVE` becomes `ABANDONED`. An account's `ACTIVE` cart and any cart with a `PENDING_PAYMENT` order are never touched.
 
 ### 3.7 Coupons
 

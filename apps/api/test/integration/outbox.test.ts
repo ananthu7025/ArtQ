@@ -307,7 +307,7 @@ describe('retention', () => {
     expect(await prisma.session.findUnique({ where: { id: liveSession!.id } })).not.toBeNull();
     expect(await prisma.otpCode.count({ where: { target: 'o@x.in' } })).toBe(1);
     expect(await prisma.passwordResetToken.count({ where: { userId: user.id } })).toBe(1);
-    expect(await runRetention(prisma)).toEqual({ outboxDeliveries: 0, outboxEvents: 0, emailPayloadsScrubbed: 0, sessions: 0, otpCodes: 0, resetTokens: 0, idempotencyKeys: 0, accountsAnonymised: 0 });
+    expect(await runRetention(prisma)).toEqual({ outboxDeliveries: 0, outboxEvents: 0, emailPayloadsScrubbed: 0, sessions: 0, otpCodes: 0, resetTokens: 0, idempotencyKeys: 0, accountsAnonymised: 0, cartsDeleted: 0, cartsStripped: 0 });
   });
 
   it('works through backlogs larger than one batch', async () => {

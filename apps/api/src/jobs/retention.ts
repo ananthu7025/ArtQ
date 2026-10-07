@@ -1,6 +1,6 @@
 // Retention (architecture.md §8.2 outbox; database.md §3.1 auth tables; tasklist 1.8). Runs hourly in the worker.
 // Every statement deletes in bounded batches so a large backlog never holds long locks.
-import type { PrismaClient } from '@prisma/client';
+import { Prisma, type PrismaClient } from '@prisma/client';
 
 export const RETENTION = {
   outboxCompletedDays: 30,      // COMPLETED deliveries; DEAD ones stay until resolved
@@ -9,10 +9,11 @@ export const RETENTION = {
   resetTokenGraceHours: 24,     // password-reset links after expiry or use
   deletedAccountDays: 30,       // deleted accounts: personal data removed after this (api.md §3.5); orders keep their own copy
   emailAuthScrubMinutes: 60,    // email.auth payloads whose deliveries all finished but were not scrubbed in-line
+  guestCartDays: 30,            // guest carts (and merged / abandoned ones) after their last activity (product.md §5.5; the cookie lives as long)
   batch: 5000,
 } as const;
 
-export type RetentionResult = Record<'outboxDeliveries' | 'outboxEvents' | 'emailPayloadsScrubbed' | 'sessions' | 'otpCodes' | 'resetTokens' | 'idempotencyKeys' | 'accountsAnonymised', number>;
+export type RetentionResult = Record<'outboxDeliveries' | 'outboxEvents' | 'emailPayloadsScrubbed' | 'sessions' | 'otpCodes' | 'resetTokens' | 'idempotencyKeys' | 'accountsAnonymised' | 'cartsDeleted' | 'cartsStripped', number>;
 
 async function batched(run: () => Promise<number>, batch: number): Promise<number> {
   let total = 0;
@@ -68,5 +69,36 @@ export async function runRetention(prisma: PrismaClient, o: Partial<typeof RETEN
         email = 'deleted-' || id || '@deleted.invalid' WHERE id = ANY(${ids})`;
     return ids.length;
   });
-  return { outboxDeliveries, outboxEvents, emailPayloadsScrubbed, sessions, otpCodes, resetTokens, idempotencyKeys, accountsAnonymised };
+  const { cartsDeleted, cartsStripped } = await cleanCarts(prisma, r.guestCartDays, r.batch);
+  return { outboxDeliveries, outboxEvents, emailPayloadsScrubbed, sessions, otpCodes, resetTokens, idempotencyKeys, accountsAnonymised, cartsDeleted, cartsStripped };
+}
+
+/**
+ * Abandoned carts (task 4.1). A cart is stale when nobody has touched it for `days` and it is a guest cart or no longer
+ * the account's active cart; an account's ACTIVE cart is kept as long as the account. Stale carts that never became an
+ * order are deleted (items cascade). Stale carts that did are kept, because a guest reaches their order with that
+ * cart's cookie, but lose their items, coupon, pincode and the unverified checkout contact; an ACTIVE one becomes
+ * ABANDONED. A cart with an order still waiting for payment is never touched.
+ */
+async function cleanCarts(prisma: PrismaClient, days: number, batch: number): Promise<{ cartsDeleted: number; cartsStripped: number }> {
+  const stale = Prisma.sql`c.last_activity_at < now() - make_interval(days => ${days}::int) AND (c.user_id IS NULL OR c.status <> 'ACTIVE')`;
+  const cartsDeleted = await batched(() => prisma.$executeRaw`
+    DELETE FROM carts WHERE id IN (
+      SELECT c.id FROM carts c WHERE ${stale} AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.cart_id = c.id)
+       LIMIT ${batch}::int FOR UPDATE SKIP LOCKED)`, batch);
+  const cartsStripped = await batched(() => prisma.$transaction(async (tx) => {
+    const ids = (await tx.$queryRaw<{ id: number }[]>`
+      SELECT c.id FROM carts c
+       WHERE ${stale}
+         AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.cart_id = c.id AND o.status = 'PENDING_PAYMENT')
+         AND (c.status = 'ACTIVE' OR c.coupon_id IS NOT NULL OR c.contact_email IS NOT NULL OR c.contact_phone IS NOT NULL OR c.pincode IS NOT NULL
+              OR EXISTS (SELECT 1 FROM cart_items i WHERE i.cart_id = c.id))
+       LIMIT ${batch}::int FOR UPDATE SKIP LOCKED`).map((x) => x.id);
+    if (ids.length === 0) return 0;
+    await tx.$executeRaw`DELETE FROM cart_items WHERE cart_id = ANY(${ids})`;
+    await tx.$executeRaw`UPDATE carts SET status = CASE WHEN status = 'ACTIVE' THEN 'ABANDONED'::"CartStatus" ELSE status END,
+        coupon_id = NULL, contact_email = NULL, contact_phone = NULL, pincode = NULL WHERE id = ANY(${ids})`;
+    return ids.length;
+  }), batch);
+  return { cartsDeleted, cartsStripped };
 }

@@ -107,12 +107,16 @@ export class CartService {
     if (!item) throw new AppError(404, 'NOT_FOUND', 'This item is no longer in your cart');
     if (quantity === 0) { await this.remove(cartId, itemId); return; }
     if (quantity > item.quantity) { await this.add(cartId, item.variantId, quantity - item.quantity); return; }
-    await this.prisma.cartItem.update({ where: { id: itemId }, data: { quantity } });
+    await this.prisma.$transaction([
+      this.prisma.cartItem.update({ where: { id: itemId }, data: { quantity } }),
+      this.prisma.cart.update({ where: { id: cartId }, data: { lastActivityAt: new Date() } }),
+    ]);
   }
 
   async remove(cartId: number, itemId: number): Promise<void> {
     const { count } = await this.prisma.cartItem.deleteMany({ where: { id: itemId, cartId } });
     if (count === 0) throw new AppError(404, 'NOT_FOUND', 'This item is no longer in your cart');
+    await this.prisma.cart.update({ where: { id: cartId }, data: { lastActivityAt: new Date() } });   // keeps it from the abandoned-cart cleanup
   }
 
   async clear(cartId: number): Promise<void> {
