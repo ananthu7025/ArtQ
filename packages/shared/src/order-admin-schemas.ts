@@ -43,6 +43,16 @@ export const shipOrderBody = z.strictObject({
   notifyCustomer: z.boolean().default(true),
 });
 export type ShipOrderInput = z.input<typeof shipOrderBody>;
+/** POST /admin/orders/:id/cancel (task 5.3): staff give a reason (kept on the order and in the timeline). */
+export const CANCEL_REASON_MAX = 300;
+export const adminCancelOrderBody = z.strictObject({
+  reason: z.string({ error: 'Say why the order is cancelled' }).trim().min(3, 'Say why the order is cancelled').max(CANCEL_REASON_MAX, `Use at most ${CANCEL_REASON_MAX} characters`),
+  notifyCustomer: z.boolean().default(true),
+});
+/** POST /me/orders/:orderNumber/cancel: the customer's reason is optional. */
+export const customerCancelOrderBody = z.strictObject({
+  reason: z.string().trim().max(CANCEL_REASON_MAX, `Use at most ${CANCEL_REASON_MAX} characters`).transform((v) => v || null).nullable().default(null),
+});
 /** POST /admin/orders/:id/pack and /out-for-delivery. */
 export const orderEmptyBody = z.strictObject({});
 
@@ -65,7 +75,7 @@ export type ResendableEmail = (typeof RESENDABLE_EMAILS)[number];
 export const resendEmailBody = z.strictObject({ template: z.enum(RESENDABLE_EMAILS, { error: 'Choose an email' }) });
 
 /** What staff can do to the order now (the server checks again). */
-export type OrderAction = 'confirm' | 'pack' | 'ship' | 'out-for-delivery' | 'deliver' | 'edit-address';
+export type OrderAction = 'confirm' | 'pack' | 'ship' | 'out-for-delivery' | 'deliver' | 'edit-address' | 'cancel';
 
 export type AdminOrderRow = {
   id: number; orderNumber: string; createdAt: string; placedAt: string | null;

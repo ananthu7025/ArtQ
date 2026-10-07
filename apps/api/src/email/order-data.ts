@@ -23,6 +23,7 @@ export async function orderEmailData(tx: Prisma.TransactionClient, o: Order & { 
     estimate: `${days.min}–${days.max} days`,
     setPasswordLink: wantsLink && !hasPassword && links ? `${links.webUrl.replace(/\/$/, '')}/set-password?token=${signLink(links.linkSecret, 'set_password', { e: o.contactEmail.toLowerCase() }, links.setPasswordTtlS)}` : null,
     shipment: shipment ? { courier: shipment.courierName, awb: shipment.awbNumber, trackingUrl: shipment.trackingUrl } : null,
+    refundAmount: refund?.amount ?? null,
     reason: payload.reason ?? null,
     amount: refund?.amount ?? lastPayment?.amount ?? o.total,
   };

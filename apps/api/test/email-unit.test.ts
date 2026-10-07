@@ -100,6 +100,11 @@ describe('email templates', () => {
     expect(render('order_shipped', { ...DATA.order_shipped!, shipment: { courier: 'DTDC', awb: 'D123', trackingUrl: null } }).html).not.toContain('Track your parcel');
     expect(() => render('order_shipped', { ...DATA.order_shipped!, shipment: null })).toThrow(/shipment/);
   });
+  it('cancelled: names the refund when there is one; COD owes nothing; otherwise the general line', () => {
+    expect(render('order_cancelled', { orderNumber: 'AQ1', refundAmount: 110_800, paymentMethod: 'RAZORPAY' }).text).toBe('Your order AQ1 was cancelled. ₹1,108 is being refunded to your original payment method. Refunds usually reach your account in 5–7 working days.');
+    expect(render('order_cancelled', { orderNumber: 'AQ1', refundAmount: null, paymentMethod: 'COD' }).text).toBe('Your order AQ1 was cancelled. You don’t need to pay anything.');
+    expect(render('order_cancelled', { orderNumber: 'AQ1' }).text).toContain('If you paid for it');
+  });
   it('refund notice explains why (paid twice / arrived late)', () => {
     expect(render('payment_refund_notice', DATA.payment_refund_notice!).text).toMatch(/two payments for order AQ1\. The extra payment of ₹499/);
     expect(render('payment_refund_notice', { ...DATA.payment_refund_notice!, reason: 'LATE' }).text).toMatch(/arrived after the order had closed/);

@@ -1,5 +1,5 @@
 // A fake API for UI tests: route handlers return [status, body]. Records every call.
-export type Call = { method: string; path: string; query: URLSearchParams; body: unknown; auth: string | null };
+export type Call = { method: string; path: string; query: URLSearchParams; body: unknown; auth: string | null; headers: Record<string, string> };
 export type Handler = (c: Call) => [number, unknown] | Promise<[number, unknown]>;
 
 export function fakeServer(routes: Record<string, Handler>) {
@@ -8,7 +8,7 @@ export function fakeServer(routes: Record<string, Handler>) {
     const url = new URL(String(input));
     const path = url.pathname.replace(/^\/v1/, '');
     const headers = (init?.headers ?? {}) as Record<string, string>;
-    const call: Call = { method: init?.method ?? 'GET', path, query: url.searchParams, body: init?.body ? JSON.parse(String(init.body)) : undefined, auth: headers.Authorization ?? null };
+    const call: Call = { method: init?.method ?? 'GET', path, query: url.searchParams, body: init?.body ? JSON.parse(String(init.body)) : undefined, auth: headers.Authorization ?? null, headers };
     calls.push(call);
     const h = routes[`${call.method} ${path}`];
     const [status, body] = h ? await h(call) : [404, { error: { code: 'NOT_FOUND', message: 'No route' } }];

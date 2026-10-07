@@ -28,10 +28,22 @@ try {
   await admin.query('CREATE DATABASE artq_template');
   const t = new pg.Client(pgsrv.config('artq_template'));
   await t.connect();
-  const migrations = ['0001.sql', '0002.sql', '0003.sql', ...blocks.later];
-  for (const f of migrations) await t.query(readFileSync(join(FIX, f), 'utf8'));
+  // 0001–0003 and the doc-owned later migrations come from the doc; the other later migrations (0004+) are the
+  // committed files, applied in number order so a doc-owned function can rely on them (0009 calls 0006's function).
+  const MIG = join(ROOT, '..', '..', 'apps', 'api', 'prisma', 'migrations');
+  const later = readdirSync(MIG).filter((d) => /^\d{4}_/.test(d) && d.slice(0, 4) > '0003').sort();
+  const applied = ['0001', '0002', '0003'];
+  for (const f of ['0001.sql', '0002.sql', '0003.sql']) await t.query(readFileSync(join(FIX, f), 'utf8'));
+  for (const d of later) {
+    const n = d.slice(0, 4);
+    const fromDoc = blocks.later.includes(`${n}.sql`);
+    await t.query(readFileSync(fromDoc ? join(FIX, `${n}.sql`) : join(MIG, d, 'migration.sql'), 'utf8'));
+    applied.push(fromDoc ? n : `${n}(file)`);
+  }
+  const missing = blocks.later.filter((k) => !later.some((d) => d.startsWith(k.slice(0, 4))));
+  if (missing.length) throw new Error(`doc blocks without a migration directory: ${missing.join(', ')}`);
   await t.end();
-  results.push({ id: 'C01', title: `Migrations ${migrations.map((f) => f.slice(0, 4)).join('+')} from docs/database.md on ${pgsrv.version}`, ok: true, detail: 'applied' });
+  results.push({ id: 'C01', title: `Migrations ${applied.join('+')} on ${pgsrv.version}`, ok: true, detail: 'doc blocks + committed later migrations applied' });
 
   const files = readdirSync(join(ROOT, 'checks')).filter((f) => f.endsWith('.mjs')).sort();
   for (const f of files) {

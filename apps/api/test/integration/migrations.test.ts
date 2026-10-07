@@ -34,7 +34,7 @@ describe('prisma migrate deploy on an empty database', () => {
   it('records the generated migrations 0001–0003 and the later ones (0004+) as applied', async () => {
     const rows = await db.prisma.$queryRaw<{ migration_name: string; finished_at: Date | null; rolled_back_at: Date | null }[]>`
       SELECT migration_name, finished_at, rolled_back_at FROM _prisma_migrations ORDER BY migration_name`;
-    expect(rows.map((r) => r.migration_name)).toEqual(['0001_init', '0002_constraints_search_integrity', '0003_money_stock_functions', '0004_import_initial_stock', '0005_refresh_products_lock_first', '0006_coupon_reverse', '0007_place_cod_order', '0008_dispatch_order']);
+    expect(rows.map((r) => r.migration_name)).toEqual(['0001_init', '0002_constraints_search_integrity', '0003_money_stock_functions', '0004_import_initial_stock', '0005_refresh_products_lock_first', '0006_coupon_reverse', '0007_place_cod_order', '0008_dispatch_order', '0009_cancel_order']);
     expect(rows.every((r) => r.finished_at !== null && r.rolled_back_at === null)).toBe(true);
   });
 
@@ -46,7 +46,7 @@ describe('prisma migrate deploy on an empty database', () => {
     expect(ext.map((e) => e.extname)).toEqual(expect.arrayContaining(['citext', 'pg_trgm', 'unaccent']));
     const fns = await db.prisma.$queryRaw<{ proname: string }[]>`
       SELECT proname FROM pg_proc WHERE pronamespace = 'public'::regnamespace AND proname LIKE 'aq\\_%' ORDER BY proname`;
-    expect(fns).toHaveLength(43);   // 39 from 0003 + aq_import_initial_stock (0004) + aq_reverse_coupon (0006) + aq_place_cod_order (0007) + aq_dispatch_order (0008)
+    expect(fns).toHaveLength(44);   // 39 from 0003 + aq_import_initial_stock (0004) + aq_reverse_coupon (0006) + aq_place_cod_order (0007) + aq_dispatch_order (0008) + aq_cancel_order (0009)
     expect(fns.map((f) => f.proname)).toContain('aq_import_initial_stock');
     expect(fns.map((f) => f.proname)).toContain('aq_reverse_coupon');
   });
@@ -85,7 +85,7 @@ describe('failure paths', () => {
       try {
         const rows = await c.$queryRaw<{ migration_name: string; finished_at: Date | null }[]>`SELECT migration_name, finished_at FROM _prisma_migrations ORDER BY 1`;
         expect(rows.map((r) => [r.migration_name, r.finished_at !== null])).toEqual([
-          ['0001_init', true], ['0002_constraints_search_integrity', true], ['0003_money_stock_functions', true], ['0004_import_initial_stock', true], ['0005_refresh_products_lock_first', true], ['0006_coupon_reverse', true], ['0007_place_cod_order', true], ['0008_dispatch_order', true], ['0099_broken', false],
+          ['0001_init', true], ['0002_constraints_search_integrity', true], ['0003_money_stock_functions', true], ['0004_import_initial_stock', true], ['0005_refresh_products_lock_first', true], ['0006_coupon_reverse', true], ['0007_place_cod_order', true], ['0008_dispatch_order', true], ['0009_cancel_order', true], ['0099_broken', false],
         ]);
         // a later deploy refuses to continue past the failed migration
         expect(() => prisma(['migrate', 'deploy', '--schema', join(dir, 'prisma', 'schema.prisma')], empty.url)).toThrow(/P3009|failed migrations/);

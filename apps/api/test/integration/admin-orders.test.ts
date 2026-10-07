@@ -146,7 +146,7 @@ describe('detail', () => {
       totals: { subtotal: 100_000, shippingFee: 7000, total: o.total, capturedAmount: o.total },
       shippingAddress: { fullName: 'Hema Rajan', pincode: '682011', stateId: kerala },
       attempts: [{ amount: o.total }], payments: [{ amount: o.total, status: 'CAPTURED', allocation: 'APPLIED' }],
-      actions: ['confirm', 'edit-address'], resendable: ['order_placed'],
+      actions: ['confirm', 'edit-address', 'cancel'], resendable: ['order_placed'],
     });
     expect(res.body.history.map((h: { dimension: string; to: string }) => `${h.dimension}:${h.to}`)).toEqual(expect.arrayContaining(['ORDER:PLACED', 'PAYMENT:PAID']));
     expect((await call('get', `/orders/${o.orderId}`, undefined, STAFF)).body).toMatchObject({ contactMasked: true, customer: { email: 'b***@example.com' }, shippingAddress: { phone: '+919800000000' } });
@@ -161,10 +161,10 @@ describe('transitions', () => {
     const v0 = (await call('get', `/orders/${o.orderId}`)).body.version;
     const c = await call('post', `/orders/${o.orderId}/confirm`, {}, STAFF);
     expect(c.status).toBe(200);
-    expect(c.body).toMatchObject({ status: 'CONFIRMED', fulfilmentStatus: 'UNFULFILLED', version: v0 + 1, actions: ['pack', 'edit-address'], resendable: ['order_placed', 'order_confirmed'] });
+    expect(c.body).toMatchObject({ status: 'CONFIRMED', fulfilmentStatus: 'UNFULFILLED', version: v0 + 1, actions: ['pack', 'edit-address', 'cancel'], resendable: ['order_placed', 'order_confirmed'] });
     expect(c.body.history.at(-1)).toMatchObject({ dimension: 'ORDER', from: 'PLACED', to: 'CONFIRMED', actor: 'ADMIN', actorName: 'STAFF person' });
     const p = await call('post', `/orders/${o.orderId}/pack`, {}, STAFF);
-    expect(p.body).toMatchObject({ fulfilmentStatus: 'PACKED', actions: ['ship'] });
+    expect(p.body).toMatchObject({ fulfilmentStatus: 'PACKED', actions: ['ship', 'cancel'] });
     expect(await prisma.auditLog.count({ where: { entity: 'order', entityId: String(o.orderId), action: { in: ['order.confirm', 'order.pack'] } } })).toBe(2);
     const sent = await emails(o.orderNumber);
     expect(sent.map((m) => m.subject)).toEqual([`Order ${o.orderNumber} confirmed`]);

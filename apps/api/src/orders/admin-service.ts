@@ -32,6 +32,7 @@ export function actionsFor(o: OrderState): OrderAction[] {
   if (o.status === 'CONFIRMED' && o.fulfilmentStatus === 'SHIPPED') a.push('out-for-delivery');
   if (o.status === 'CONFIRMED' && ['SHIPPED', 'OUT_FOR_DELIVERY'].includes(o.fulfilmentStatus)) a.push('deliver');
   if (['PLACED', 'CONFIRMED'].includes(o.status) && o.fulfilmentStatus === 'UNFULFILLED') a.push('edit-address');
+  if (o.status === 'PENDING_PAYMENT' || (['PLACED', 'CONFIRMED'].includes(o.status) && ['UNFULFILLED', 'PACKED'].includes(o.fulfilmentStatus))) a.push('cancel');
   return a;
 }
 export function resendableFor(o: OrderState): ResendableEmail[] {

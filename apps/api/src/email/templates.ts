@@ -144,11 +144,10 @@ const TEMPLATES: Record<string, (d: Record<string, unknown>) => Rendered> = {
   },
   order_cancelled: (d) => {
     const n = str(d.orderNumber, 'orderNumber');
-    return {
-      subject: `Order ${n} cancelled`,
-      text: `Your order ${n} was cancelled. If you paid for it, the money is refunded to your original payment method.`,
-      html: layout(`Order ${n} cancelled`, [`Your order ${n} was cancelled.`, 'If you paid for it, the money is refunded to your original payment method.']),
-    };
+    const refund = typeof d.refundAmount === 'number' && d.refundAmount > 0 ? formatINR(d.refundAmount) : null;
+    const money = refund ? `${refund} is being refunded to your original payment method. Refunds usually reach your account in 5–7 working days.`
+      : d.paymentMethod === 'COD' ? 'You don’t need to pay anything.' : 'If you paid for it, the money is refunded to your original payment method.';
+    return { subject: `Order ${n} cancelled`, text: `Your order ${n} was cancelled. ${money}`, html: layout(`Order ${n} cancelled`, [`Your order ${n} was cancelled.`, money]) };
   },
   payment_refund_notice: (d) => {
     const n = str(d.orderNumber, 'orderNumber');

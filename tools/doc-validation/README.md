@@ -6,7 +6,9 @@ Executable checks for the **schema, integrity SQL and money/stock database funct
 ## What it does
 1. Extracts the blocks marked `<!-- validate:schema.prisma -->`, `<!-- validate:0002.sql -->`,
    `<!-- validate:0003.sql -->` and any later doc-owned migration (`<!-- validate:0008.sql -->`, task 5.2) from
-   `docs/database.md` into `.fixtures/` (git-ignored); later blocks are applied after 0003 in number order.
+   `docs/database.md` into `.fixtures/` (git-ignored). After 0003 every later migration is applied in number
+   order: the doc block when the doc owns it (0008, 0009), otherwise the committed file in
+   `apps/api/prisma/migrations/` (0004–0007), so the checked chain is the deployed one.
 2. `prisma validate`, then `prisma migrate diff --from-empty` → `0001.sql`.
 3. Starts a throwaway PostgreSQL (default: the pinned **16.14** binaries from `embedded-postgres`;
    override with `PG_BIN_DIR`) and applies 0001 + 0002 + 0003 to a template database.
@@ -44,6 +46,7 @@ Requirements: Node 24, `redis-server` on PATH (or `REDIS_SERVER`), and a platfor
 | C14 | UNLINKED payment recovery: capture before mapping, concurrent recovery once, identity conflicts rejected |
 | C15 | Payments first observed refunded/partially refunded; CAPTURED→REFUNDED; out-of-order and concurrent observations |
 | C16 | AUTHORIZED→REFUNDED returns the order to UNPAID and expiry releases once; later provider refunds gate refund capacity until reconciled (no double counting) |
+| C18 | `aq_cancel_order` (0009): 6 concurrent cancels → one cancellation and one refund; cancel racing dispatch ×10 → exactly one wins; stock, sold counts and coupon restored once; an earlier partial refund is not refunded again; COD → NOT_COLLECTED |
 | C17 | `aq_dispatch_order` (0008): gap-free invoice numbers under 20 concurrent dispatches with refusals racing among them; one order ships and consumes stock once; not-packed / reused-AWB / bad-total refusals leave no trace; a new financial year starts its own series |
 
 ## What a PASS does and does not prove

@@ -2,10 +2,10 @@
 // dimensions, the next step as one button (Confirm → Pack → Ship → Out for delivery → Mark delivered), the packing slip
 // and (once shipped) the tax invoice, items
 // and totals, payments and refunds, the timeline, customer and delivery address (correctable before packing), the
-// staff note, and the emails sent (any fitting one can be sent again). Cancel, refunds, RTO and returns arrive with
-// tasks 5.3–5.6. A refused step (someone else moved the order) explains itself and reloads.
+// staff note, and the emails sent (any fitting one can be sent again); Cancel (orders:cancel, task 5.3) refunds a
+// prepaid order automatically. Refunds, RTO and returns arrive with tasks 5.4–5.6. A refused step (someone else moved the order) explains itself and reloads.
 import {
-  adminNoteField, formatINR, orderAddressBody, shipOrderBody, type AdminOrderDetail, type OrderAction, type ResendableEmail,
+  adminCancelOrderBody, adminNoteField, formatINR, orderAddressBody, shipOrderBody, type AdminOrderDetail, type OrderAction, type ResendableEmail,
 } from '@artq/shared';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -31,7 +31,7 @@ const outline = `${btn} border border-border-input bg-white`;
 const quiet = `${btn} text-ink-900 hover:bg-surface-100`;
 const h2 = 'mb-3 font-semibold text-ink-900';
 
-type Step = { action: Exclude<OrderAction, 'edit-address' | 'ship'>; label: string; title: string; description: string; notify: boolean };
+type Step = { action: Exclude<OrderAction, 'edit-address' | 'ship' | 'cancel'>; label: string; title: string; description: string; notify: boolean };
 const STEPS: Step[] = [
   { action: 'confirm', label: 'Confirm order', title: 'Confirm this order?', description: 'You’ve checked the order and will pack it. The customer is told it’s confirmed.', notify: true },
   { action: 'pack', label: 'Mark packed', title: 'Mark as packed?', description: 'Every item is in the box with the packing slip. The address can’t be changed after this.', notify: false },
@@ -53,6 +53,7 @@ export function OrderDetailPage() {
   const [editing, setEditing] = useState(false);
   const [resending, setResending] = useState(false);
   const [shipping, setShipping] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   if (!Number.isSafeInteger(id) || id <= 0 || (q.error instanceof ApiError && q.error.status === 404)) return <NotFoundPage />;
   if (q.isPending) return <p role="status" className="text-ink-700">Loading the order…</p>;
   if (q.isError) return <FormAlert>Couldn’t load this order. <button type="button" className="underline" onClick={() => void q.refetch()}>Retry</button></FormAlert>;
@@ -96,6 +97,7 @@ export function OrderDetailPage() {
           {fulfil && o.actions.includes('ship') && <button type="button" className={primary} onClick={() => setShipping(true)}><Truck size={16} aria-hidden className="mr-1" />Ship</button>}
           {fulfil && o.resendable.length > 0 && <button type="button" className={outline} onClick={() => setResending(true)}>Resend email</button>}
           {fulfil && next.map((s) => <button key={s.action} type="button" className={primary} onClick={() => setStep(s)}>{s.label}</button>)}
+          {can('orders:cancel') && o.actions.includes('cancel') && <button type="button" className={`${btn} border border-danger-700 bg-white text-danger-700 hover:bg-[#fee2e2]`} onClick={() => setCancelling(true)}>Cancel order</button>}
         </div>
       </div>
       {o.hasOpenException && (
@@ -152,6 +154,7 @@ export function OrderDetailPage() {
 
       {step && <StepDialog key={step.action} step={step} o={o} onClose={() => setStep(null)} onDone={set} onRefused={refused} />}
       {editing && <AddressDialog o={o} onClose={() => setEditing(false)} onDone={set} onRefused={refused} />}
+      {cancelling && <CancelDialog o={o} onClose={() => setCancelling(false)} onDone={set} onRefused={refused} />}
       {shipping && <ShipDialog o={o} onClose={() => setShipping(false)} onDone={set} onRefused={refused} />}
       {resending && <ResendDialog o={o} onClose={() => setResending(false)} onDone={set} onRefused={refused} />}
     </div>
@@ -433,6 +436,50 @@ function ShipDialog({ o, onClose, onDone, onRefused }: { o: AdminOrderDetail; on
         <div className="flex justify-end gap-3 pt-2">
           <button type="button" className={quiet} onClick={onClose}>Cancel</button>
           <button type="submit" className={primary} disabled={isSubmitting}>{isSubmitting ? 'Shipping…' : 'Ship and issue invoice'}</button>
+        </div>
+      </form>
+    </FormDialog>
+  );
+}
+
+type CancelForm = z.input<typeof adminCancelOrderBody>;
+
+function CancelDialog({ o, onClose, onDone, onRefused }: { o: AdminOrderDetail; onClose: () => void; onDone: (d: AdminOrderDetail) => void; onRefused: (e: unknown) => void }) {
+  const { api } = useAuth();
+  const [problem, setProblem] = useState<string | null>(null);
+  // One key per dialog: a retried click (or a refresh-and-retry) is the same cancellation, never a second one.
+  const [key] = useState(() => crypto.randomUUID());
+  const { register, handleSubmit, setError, formState: { errors, isSubmitting } } = useForm<CancelForm, unknown, ReturnType<typeof adminCancelOrderBody.parse>>({
+    resolver: zodResolver(adminCancelOrderBody), defaultValues: { reason: '', notifyCustomer: true },
+  });
+  const pending = o.status === 'PENDING_PAYMENT';
+  const refundable = o.totals.capturedAmount - o.refunds.filter((r) => !['FAILED', 'CANCELLED'].includes(r.status)).reduce((s, r) => s + r.amount, 0);
+  const money = pending ? 'It hasn’t been paid, so the items are simply released.'
+    : o.paymentMethod === 'COD' ? 'Nothing was paid; the courier won’t collect anything.'
+    : refundable > 0 ? `${formatINR(refundable)} will be refunded automatically to the original payment method.` : 'Everything paid has already been refunded.';
+  const save = handleSubmit(async (body) => {
+    setProblem(null);
+    try { onDone(await api.request<AdminOrderDetail>('POST', `/admin/orders/${o.id}/cancel`, { body, headers: { 'Idempotency-Key': key } })); toast.success(`${o.orderNumber} cancelled`); onClose(); }
+    catch (e) {
+      if (applyServerErrors(e, setError, ['reason'])) return;
+      if (e instanceof ApiError && ['INVALID_TRANSITION', 'PAYMENT_IN_PROGRESS'].includes(e.code)) { onRefused(e); onClose(); return; }
+      setProblem(errorMessage(e));
+    }
+  });
+  const err = errors.reason?.message;
+  return (
+    <FormDialog open onOpenChange={(v) => { if (!v) onClose(); }} title={`Cancel order ${o.orderNumber}?`} description={<>The items go back into stock and any coupon use is restored. {money}</>}>
+      <form noValidate onSubmit={(e) => { void save(e); }} className="space-y-3">
+        <div>
+          <label htmlFor="c-reason" className="block text-sm font-medium text-ink-900">Reason (kept on the order)</label>
+          <textarea id="c-reason" rows={3} className="mt-1 block w-full rounded-md border border-border-input p-2 text-sm" aria-invalid={err ? true : undefined} aria-describedby={err ? 'c-reason-error' : undefined} {...register('reason')} />
+          {err && <p id="c-reason-error" className="mt-1 text-sm text-danger-700">{err}</p>}
+        </div>
+        <label className="flex items-center gap-3 text-sm text-ink-900"><input type="checkbox" className="h-5 w-5 accent-brand-700" {...register('notifyCustomer')} />Email the customer</label>
+        {problem && <FormAlert>{problem}</FormAlert>}
+        <div className="flex justify-end gap-3 pt-2">
+          <button type="button" className={quiet} onClick={onClose}>Keep the order</button>
+          <button type="submit" className={`${btn} bg-danger-700 text-white disabled:opacity-80`} disabled={isSubmitting}>{isSubmitting ? 'Cancelling…' : 'Cancel order'}</button>
         </div>
       </form>
     </FormDialog>

@@ -237,4 +237,55 @@ describe('Order detail', () => {
     expect(await screen.findByText('Storage is unavailable. Try again shortly.', undefined, { timeout: 4000 })).toBeTruthy();
     expect(tab.close).toHaveBeenCalled();
   });
+
+  it('cancel: reason required on its field (shared rule, 300 max), the refund is named, one Idempotency-Key per dialog (reused on retry), staff without orders:cancel see no button', async () => {
+    const u = userEvent.setup();
+    const paid = detail({ paymentMethod: 'RAZORPAY', paymentStatus: 'PAID', totals: { ...detail().totals, codFee: 0, total: 107_000, capturedAmount: 107_000 }, actions: ['confirm', 'edit-address', 'cancel'] });
+    let reply: [number, unknown] = err(503, 'UNAVAILABLE', 'Try again shortly.');
+    const { server, unmount } = setup('/orders/7', { 'GET /admin/orders/7': () => [200, paid], 'POST /admin/orders/7/cancel': () => reply });
+    await u.click(await screen.findByRole('button', { name: 'Cancel order' }));
+    const dialog = within(await screen.findByRole('dialog', { name: 'Cancel order AQ10234?' }));
+    expect(dialog.getByText(/₹1,070 will be refunded automatically to the original payment method/)).toBeTruthy();
+    await u.click(dialog.getByRole('button', { name: 'Cancel order' }));
+    await waitFor(() => expectFieldError('Reason (kept on the order)', 'Say why the order is cancelled', dialog));
+    await u.click(dialog.getByLabelText('Reason (kept on the order)'));
+    await u.paste('x'.repeat(301));
+    await u.click(dialog.getByRole('button', { name: 'Cancel order' }));
+    await waitFor(() => expectFieldError('Reason (kept on the order)', 'Use at most 300 characters', dialog));
+    expect(sent(server, 'POST', '/admin/orders/7/cancel')).toHaveLength(0);
+    await u.clear(dialog.getByLabelText('Reason (kept on the order)'));
+    await u.type(dialog.getByLabelText('Reason (kept on the order)'), 'Customer asked by phone');
+    await u.click(dialog.getByLabelText('Email the customer'));
+    await u.click(dialog.getByRole('button', { name: 'Cancel order' }));
+    expect(await dialog.findByText('Try again shortly.', undefined, { timeout: 4000 })).toBeTruthy();
+    reply = [200, detail({ ...paid, status: 'CANCELLED', actions: [], refunds: [{ id: 9, kind: 'CANCELLATION', method: 'ORIGINAL_PAYMENT', status: 'REQUESTED', amount: 107_000, reason: 'Customer asked by phone', createdAt: '2026-10-07T06:00:00Z', processedAt: null }] })];
+    await u.click(dialog.getByRole('button', { name: 'Cancel order' }));
+    expect(await screen.findByText('AQ10234 cancelled')).toBeTruthy();
+    const calls = sent(server, 'POST', '/admin/orders/7/cancel');
+    expect(calls.at(-1)!.body).toEqual({ reason: 'Customer asked by phone', notifyCustomer: false });
+    expect(calls.at(-1)!.headers['Idempotency-Key']).toMatch(/^[0-9a-f-]{36}$/);
+    expect(new Set(calls.map((c) => c.headers['Idempotency-Key'])).size).toBe(1);
+    expect(screen.queryByRole('button', { name: 'Cancel order' })).toBeNull();
+    unmount();
+    setup('/orders/7', { 'GET /admin/orders/7': () => [200, paid] }, 'STAFF');
+    expect(await screen.findByRole('button', { name: 'Confirm order' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Cancel order' })).toBeNull();
+  });
+
+  it('cancel: COD says nothing is collected; a refusal (already shipped) is explained and the order reloaded', async () => {
+    const u = userEvent.setup();
+    let current = detail({ actions: ['confirm', 'edit-address', 'cancel'] });
+    const { server } = setup('/orders/7', {
+      'GET /admin/orders/7': () => [200, current],
+      'POST /admin/orders/7/cancel': () => { current = detail({ status: 'CONFIRMED', fulfilmentStatus: 'SHIPPED', actions: ['out-for-delivery', 'deliver'] }); return err(422, 'INVALID_TRANSITION', 'This order can’t be cancelled now: it is confirmed, shipped, cash on delivery.'); },
+    });
+    await u.click(await screen.findByRole('button', { name: 'Cancel order' }));
+    const dialog = within(await screen.findByRole('dialog', { name: 'Cancel order AQ10234?' }));
+    expect(dialog.getByText(/Nothing was paid; the courier won’t collect anything/)).toBeTruthy();
+    await u.type(dialog.getByLabelText('Reason (kept on the order)'), 'Duplicate order');
+    await u.click(dialog.getByRole('button', { name: 'Cancel order' }));
+    expect(await screen.findByText('This order can’t be cancelled now: it is confirmed, shipped, cash on delivery.')).toBeTruthy();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Mark delivered' })).toBeTruthy());
+    expect(sent(server, 'GET', '/admin/orders/7').length).toBeGreaterThan(1);
+  });
 });
