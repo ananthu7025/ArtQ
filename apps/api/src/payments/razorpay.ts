@@ -45,7 +45,18 @@ export interface PaymentProvider {
   /** Refunds created in [from, to] (unix seconds), all pages. */
   listRefunds(from: number, to: number): Promise<ProviderRefund[]>;
   fetchRefund(refundId: string): Promise<ProviderRefund>;
+  /** Every refund of one payment (reconciliation, and the check before a definitive failure is recorded). */
+  paymentRefunds(paymentId: string): Promise<ProviderRefund[]>;
+  /**
+   * POST /payments/{id}/refund with `X-Refund-Idempotency: <key>` and exactly the stored body (architecture.md §10.2).
+   * Errors keep Razorpay's HTTP status and description so the caller can tell "still in progress" (409) and "different
+   * request with the same key" from a definitive refusal.
+   */
+  createRefund(paymentId: string, body: RefundRequestBody, idempotencyKey: string): Promise<ProviderRefund>;
 }
+
+/** The immutable refund request stored on each attempt (database.md, aq_new_refund_attempt). */
+export type RefundRequestBody = { amount: number; speed: 'normal'; receipt: string; notes: Record<string, string | number> };
 
 /** HMAC-SHA256 hex of "<order id>|<payment id>" (Razorpay Checkout), compared in constant time. */
 export function checkoutSignatureMatches(secret: string, providerOrderId: string, paymentId: string, signature: string): boolean {
@@ -63,11 +74,11 @@ export class RazorpayClient implements PaymentProvider {
     this.auth = `Basic ${Buffer.from(`${keyId}:${secret}`).toString('base64')}`;
   }
 
-  private async call<T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<T> {
+  private async call<T>(method: 'GET' | 'POST', path: string, body?: unknown, extra: Record<string, string> = {}): Promise<T> {
     let res: Response;
     try {
       res = await this.fetchImpl(`${BASE}${path}`, {
-        method, headers: { Authorization: this.auth, 'Content-Type': 'application/json' },
+        method, headers: { Authorization: this.auth, 'Content-Type': 'application/json', ...extra },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (e) {
@@ -118,6 +129,12 @@ export class RazorpayClient implements PaymentProvider {
   async listPayments(from: number, to: number): Promise<ProviderPayment[]> { return (await this.pages<RawPayment>('/payments', from, to)).map(toPayment); }
   async listRefunds(from: number, to: number): Promise<ProviderRefund[]> { return (await this.pages<RawRefund>('/refunds', from, to)).map(toRefund); }
   async fetchRefund(refundId: string): Promise<ProviderRefund> { return toRefund(await this.call<RawRefund>('GET', `/refunds/${encodeURIComponent(refundId)}`)); }
+  async paymentRefunds(paymentId: string): Promise<ProviderRefund[]> {
+    return (await this.call<{ items: RawRefund[] }>('GET', `/payments/${encodeURIComponent(paymentId)}/refunds?count=100`)).items.map(toRefund);
+  }
+  async createRefund(paymentId: string, body: RefundRequestBody, idempotencyKey: string): Promise<ProviderRefund> {
+    return toRefund(await this.call<RawRefund>('POST', `/payments/${encodeURIComponent(paymentId)}/refund`, body, { 'X-Refund-Idempotency': idempotencyKey }));
+  }
 
   async findOrdersByReceipt(receipt: string): Promise<ProviderOrder[]> {
     const r = await this.call<{ items: { id: string; amount: number; currency: string; receipt: string; created_at: number }[] }>('GET', `/orders?receipt=${encodeURIComponent(receipt)}`);
@@ -201,6 +218,36 @@ export class FakeRazorpay implements PaymentProvider {
   }
   async listRefunds(from: number, to: number): Promise<ProviderRefund[]> {
     return this.refunds.filter((r) => r.createdAt >= from && r.createdAt <= to).map((r) => ({ ...r }));
+  }
+  /** Next createRefund behaviours: 'ok' (processed at once, as in test mode), 'pending', 'unknown' (lost before
+   *  Razorpay saw it), 'created-then-unknown' (made, answer lost), 'in-progress' (409), 'definitive' (400). */
+  refundNext: ('ok' | 'pending' | 'unknown' | 'created-then-unknown' | 'in-progress' | 'definitive')[] = [];
+  readonly refundCalls: { paymentId: string; key: string; body: RefundRequestBody }[] = [];
+  private readonly refundKeys = new Map<string, { body: string; refundId: string }>();
+  refundListFails = false;
+  async createRefund(paymentId: string, body: RefundRequestBody, key: string): Promise<ProviderRefund> {
+    this.refundCalls.push({ paymentId, key, body });
+    const seen = this.refundKeys.get(key);
+    if (seen) {
+      if (seen.body !== JSON.stringify(body)) throw new ProviderError('DEFINITIVE', 'Razorpay 409: Different request with the same idempotency key has already been processed', 409);
+      return { ...this.refunds.find((r) => r.id === seen.refundId)! };   // same key + same body: the same refund
+    }
+    const mode = this.refundNext.shift() ?? 'ok';
+    if (mode === 'unknown') throw new ProviderError('UNKNOWN', 'Razorpay unreachable: TimeoutError');
+    if (mode === 'in-progress') throw new ProviderError('DEFINITIVE', 'Razorpay 409: Request with the same idempotency key is still in progress', 409);
+    if (mode === 'definitive') throw new ProviderError('DEFINITIVE', 'Razorpay 400: The refund amount provided is greater than amount captured', 400);
+    const pay = this.payments.find((p) => p.id === paymentId);
+    const r: ProviderRefund = { id: `rfnd_fake${++FakeRazorpay.seq}`, paymentId, amount: body.amount, status: mode === 'pending' ? 'pending' : 'processed', receipt: body.receipt,
+      notes: Object.fromEntries(Object.entries(body.notes).map(([k, v]) => [k, String(v)])), createdAt: Math.floor(Date.now() / 1000) };
+    this.refunds.push(r);
+    this.refundKeys.set(key, { body: JSON.stringify(body), refundId: r.id });
+    if (pay) pay.amountRefunded += body.amount;
+    if (mode === 'created-then-unknown') throw new ProviderError('UNKNOWN', 'Razorpay unreachable: TimeoutError');
+    return { ...r };
+  }
+  async paymentRefunds(paymentId: string): Promise<ProviderRefund[]> {
+    if (this.refundListFails) throw new ProviderError('UNKNOWN', 'Razorpay unreachable: TimeoutError');
+    return this.refunds.filter((r) => r.paymentId === paymentId).map((r) => ({ ...r }));
   }
   async fetchRefund(refundId: string): Promise<ProviderRefund> {
     const r = this.refunds.find((x) => x.id === refundId);

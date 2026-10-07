@@ -47,6 +47,7 @@ Requirements: Node 24, `redis-server` on PATH (or `REDIS_SERVER`), and a platfor
 | C15 | Payments first observed refunded/partially refunded; CAPTURED→REFUNDED; out-of-order and concurrent observations |
 | C16 | AUTHORIZED→REFUNDED returns the order to UNPAID and expiry releases once; later provider refunds gate refund capacity until reconciled (no double counting) |
 | C18 | `aq_cancel_order` (0009): 6 concurrent cancels → one cancellation and one refund; cancel racing dispatch ×10 → exactly one wins; stock, sold counts and coupon restored once; an earlier partial refund is not refunded again; COD → NOT_COLLECTED |
+| C19 | `aq_issue_credit_note` (0010): 11 concurrent credit notes → CN 1..11, each against its invoice; same refund ×5 → one; refusals (unprocessed, bad total, other place of supply) use no number; not invoiced → skipped |
 | C17 | `aq_dispatch_order` (0008): gap-free invoice numbers under 20 concurrent dispatches with refusals racing among them; one order ships and consumes stock once; not-packed / reused-AWB / bad-total refusals leave no trace; a new financial year starts its own series |
 
 ## What a PASS does and does not prove

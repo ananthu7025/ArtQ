@@ -29,6 +29,7 @@ import { registerCouponRoutes } from './coupons/admin-routes.js';
 import { registerOrderRoutes } from './orders/admin-routes.js';
 import { DispatchService } from './orders/dispatch.js';
 import { customerOrderRouter, registerCancelRoutes } from './orders/cancel.js';
+import { registerRefundRoutes } from './payments/refund-admin.js';
 import { registerShippingRoutes } from './shipping/admin-routes.js';
 import { ImportService } from './imports/service.js';
 import { razorpayProvider } from './webhooks/provider.js';
@@ -89,6 +90,7 @@ registerCouponRoutes(admin, prisma);
 registerShippingRoutes(admin, prisma, appCache);
 registerOrderRoutes(admin, prisma, new DispatchService(prisma, mediaStorageFromEnv(env)));
 registerCancelRoutes(admin, prisma, log);
+registerRefundRoutes(admin, prisma, log);
 registerImportRoutes(admin, prisma, new ImportService({ prisma, readFile: (m) => media.read(m), enqueue: importEnqueue(importValidateQueue, importApplyQueue) }));
 
 const app = createApp({

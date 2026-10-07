@@ -69,3 +69,26 @@ export function amountInWords(paise: number): string {
   const rupees = Math.floor(paise / 100), p = paise % 100;
   return `Rupees ${words(rupees)}${p ? ` and ${two(p)} Paise` : ''} Only`;
 }
+
+/**
+ * Credit note content for a processed refund (task 5.4): the original invoice's parties, place of supply, HSN and rates;
+ * each refunded item amount, shipping and COD fee with their tax split (rounded once per line, like the invoice).
+ */
+export function buildCreditNoteContent(original: { seller: InvoiceParty; buyer: InvoiceParty; place_of_supply: string; lines: InvoiceLine[] },
+  refund: { items: { description: string; sku: string | null; hsn: string | null; quantity: number; amount: number; ratePercent: number }[]; shipping: number; codFee: number },
+  a: { storeStateCode: string; at: Date }): InvoiceContent {
+  const intra = original.place_of_supply === a.storeStateCode;
+  const rateOf = (kind: InvoiceLineKind) => original.lines.find((l) => l.kind === kind)?.ratePercent ?? 0;
+  const line = (kind: InvoiceLineKind, description: string, sku: string | null, hsn: string | null, quantity: number, net: number, ratePercent: number): InvoiceLine => {
+    const t = lineTax(net, ratePercent, intra);
+    return { kind, description, sku, hsn, quantity, net, ratePercent, taxable: t.taxable, cgst: t.cgst ?? 0, sgst: t.sgst ?? 0, igst: t.igst ?? 0 };
+  };
+  const lines = refund.items.filter((i) => i.amount > 0).map((i) => line('ITEM', i.description, i.sku, i.hsn, i.quantity, i.amount, i.ratePercent));
+  if (refund.shipping > 0) lines.push(line('SHIPPING', 'Shipping charges', null, null, 1, refund.shipping, rateOf('SHIPPING')));
+  if (refund.codFee > 0) lines.push(line('COD_FEE', 'Cash on delivery fee', null, null, 1, refund.codFee, rateOf('COD_FEE')));
+  const sum = (k: 'taxable' | 'cgst' | 'sgst' | 'igst' | 'net') => lines.reduce((s2, l) => s2 + l[k], 0);
+  return {
+    fy: financialYear(a.at), seller: original.seller, buyer: original.buyer, place_of_supply: original.place_of_supply, lines,
+    taxable_total: sum('taxable'), cgst_total: sum('cgst'), sgst_total: sum('sgst'), igst_total: sum('igst'), rounding_adjustment: 0, grand_total: sum('net'),
+  };
+}

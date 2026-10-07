@@ -35,16 +35,18 @@ function Party({ title, p }: { title: string; p: InvoiceParty }) {
   );
 }
 
-export function renderInvoicePdf(inv: Invoice, orderNumber: string): Promise<Buffer> {
+/** A tax invoice, or a credit note (task 5.4) that names the invoice it corrects. */
+export function renderInvoicePdf(inv: Invoice, orderNumber: string, originalNumber: string | null = null): Promise<Buffer> {
+  const credit = inv.kind === 'CREDIT_NOTE';
   const seller = inv.sellerSnapshot as unknown as InvoiceParty;
   const buyer = inv.buyerSnapshot as unknown as InvoiceParty;
   const lines = inv.lines as unknown as InvoiceLine[];
   const intra = inv.igstTotal === 0;
   return renderToBuffer(
-    <Document title={`Tax invoice ${inv.number}`} author={seller.name}>
+    <Document title={`${credit ? 'Credit note' : 'Tax invoice'} ${inv.number}`} author={seller.name}>
       <Page size="A4" style={s.page}>
         <View style={s.row}>
-          <View><Text style={s.title}>Tax invoice</Text><Text style={s.muted}>Original for recipient</Text></View>
+          <View><Text style={s.title}>{credit ? 'Credit note' : 'Tax invoice'}</Text><Text style={s.muted}>{credit ? `Against tax invoice ${originalNumber ?? ''}` : 'Original for recipient'}</Text></View>
           <View style={{ alignItems: 'flex-end' }}>
             <Text style={s.bold}>{inv.number}</Text>
             <Text>Date {date(inv.issuedAt)}</Text>
@@ -76,7 +78,7 @@ export function renderInvoicePdf(inv: Invoice, orderNumber: string): Promise<Buf
           <View style={[s.row, { borderTopWidth: 1, borderColor: '#111827', marginTop: 3, paddingTop: 3 }]}><Text style={s.bold}>Total</Text><Text style={s.bold}>{inr(inv.grandTotal)}</Text></View>
         </View>
         <Text style={{ marginTop: 8 }}>{amountInWords(inv.grandTotal)}</Text>
-        <Text style={[s.muted, { marginTop: 18 }]}>Prices include GST. This is a computer-generated invoice and needs no signature.</Text>
+        <Text style={[s.muted, { marginTop: 18 }]}>{credit ? 'Amounts refunded include GST.' : 'Prices include GST.'} This is a computer-generated document and needs no signature.</Text>
       </Page>
     </Document>,
   );

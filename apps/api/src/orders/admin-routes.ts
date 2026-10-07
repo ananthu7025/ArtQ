@@ -55,6 +55,9 @@ export function registerOrderRoutes(admin: AdminRoutes, prisma: PrismaClient, di
   r.get('/orders/:id/invoice', read, validate({ params: idParam }), async (req, res) => {
     noStore(res).json(await dispatch.invoiceUrl(idOf(req)));
   });
+  r.get('/orders/:id/credit-notes/:invoiceId', read, validate({ params: z.strictObject({ id: idParam.shape.id, invoiceId: idParam.shape.id }) }), async (req, res) => {
+    noStore(res).json(await dispatch.invoiceUrl(idOf(req), (req.params as unknown as { invoiceId: number }).invoiceId));
+  });
   r.post('/orders/:id/out-for-delivery', fulfil, validate({ params: idParam, body: orderEmptyBody }), async (req, res) => {
     noStore(res).json(await service.outForDelivery(idOf(req), actor(req, res)));
   });

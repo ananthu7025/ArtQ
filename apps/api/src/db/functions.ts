@@ -187,6 +187,11 @@ export function cancelOrder(db: Db, a: { orderId: number; by: 'CUSTOMER' | 'ADMI
   return scalar<{ refund_id: number | null; payment_status: string }>(db, Prisma.sql`SELECT aq_cancel_order(${a.orderId}::int, ${a.by}, ${a.actorId}::int, ${a.reason}, ${a.notify}) AS r`);
 }
 
+/** database.md §8.5a: the credit note for a processed refund of an invoiced order (once; SKIPPED when none is due). */
+export function issueCreditNote(db: Db, a: { refundId: number; content: unknown; actorId: number | null }) {
+  return scalar<{ status: 'ISSUED' | 'DUPLICATE' | 'SKIPPED'; invoice_id?: number; number?: string }>(db, Prisma.sql`SELECT aq_issue_credit_note(${a.refundId}::int, ${json(a.content)}, ${a.actorId}::int) AS r`);
+}
+
 export function placeCodOrder(db: Db, orderId: number, actor: ActorType) {
   return scalar<'PLACED' | 'DUPLICATE'>(db, Prisma.sql`SELECT aq_place_cod_order(${orderId}::int, ${actor}) AS r`);
 }

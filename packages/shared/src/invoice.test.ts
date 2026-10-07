@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { amountInWords, buildInvoiceContent, financialYear, type InvoiceParty } from './invoice.js';
+import { amountInWords, buildCreditNoteContent, buildInvoiceContent, financialYear, type InvoiceParty } from './invoice.js';
+import { refundCreateBody } from './refund-schemas.js';
 import { shipOrderBody } from './order-admin-schemas.js';
 
 const party: InvoiceParty = { name: 'ArtQ', lines: ['Kochi'], stateCode: '32', state: 'Kerala', gstin: null };
@@ -55,5 +56,34 @@ describe('shipOrderBody', () => {
     expect(issues({ ...ok, weightG: 100_001 })).toEqual({ weightG: 'At most 100 kg' });
     expect(issues({ ...ok, weightG: 0 })).toEqual({ weightG: 'Use at least 1 g' });
     expect(issues({ ...ok, extra: 1 })).toMatchObject({ '': expect.any(String) });
+  });
+});
+
+describe('credit note content (task 5.4)', () => {
+  it('same parties, place of supply and rates as the invoice; refunded amounts split per line; shipping at the invoice’s shipping rate', () => {
+    const inv = build('29');
+    const cn = buildCreditNoteContent(inv, { items: [{ description: 'Epoxy Resin (500 ml)', sku: 'RES-500', hsn: '3907', quantity: 1, amount: 47_400, ratePercent: 18 }, { description: 'Mica', sku: 'MICA', hsn: '3206', quantity: 0, amount: 0, ratePercent: 12 }], shipping: 7000, codFee: 0 },
+      { storeStateCode: '32', at: new Date('2027-04-02T06:00:00Z') });
+    expect(cn).toMatchObject({ fy: '27-28', place_of_supply: '29', grand_total: 54_400, cgst_total: 0, rounding_adjustment: 0, seller: inv.seller, buyer: inv.buyer });
+    expect(cn.lines.map((l) => [l.kind, l.ratePercent, l.net, l.igst])).toEqual([['ITEM', 18, 47_400, 7231], ['SHIPPING', 18, 7000, 1068]]);
+    expect(cn.taxable_total + cn.igst_total).toBe(54_400);
+  });
+});
+
+describe('refundCreateBody', () => {
+  const ok = { kind: 'GOODWILL', items: [{ orderItemId: 1, quantity: 1, amount: 500 }], reason: 'Scratched lid' };
+  const issues = (b: object) => Object.fromEntries((refundCreateBody.safeParse(b).error?.issues ?? []).map((i) => [i.path.join('.'), i.message]));
+  it('needs an amount and a reason; each item once; units need an amount; limits', () => {
+    expect(refundCreateBody.parse(ok)).toEqual({ ...ok, shippingAmount: 0, codFeeAmount: 0 });
+    expect(refundCreateBody.parse({ kind: 'PRICE_ADJUSTMENT', items: [{ orderItemId: 1, quantity: 0, amount: 100 }], reason: 'Price drop' }).items[0]!.quantity).toBe(0);
+    expect(issues({ kind: 'GOODWILL', reason: 'ok!' })).toEqual({ '': 'Enter an amount to refund' });
+    expect(issues({ ...ok, kind: 'CANCELLATION' })).toEqual({ kind: 'Choose the kind of refund' });
+    expect(issues({ ...ok, reason: ' ' })).toEqual({ reason: 'Say why you are refunding' });
+    expect(issues({ ...ok, reason: 'x'.repeat(301) })).toEqual({ reason: 'Use at most 300 characters' });
+    expect(refundCreateBody.safeParse({ ...ok, reason: 'x'.repeat(300) }).success).toBe(true);
+    expect(issues({ ...ok, items: [ok.items[0], ok.items[0]] })).toEqual({ 'items.1.orderItemId': 'Each item only once' });
+    expect(issues({ ...ok, items: [{ orderItemId: 1, quantity: 2, amount: 0 }], shippingAmount: 100 })).toEqual({ 'items.0.amount': 'Enter the amount for these units' });
+    expect(issues({ ...ok, shippingAmount: -1 })).toEqual({ shippingAmount: 'Use 0 or more' });
+    expect(issues({ ...ok, shippingAmount: 100_000_001 })).toEqual({ shippingAmount: 'At most ₹10,00,000' });
   });
 });

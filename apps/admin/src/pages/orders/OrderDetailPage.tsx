@@ -24,6 +24,7 @@ import { applyServerErrors, FormAlert, SelectField, TextField } from '../../comp
 import { convertedForm, optionalNumber, wholeProblems } from '../../components/form-schema';
 import { NotFoundPage } from '../simple';
 import { FULFILMENT_LABEL, ORDER_LABEL, PAYMENT_LABEL, Pill, RETURN_LABEL, when } from './labels';
+import { OrderRefunds, RefundDialog } from './refunds';
 
 const card = 'rounded-lg border border-surface-200 bg-white p-5';
 const primary = `${btn} bg-brand-700 text-white disabled:opacity-80`;
@@ -54,6 +55,7 @@ export function OrderDetailPage() {
   const [resending, setResending] = useState(false);
   const [shipping, setShipping] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [refunding, setRefunding] = useState(false);
   if (!Number.isSafeInteger(id) || id <= 0 || (q.error instanceof ApiError && q.error.status === 404)) return <NotFoundPage />;
   if (q.isPending) return <p role="status" className="text-ink-700">Loading the order…</p>;
   if (q.isError) return <FormAlert>Couldn’t load this order. <button type="button" className="underline" onClick={() => void q.refetch()}>Retry</button></FormAlert>;
@@ -72,12 +74,13 @@ export function OrderDetailPage() {
     } catch (e) { toast.error(errorMessage(e)); }
   };
   const canSlip = ['PLACED', 'CONFIRMED', 'COMPLETED'].includes(o.status);
-  const invoice = async () => {
+  const openDoc = async (path: string) => {
     // Open the tab now (still inside the click), then point it at the signed link: pop-up blockers allow this.
     const tab = window.open('', '_blank');
-    try { const { url } = await api.request<{ url: string }>('GET', `/admin/orders/${id}/invoice`); if (tab) tab.location.href = url; else window.location.assign(url); }
+    try { const { url } = await api.request<{ url: string }>('GET', path); if (tab) tab.location.href = url; else window.location.assign(url); }
     catch (e) { tab?.close(); toast.error(errorMessage(e)); }
   };
+  const invoice = () => openDoc(`/admin/orders/${id}/invoice`);
 
   return (
     <div className="space-y-5">
@@ -97,6 +100,7 @@ export function OrderDetailPage() {
           {fulfil && o.actions.includes('ship') && <button type="button" className={primary} onClick={() => setShipping(true)}><Truck size={16} aria-hidden className="mr-1" />Ship</button>}
           {fulfil && o.resendable.length > 0 && <button type="button" className={outline} onClick={() => setResending(true)}>Resend email</button>}
           {fulfil && next.map((s) => <button key={s.action} type="button" className={primary} onClick={() => setStep(s)}>{s.label}</button>)}
+          {can('refunds:create') && ['PAID', 'PARTIALLY_REFUNDED', 'COD_COLLECTED', 'COD_REMITTED'].includes(o.paymentStatus) && <button type="button" className={outline} onClick={() => setRefunding(true)}>Refund</button>}
           {can('orders:cancel') && o.actions.includes('cancel') && <button type="button" className={`${btn} border border-danger-700 bg-white text-danger-700 hover:bg-[#fee2e2]`} onClick={() => setCancelling(true)}>Cancel order</button>}
         </div>
       </div>
@@ -111,6 +115,7 @@ export function OrderDetailPage() {
         <div className="space-y-5">
           <Items o={o} />
           <Payments o={o} />
+          <OrderRefunds orderId={o.id} onChanged={() => void q.refetch()} />
           <Timeline o={o} />
         </div>
         <div className="space-y-5">
@@ -143,7 +148,8 @@ export function OrderDetailPage() {
                 <dt className="text-ink-700">AWB</dt><dd className="font-mono">{o.shipment.trackingUrl ? <a href={o.shipment.trackingUrl} target="_blank" rel="noreferrer" className="text-brand-700 underline">{o.shipment.awbNumber}</a> : o.shipment.awbNumber}</dd>
                 {o.shipment.shippedAt && <><dt className="text-ink-700">Shipped</dt><dd>{when(o.shipment.shippedAt)}</dd></>}
                 {o.shipment.deliveredAt && <><dt className="text-ink-700">Delivered</dt><dd>{when(o.shipment.deliveredAt)}</dd></>}
-                {o.invoices.map((v) => <Fragment key={v.id}><dt className="text-ink-700">{v.kind === 'TAX_INVOICE' ? 'Invoice' : 'Credit note'}</dt><dd className="font-mono">{v.number}</dd></Fragment>)}
+                {o.invoices.map((v) => <Fragment key={v.id}><dt className="text-ink-700">{v.kind === 'TAX_INVOICE' ? 'Invoice' : 'Credit note'}</dt><dd className="font-mono">{v.kind === 'CREDIT_NOTE'
+                  ? <button type="button" className="text-brand-700 underline" onClick={() => void openDoc(`/admin/orders/${o.id}/credit-notes/${v.id}`)}>{v.number}</button> : v.number}</dd></Fragment>)}
               </dl>
             </section>
           )}
@@ -154,6 +160,7 @@ export function OrderDetailPage() {
 
       {step && <StepDialog key={step.action} step={step} o={o} onClose={() => setStep(null)} onDone={set} onRefused={refused} />}
       {editing && <AddressDialog o={o} onClose={() => setEditing(false)} onDone={set} onRefused={refused} />}
+      {refunding && <RefundDialog orderId={o.id} onClose={() => setRefunding(false)} onDone={() => { void q.refetch(); void qc.invalidateQueries({ queryKey: ['order-refunds', o.id] }); }} />}
       {cancelling && <CancelDialog o={o} onClose={() => setCancelling(false)} onDone={set} onRefused={refused} />}
       {shipping && <ShipDialog o={o} onClose={() => setShipping(false)} onDone={set} onRefused={refused} />}
       {resending && <ResendDialog o={o} onClose={() => setResending(false)} onDone={set} onRefused={refused} />}

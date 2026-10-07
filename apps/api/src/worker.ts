@@ -21,6 +21,8 @@ import { CheckoutService } from './checkout/initiate.js';
 import { RazorpayClient } from './payments/razorpay.js';
 import { expirePending, reconcileAttempts, reconcileDaily } from './payments/reconcile.js';
 import { razorpayHandlers } from './payments/webhook-handlers.js';
+import { processCreditNote, RefundAdminService } from './payments/refund-admin.js';
+import { processRefundSend, reconcileRefunds } from './payments/refunds.js';
 import { mediaServiceFromEnv, mediaStorageFromEnv } from './media/factory.js';
 import { DispatchService, processInvoiceRender } from './orders/dispatch.js';
 import { createWorkerRuntime } from './worker/runtime.js';
@@ -69,6 +71,7 @@ const runtime = createWorkerRuntime({
       if (job.name === 'payments-reconcile') return payments ? reconcileAttempts(payments) : 'no Razorpay keys';
       if (job.name === 'orders-expire') return expirePending({ prisma, provider: razorpay, checkout, log });
       if (job.name === 'payments-daily') return payments ? reconcileDaily(payments) : 'no Razorpay keys';
+      if (job.name === 'refunds-reconcile') return razorpay ? reconcileRefunds({ prisma, provider: razorpay, log }) : 'no Razorpay keys';
       if (job.name === 'catalog-check') {
         const r = await runCatalogChecks(prisma);
         if (r.driftRepaired.length) log.error({ products: r.driftRepaired }, 'product aggregate drift repaired; investigate the write path');
@@ -94,6 +97,11 @@ const runtime = createWorkerRuntime({
     } },
     { name: QUEUE.importApply, concurrency: 1, attempts: 1, processor: async (job) => imports.apply((job.data as { id: number }).id) },
     { name: OUTBOX_CONSUMERS['email.customer'], concurrency: 5, processor: email('email.customer') },
+    { name: OUTBOX_CONSUMERS['refund.send'], concurrency: 2, processor: async (job) => {
+      if (!razorpay) throw new Error('Razorpay keys are not configured: refunds cannot be sent');   // retried, then OUTBOX_DEAD: never silently dropped
+      return processRefundSend({ prisma, provider: razorpay, log }, (job.data as OutboxJobData).deliveryId);
+    } },
+    { name: OUTBOX_CONSUMERS['invoice.credit_note'], concurrency: 2, processor: async (job) => processCreditNote({ prisma, refunds: new RefundAdminService(prisma), log }, (job.data as OutboxJobData).deliveryId) },
     { name: OUTBOX_CONSUMERS['invoice.render'], concurrency: 2, processor: async (job) => processInvoiceRender({ prisma, dispatch: invoices, log }, (job.data as OutboxJobData).deliveryId) },
     { name: OUTBOX_CONSUMERS['email.admin'], concurrency: 2, processor: email('email.admin') },
   ],
@@ -108,6 +116,7 @@ const runtime = createWorkerRuntime({
     { queue: QUEUE.maintenance, id: 'catalog-check', everyMs: 86_400_000, jobName: 'catalog-check' },
     // Payments (architecture.md §7.4). The daily reconciliation covers the previous IST day, so its run time is free.
     { queue: QUEUE.maintenance, id: 'payments-reconcile', everyMs: 60_000, jobName: 'payments-reconcile' },
+    { queue: QUEUE.maintenance, id: 'refunds-reconcile', everyMs: 300_000, jobName: 'refunds-reconcile' },
     { queue: QUEUE.maintenance, id: 'orders-expire', everyMs: 60_000, jobName: 'orders-expire' },
     { queue: QUEUE.maintenance, id: 'payments-daily', everyMs: 86_400_000, jobName: 'payments-daily' },
     { queue: QUEUE.outboxDispatch, id: 'outbox-dispatch', everyMs: 1000, jobName: 'dispatch' },

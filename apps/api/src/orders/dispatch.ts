@@ -67,10 +67,10 @@ export class DispatchService {
 
   /** The stored PDF of an invoice, rendering and storing it once if needed. Safe to call concurrently. */
   async ensurePdf(invoiceId: number): Promise<number> {
-    const inv = await this.prisma.invoice.findUnique({ where: { id: invoiceId }, include: { order: { select: { orderNumber: true } } } });
+    const inv = await this.prisma.invoice.findUnique({ where: { id: invoiceId }, include: { order: { select: { orderNumber: true } }, original: { select: { number: true } } } });
     if (!inv) throw new AppError(404, 'NOT_FOUND', 'Invoice not found');
     if (inv.pdfMediaId) return inv.pdfMediaId;
-    const pdf = await renderInvoicePdf(inv, inv.order.orderNumber);
+    const pdf = await renderInvoicePdf(inv, inv.order.orderNumber, inv.original?.number ?? null);
     const key = `private/invoice/${inv.fy}/${inv.number.replace(/\//g, '-')}-${randomUUID()}.pdf`;
     await this.media.store.put(this.media.buckets.PRIVATE, key, pdf, 'application/pdf');
     const m = await this.prisma.media.create({ data: { key, visibility: 'PRIVATE', kind: 'DOCUMENT', declaredMime: 'application/pdf', detectedMime: 'application/pdf', declaredSize: pdf.length, sizeBytes: pdf.length, ownerScope: `invoice:${inv.orderId}`, status: 'READY', claimedAt: new Date() } });
@@ -80,10 +80,12 @@ export class DispatchService {
     return (await this.prisma.invoice.findUniqueOrThrow({ where: { id: invoiceId }, select: { pdfMediaId: true } })).pdfMediaId!;
   }
 
-  /** A short-lived link to the order's tax invoice PDF (orders:read). */
-  async invoiceUrl(orderId: number): Promise<{ number: string; url: string }> {
-    const inv = await this.prisma.invoice.findFirst({ where: { orderId, kind: 'TAX_INVOICE' }, select: { id: true, number: true } });
-    if (!inv) throw new AppError(404, 'NOT_FOUND', 'This order has no invoice yet. It is issued when the order ships.');
+  /** A short-lived link to the order's tax invoice PDF, or one of its credit notes (orders:read). */
+  async invoiceUrl(orderId: number, creditNoteId?: number): Promise<{ number: string; url: string }> {
+    const inv = creditNoteId
+      ? await this.prisma.invoice.findFirst({ where: { orderId, id: creditNoteId, kind: 'CREDIT_NOTE' }, select: { id: true, number: true } })
+      : await this.prisma.invoice.findFirst({ where: { orderId, kind: 'TAX_INVOICE' }, select: { id: true, number: true } });
+    if (!inv) throw new AppError(404, 'NOT_FOUND', creditNoteId ? 'Credit note not found' : 'This order has no invoice yet. It is issued when the order ships.');
     const media = await this.prisma.media.findUniqueOrThrow({ where: { id: await this.ensurePdf(inv.id) } });
     const url = await this.media.store.presignGet(this.media.buckets.PRIVATE, media.key, { expiresIn: INVOICE_URL_TTL_S, attachmentName: `invoice-${inv.number.replace(/\//g, '-')}.pdf` });
     return { number: inv.number, url };

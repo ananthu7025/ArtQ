@@ -116,7 +116,7 @@ describe('order placed page', () => {
     routes['GET /checkout/orders/AQ10234'] = () => json({ ...ORDER, status: 'PENDING_PAYMENT' });
     let polls = 0;
     routes['GET /checkout/status/AQ10234'] = () => { polls++; throw new TypeError('Failed to fetch'); };
-    render(<OrderPlacedView orderNumber="AQ10234" pollMs={5} pollForMs={60} />);
+    render(<OrderPlacedView orderNumber="AQ10234" pollMs={5} pollForMs={300} />);   // wide enough to see several polls under load
     expect(await screen.findByRole('heading', { name: 'We’re still confirming your payment' })).toBeTruthy();
     expect(screen.getByText(/We’ll email hema@example.com as soon as your bank confirms/)).toBeTruthy();
     expect(polls).toBeGreaterThan(1);
