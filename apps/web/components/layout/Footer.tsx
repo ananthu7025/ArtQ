@@ -41,6 +41,7 @@ export function Footer({ navigation, settings, year = new Date().getFullYear() }
           <li><Link href="/about" className={linkCls}>About Our Craft</Link></li>
           <li><Link href="/contact" className={linkCls}>Contact Us</Link></li>
           <li><Link href="/faqs" className={linkCls}>FAQs</Link></li>
+          <li><Link href="/custom-work" className={linkCls}>Custom Work</Link></li>
           {settings.social.instagram && ext(settings.social.instagram, 'Instagram')}
           {wa && ext(wa, 'WhatsApp')}
         </Column>

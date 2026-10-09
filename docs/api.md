@@ -135,10 +135,12 @@ type OrderView = {
 | GET | `/newsletter/unsubscribe?token=` | Unsubscribe |
 | POST | `/contact` | `{name, email, phone?, subject, message, orderNumber?}` |
 | POST | `/custom-work` | `{name, email, phone, details{size, wood, quantity, budget, neededBy}, message, attachmentMediaIds[]}` (ids must be this cart's READY private uploads) |
-| POST | `/uploads/presign` | Custom-work attachment (cart-cookie scope): `{filename, contentType, size}`; images only ≤ 8 MB, max 4 |
+| POST | `/uploads/presign` | Custom-work attachment: `{filename, contentType, size}`; images only ≤ 8 MB, max 4; scope = the signed-in customer, else the cart cookie (created when missing). Then `POST /uploads/:id/complete` and `GET /uploads/:id` (status while processed) |
 | POST | `/uploads/:mediaId/complete` | Same cart scope only |
 
 Return photos are uploaded under the order routes so the order-scoped cookie (`Path=/v1/orders`) or the owner's Bearer token applies: `POST /me/orders/:n/uploads/presign` · `POST /orders/:n/uploads/presign` (guest), then `…/uploads/:mediaId/complete`.
+
+Content implemented in task 6.2 (`src/content/routes.ts`; `@artq/shared` content-schemas). `GET /pages/:slug` → `PublicPage {slug, title, content (cleaned HTML), metaTitle, metaDescription, updatedAt}` for a published page (else 404); `GET /faqs` → `{groups:[{group, label, items:[{question, answer}]}]}` (active, in order, empty groups left out); both on the public cache. `POST /contact` (`contactBody`: name, email, optional phone, subject 3–160, message 10–3,000, optional order number `AQ…` upper-cased) and `POST /custom-work` (`customWorkBody`: name, email, phone, `details {size?, wood?, quantity 1–500?, budget ₹100–₹1,00,00,000?, neededBy YYYY-MM-DD?}`, message 10–3,000, ≤ 4 `attachmentMediaIds`, each this visitor's READY unattached upload, claimed once; a photo that is not → 400 on `attachmentMediaIds`) → 201 `{id, received:true}`; both 5 a minute per IP, saved to the admin Messages inbox, and `message.received` emails the visitor an acknowledgement (`message_received`) and staff a notification (`admin_message`). Guest upload scope: `custom-work:` + the first 32 hex characters of the cart cookie's hash (the owner column holds 60 characters).
 
 ### 3.3 Catalogue
 | Method | Path | Description |

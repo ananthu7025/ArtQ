@@ -68,6 +68,15 @@ async function orderMessage(tx: Prisma.TransactionClient, ev: OutboxEventRow, te
 
 async function messagesFor(tx: Prisma.TransactionClient, consumer: EmailConsumer, ev: OutboxEventRow, links?: EmailLinks): Promise<Message[]> {
   const p = (ev.payload ?? {}) as Record<string, unknown>;
+  if (ev.eventType === 'message.received') {
+    // Contact / custom work (task 6.2): an acknowledgement to the visitor, a notification to staff.
+    const m = await tx.contactMessage.findUnique({ where: { id: Number(p.message_id) } });
+    if (!m) throw new TypeError(`message.received event ${ev.eventId}: message not found`);
+    const data = { kind: m.kind, name: m.name, email: m.email, phone: m.phone, subject: m.subject, message: m.message, orderNumber: m.orderNumber, id: m.id };
+    if (consumer === 'email.customer') return [{ to: m.email, template: 'message_received', rendered: render('message_received', data), userId: null, orderId: null, dedupeKey: dedupeKey(ev.deliveryId, m.email) }];
+    const rendered = render('admin_message', data);
+    return (await adminRecipients(tx)).map((to) => ({ to, template: 'admin_message', rendered, userId: null, orderId: null, dedupeKey: dedupeKey(ev.deliveryId, to) }));
+  }
   const orderTpl = consumer === 'email.customer' ? orderTemplate(ev) : null;
   if (orderTpl) return orderMessage(tx, ev, orderTpl, links);
   if (consumer === 'email.admin' && ev.eventType === 'order.placed') {
