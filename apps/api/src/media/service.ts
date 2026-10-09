@@ -93,6 +93,13 @@ export class MediaService {
     return m.uploadedBy === null ? actor.userId === null : m.uploadedBy === actor.userId;
   }
 
+  /** The uploader's own media (status polling while the worker processes it); anyone else gets 404. */
+  async own(mediaId: number, actor: Actor): Promise<MediaView> {
+    const m = await this.prisma.media.findUnique({ where: { id: mediaId } });
+    if (!m || !this.owns(m, actor)) throw notFound();
+    return this.view(m);
+  }
+
   async complete(mediaId: number, actor: Actor): Promise<MediaView> {
     const m = await this.prisma.media.findUnique({ where: { id: mediaId } });
     if (!m || !this.owns(m, actor)) throw notFound();

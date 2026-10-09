@@ -30,6 +30,7 @@ import { registerOrderRoutes } from './orders/admin-routes.js';
 import { DispatchService } from './orders/dispatch.js';
 import { customerOrderRouter, registerCancelRoutes } from './orders/cancel.js';
 import { registerCodRoutes } from './orders/cod.js';
+import { customerOrdersRouter } from './orders/customer-routes.js';
 import { registerRefundRoutes } from './payments/refund-admin.js';
 import { customerReturnRouter, registerReturnRoutes } from './returns/routes.js';
 import { registerShippingRoutes } from './shipping/admin-routes.js';
@@ -113,6 +114,7 @@ const app = createApp({
     accountRouter({ prisma, cache, jwt, service, env: env.NODE_ENV, mediaUrl, limiter, onRateLimitError }),
     customerOrderRouter({ prisma, cache, jwt, log }),
     customerReturnRouter({ prisma, cache, jwt, log, media }),
+    customerOrdersRouter({ prisma, cache, jwt, log, env: env.NODE_ENV, linkSecret: env.AUTH_LINK_SECRET, auth: service, media, dispatch: new DispatchService(prisma, mediaStorageFromEnv(env)), limiter, onRateLimitError }),
     storefrontRouter({ prisma, cache: appCache, mediaUrl, limiter, onRateLimitError, onInvalidSetting: (key) => log.warn({ key }, 'stored setting is invalid; serving the default'), onSearchLogError: (err) => log.warn({ err: String(err) }, 'search log not written') }),
     webhookRouter({ prisma, queue: webhookQueue, providers: [razorpayProvider(env.RAZORPAY_WEBHOOK_SECRET || undefined)], log }),
     admin.router,

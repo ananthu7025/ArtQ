@@ -38,6 +38,9 @@ type ReturnData = { id: number; reason: string; note: string | null; items: { na
 const ret = (d: Record<string, unknown>) => { const r = d.return as ReturnData | null | undefined; if (!r || !Array.isArray(r.items)) throw new TypeError('template data "return" is missing'); return r; };
 const units = (r: ReturnData) => r.items.filter((i) => i.quantity > 0).map((i) => `${i.quantity} × ${i.name}${i.label ? ` (${i.label})` : ''}`).join(', ');
 
+/** "View your order": the tracking link built at send time (task 5.7), when the order email has one. */
+const track = (d: Record<string, unknown>) => (typeof d.trackingLink === 'string' ? { label: 'View your order', href: d.trackingLink } : undefined);
+
 const str = (v: unknown, name: string) => {
   if (typeof v !== 'string' && typeof v !== 'number') throw new TypeError(`template data "${name}" is missing`);
   return String(v);
@@ -47,7 +50,8 @@ const TEMPLATES: Record<string, (d: Record<string, unknown>) => Rendered> = {
   otp: (d) => {
     const code = str(d.code, 'code');
     const mins = str(d.expiresInMinutes ?? 10, 'expiresInMinutes');
-    const what = d.purpose === 'SIGNUP_VERIFY' ? 'verify your email' : d.purpose === 'EMAIL_CHANGE' ? 'confirm your new email address' : 'log in';
+    const what = d.purpose === 'SIGNUP_VERIFY' ? 'verify your email' : d.purpose === 'EMAIL_CHANGE' ? 'confirm your new email address'
+      : d.purpose === 'GUEST_ORDER_ACCESS' ? `manage your order ${typeof d.orderNumber === 'string' ? d.orderNumber : ''}`.trim() : 'log in';
     return {
       subject: `${code} is your ArtQ code`,
       text: `Use ${code} to ${what}. It expires in ${mins} minutes. If you did not ask for it, ignore this email.`,
@@ -113,7 +117,7 @@ const TEMPLATES: Record<string, (d: Record<string, unknown>) => Rendered> = {
     const t = totals(d.totals);
     const intro = [`Hi ${str(d.firstName, 'firstName')}, thank you for your order ${n}.`, cod ? `Please keep ${formatINR(t.total)} ready to pay when it arrives (cash or UPI).` : 'Your payment is confirmed.'];
     const outro = [`We usually deliver in ${str(d.estimate, 'estimate')}. We’ll email you again when it ships.`, ...(d.setPasswordLink ? ['Want to track this order and check out faster next time? Set a password for your ArtQ account (the link works for 7 days).'] : [])];
-    const action = typeof d.setPasswordLink === 'string' ? { label: 'Set a password', href: d.setPasswordLink } : undefined;
+    const action = typeof d.setPasswordLink === 'string' ? { label: 'Set a password', href: d.setPasswordLink } : track(d);
     return {
       subject: `Order ${n} placed`,
       text: orderText(intro, lines(d.lines), t, strs(d.address, 'address'), [...outro, ...(action ? [action.href] : [])]),
@@ -123,7 +127,8 @@ const TEMPLATES: Record<string, (d: Record<string, unknown>) => Rendered> = {
   order_confirmed: (d) => {
     const n = str(d.orderNumber, 'orderNumber');
     const intro = [`Hi ${str(d.firstName, 'firstName')}, we’ve confirmed your order ${n} and are getting it ready.`, `We usually deliver in ${str(d.estimate, 'estimate')}. We’ll email you again when it ships.`];
-    return { subject: `Order ${n} confirmed`, text: intro.join(' '), html: layout(`Order ${n} confirmed`, intro) };
+    const t = track(d);
+    return { subject: `Order ${n} confirmed`, text: [...intro, ...(t ? [`View your order: ${t.href}`] : [])].join(' '), html: layout(`Order ${n} confirmed`, intro, t) };
   },
   order_shipped: (d) => {
     const n = str(d.orderNumber, 'orderNumber');
@@ -136,7 +141,8 @@ const TEMPLATES: Record<string, (d: Record<string, unknown>) => Rendered> = {
   order_delivered: (d) => {
     const n = str(d.orderNumber, 'orderNumber');
     const intro = [`Hi ${str(d.firstName, 'firstName')}, your order ${n} has been delivered.`, 'We hope you enjoy creating with it. If anything is wrong with your order, reply to this email and we’ll help.'];
-    return { subject: `Order ${n} delivered`, text: intro.join(' '), html: layout(`Order ${n} delivered`, intro) };
+    const t = track(d);
+    return { subject: `Order ${n} delivered`, text: [...intro, ...(t ? [`Something wrong? Report it from your order page within 48 hours: ${t.href}`] : [])].join(' '), html: layout(`Order ${n} delivered`, [...intro, ...(t ? ['Something wrong? Report it from your order page within 48 hours of delivery.'] : [])], t ? { label: 'View your order', href: t.href } : undefined) };
   },
   order_expired: (d) => {
     const n = str(d.orderNumber, 'orderNumber');

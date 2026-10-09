@@ -15,6 +15,7 @@ import { optionalCustomer, type AuthDeps } from '../auth/middleware.js';
 import { hashToken } from '../cart/service.js';
 import { idempotent } from '../idempotency/idempotency.js';
 import { AppError } from '../lib/errors.js';
+import { orderAccessFromCookie } from '../orders/access.js';
 import { RATE_LIMITS, rateLimit, type RateLimiter } from '../middleware/rateLimit.js';
 import { validate } from '../middleware/validate.js';
 import { fetchAndApply } from '../payments/apply.js';
@@ -59,13 +60,15 @@ export function checkoutPaymentRouter(d: PaymentRoutesDeps): Router {
   const cartToken = (req: Request) => parseCookies(req.get('cookie')).get(spec.name);
   const limit = d.limiter ? rateLimit({ limiter: d.limiter, name: 'checkout', rule: RATE_LIMITS.checkout, key: async (req) => (req.auth ? `u:${req.auth.userId}` : cartToken(req) ? `c:${hashToken(cartToken(req)!)}` : null), ...(d.onRateLimitError ? { onError: d.onRateLimitError } : {}) }) : (_q: Request, _s: Response, n: () => void) => n();
 
-  /** The order, if this browser (cart cookie) or this account placed it; else 404 (never reveals that it exists). */
+  /** The order, if this browser (cart cookie), this account or the order access cookie may see it; else 404 (never reveals that it exists). */
   const orderFor = async (req: Request, orderNumber: string) => {
     const o = await d.prisma.order.findUnique({ where: { orderNumber }, include: { paymentAttempts: { where: { providerOrderId: { not: null } }, orderBy: { id: 'desc' } } } });
     const t = cartToken(req);
     const byCart = o?.cartId && t ? (await d.prisma.cart.findFirst({ where: { id: o.cartId, tokenHash: hashToken(t) }, select: { id: true } })) !== null : false;
     const byAccount = o?.userId !== null && o?.userId !== undefined && req.auth?.userId === o.userId;
-    if (!o || !(byCart || byAccount)) throw new AppError(404, 'NOT_FOUND', 'Order not found');
+    // A guest who verified the order's email (task 5.7) may also retry its payment.
+    const byOrderCookie = o !== null && d.links !== undefined && orderAccessFromCookie(req, d.env, d.links.linkSecret) === o.id;
+    if (!o || !(byCart || byAccount || byOrderCookie)) throw new AppError(404, 'NOT_FOUND', 'Order not found');
     return o;
   };
   const noStore = (res: Response) => res.set('Cache-Control', 'no-store');

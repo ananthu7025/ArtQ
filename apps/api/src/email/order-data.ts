@@ -1,8 +1,10 @@
 // What an order email shows (task 4.10), read from the order when the email is sent: items, totals, address, the
-// usual delivery days, and for a guest who asked for it at checkout a set-password link signed now (never stored).
+// usual delivery days, and for a guest who asked for it at checkout a set-password link signed now (never stored);
+// the order page link (tracking token, task 5.7) when the consumer has the link secret.
 import { parseSetting } from '@artq/shared';
 import type { Order, OrderItem, Prisma } from '@prisma/client';
 import { signLink } from '../auth/tokens.js';
+import { trackingUrl } from '../orders/access.js';
 import type { EmailLinks } from './consumer.js';
 
 export const firstName = (full: string) => full.trim().split(/\s+/)[0] || 'there';
@@ -25,6 +27,7 @@ export async function orderEmailData(tx: Prisma.TransactionClient, o: Order & { 
     address: [o.shipName, o.shipLine1, ...(o.shipLine2 ? [o.shipLine2] : []), ...(o.shipLandmark ? [`Near ${o.shipLandmark}`] : []), `${o.shipCity}, ${o.shipState} ${o.shipPincode}`, `Phone ${o.shipPhone}`],
     estimate: `${days.min}–${days.max} days`,
     setPasswordLink: wantsLink && !hasPassword && links ? `${links.webUrl.replace(/\/$/, '')}/set-password?token=${signLink(links.linkSecret, 'set_password', { e: o.contactEmail.toLowerCase() }, links.setPasswordTtlS)}` : null,
+    trackingLink: links ? trackingUrl(links.webUrl, links.linkSecret, o) : null,
     shipment: shipment ? { courier: shipment.courierName, awb: shipment.awbNumber, trackingUrl: shipment.trackingUrl } : null,
     refundAmount: refund?.amount ?? null,
     reason: payload.reason ?? null,
