@@ -84,6 +84,10 @@ async function messagesFor(tx: Prisma.TransactionClient, consumer: EmailConsumer
     const userId = /^\d+$/.test(ev.aggregateId) && ev.aggregateId !== '0' ? Number(ev.aggregateId) : null;
     return [{ to, template, rendered: render(template, (p.data ?? {}) as Record<string, unknown>), userId, orderId: null, dedupeKey: dedupeKey(ev.deliveryId, to) }];
   }
+  if (ev.eventType === 'ops.alert') {
+    const rendered = render('admin_ops_alert', p);
+    return (await adminRecipients(tx)).map((to) => ({ to, template: 'admin_ops_alert', rendered, userId: null, orderId: null, dedupeKey: dedupeKey(ev.deliveryId, to) }));
+  }
   if (ev.eventType === 'cod.remittance_overdue') {
     const rendered = render('admin_cod_overdue', p);
     return (await adminRecipients(tx)).map((to) => ({ to, template: 'admin_cod_overdue', rendered, userId: null, orderId: null, dedupeKey: dedupeKey(ev.deliveryId, to) }));

@@ -25,6 +25,8 @@ import { processCreditNote, RefundAdminService } from './payments/refund-admin.j
 import { processRefundSend, reconcileRefunds } from './payments/refunds.js';
 import { mediaServiceFromEnv, mediaStorageFromEnv } from './media/factory.js';
 import { codOverdueCheck } from './orders/cod.js';
+import { notifyAlerts } from './ops/alerts.js';
+import { countRecentFailed, lastRunKey, syncAllBadges } from './ops/service.js';
 import { DispatchService, processInvoiceRender } from './orders/dispatch.js';
 import { createWorkerRuntime } from './worker/runtime.js';
 import { DEFAULT_AUTH_TIMINGS } from './auth/service.js';
@@ -61,10 +63,17 @@ const imports = new ImportService({
   enqueue: { validate: (id, c) => importEnqueue(runtime.queues.get(QUEUE.importValidate)!, runtime.queues.get(QUEUE.importApply)!).validate(id, c), apply: (id) => importEnqueue(runtime.queues.get(QUEUE.importValidate)!, runtime.queues.get(QUEUE.importApply)!).apply(id) },
 });
 
+/** Records each scheduled run for Jobs & Webhooks ("last runs"); a failure is recorded, then rethrown for BullMQ. */
+async function recordRun<T>(name: string, run: () => Promise<T>): Promise<T> {
+  const save = (ok: boolean, result: unknown) => redis.set(lastRunKey(name), JSON.stringify({ at: new Date().toISOString(), ok, result: (typeof result === 'string' ? result : JSON.stringify(result) ?? '').slice(0, 300) }), 'EX', 7 * 86_400).catch(() => undefined);
+  try { const r = await run(); await save(true, r); return r; } catch (e) { await save(false, e instanceof Error ? e.message : String(e)); throw e; }
+}
+
 const runtime = createWorkerRuntime({
   connection, log,
   queues: [
-    { name: QUEUE.maintenance, concurrency: 1, processor: async (job) => {
+    { name: QUEUE.maintenance, concurrency: 1, processor: async (job) => recordRun(job.name, async () => {
+      if (job.name === 'ops-alerts') { await syncAllBadges(prisma); return notifyAlerts(prisma, { recentFailed: await countRecentFailed(runtime.queues.values()) }); }
       if (job.name === 'retention') return runRetention(prisma);
       if (job.name === 'webhook-sweep') return sweepWebhooks(prisma, runtime.queues.get(WEBHOOK_QUEUE)!);
       if (job.name === 'media-purge') return media.purgeStale();
@@ -81,7 +90,7 @@ const runtime = createWorkerRuntime({
       }
       await redis.set('worker:heartbeat', new Date().toISOString(), 'EX', 300);
       return 'ok';
-    } },
+    }) },
     // One dispatch at a time per process; several processes are safe (SKIP LOCKED + fenced leases).
     { name: QUEUE.outboxDispatch, concurrency: 1, attempts: 1, processor: async () => dispatchOnce({ prisma, queues: runtime.queues, log }) },
     // Domain failures are recorded by aq_webhook_fail (with backoff) and retried by the sweeper, so the job itself completes.
@@ -106,6 +115,8 @@ const runtime = createWorkerRuntime({
     { name: OUTBOX_CONSUMERS['invoice.credit_note'], concurrency: 2, processor: async (job) => processCreditNote({ prisma, refunds: new RefundAdminService(prisma), log }, (job.data as OutboxJobData).deliveryId) },
     { name: OUTBOX_CONSUMERS['invoice.render'], concurrency: 2, processor: async (job) => processInvoiceRender({ prisma, dispatch: invoices, log }, (job.data as OutboxJobData).deliveryId) },
     { name: OUTBOX_CONSUMERS['email.admin'], concurrency: 2, processor: email('email.admin') },
+    // Payment exceptions raised by the database functions notify staff by email (task 5.8).
+    { name: OUTBOX_CONSUMERS['notify.admin'], concurrency: 2, processor: email('email.admin') },
   ],
   // Consumers implemented in later phases: their jobs wait in Redis (and PostgreSQL) until a worker exists.
   producers: Object.values(OUTBOX_CONSUMERS),
@@ -120,6 +131,7 @@ const runtime = createWorkerRuntime({
     { queue: QUEUE.maintenance, id: 'payments-reconcile', everyMs: 60_000, jobName: 'payments-reconcile' },
     { queue: QUEUE.maintenance, id: 'refunds-reconcile', everyMs: 300_000, jobName: 'refunds-reconcile' },
     { queue: QUEUE.maintenance, id: 'cod-overdue', everyMs: 86_400_000, jobName: 'cod-overdue' },
+    { queue: QUEUE.maintenance, id: 'ops-alerts', everyMs: 300_000, jobName: 'ops-alerts' },
     { queue: QUEUE.maintenance, id: 'orders-expire', everyMs: 60_000, jobName: 'orders-expire' },
     { queue: QUEUE.maintenance, id: 'payments-daily', everyMs: 86_400_000, jobName: 'payments-daily' },
     { queue: QUEUE.outboxDispatch, id: 'outbox-dispatch', everyMs: 1000, jobName: 'dispatch' },

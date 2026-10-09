@@ -30,6 +30,9 @@ import { registerOrderRoutes } from './orders/admin-routes.js';
 import { DispatchService } from './orders/dispatch.js';
 import { customerOrderRouter, registerCancelRoutes } from './orders/cancel.js';
 import { registerCodRoutes } from './orders/cod.js';
+import { registerOpsRoutes } from './ops/routes.js';
+import { lastRunKey, OpsService } from './ops/service.js';
+import { OUTBOX_CONSUMERS } from './outbox/dispatcher.js';
 import { customerOrdersRouter } from './orders/customer-routes.js';
 import { registerRefundRoutes } from './payments/refund-admin.js';
 import { customerReturnRouter, registerReturnRoutes } from './returns/routes.js';
@@ -43,7 +46,7 @@ import { CheckoutService } from './checkout/initiate.js';
 import { checkoutPaymentRouter } from './checkout/payment-routes.js';
 import { CartService } from './cart/service.js';
 import { accountRouter } from './account/routes.js';
-import { WEBHOOK_QUEUE, webhookRouter } from './webhooks/inbox.js';
+import { enqueueWebhook, WEBHOOK_QUEUE, webhookRouter } from './webhooks/inbox.js';
 
 let env;
 try { env = loadEnv(); }
@@ -96,6 +99,19 @@ registerCancelRoutes(admin, prisma, log);
 registerRefundRoutes(admin, prisma, log);
 registerReturnRoutes(admin, prisma, log, media);
 registerCodRoutes(admin, prisma);
+// Jobs & Webhooks reads every queue (depths, failed jobs) on the API's Redis connection; the worker owns processing.
+const opsQueues = new Map<string, Queue>([[webhookQueue.name, webhookQueue], [mediaQueue.name, mediaQueue], [importValidateQueue.name, importValidateQueue], [importApplyQueue.name, importApplyQueue]]);
+for (const name of [QUEUE.maintenance, QUEUE.outboxDispatch, QUEUE.searchReindex, ...new Set(Object.values(OUTBOX_CONSUMERS))]) {
+  if (opsQueues.has(name)) continue;
+  const q = new Queue(name, { ...BULLMQ_BASE, connection: webhookQueue.opts.connection });
+  q.on('error', (err) => log.warn({ err: err.message, queue: name }, 'ops queue connection error'));
+  opsQueues.set(name, q);
+}
+registerOpsRoutes(admin, new OpsService({
+  prisma, queues: opsQueues, provider: razorpay,
+  readLastRuns: (names) => redis.mget(...names.map(lastRunKey)),
+  enqueueWebhook: (id) => enqueueWebhook(webhookQueue, id),
+}), log);
 registerImportRoutes(admin, prisma, new ImportService({ prisma, readFile: (m) => media.read(m), enqueue: importEnqueue(importValidateQueue, importApplyQueue) }));
 
 const app = createApp({
@@ -125,6 +141,6 @@ const server = app.listen(env.PORT, () => log.info({ port: env.PORT }, 'api list
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {
   process.on(sig, () => {
     log.info({ sig }, 'shutting down');
-    server.close(async () => { await importValidateQueue.close(); await importApplyQueue.close(); await mediaQueue.close(); await webhookQueue.close(); await prisma.$disconnect(); redis.disconnect(); process.exit(0); });
+    server.close(async () => { for (const q of opsQueues.values()) await q.close(); await prisma.$disconnect(); redis.disconnect(); process.exit(0); });
   });
 }

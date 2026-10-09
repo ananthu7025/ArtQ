@@ -212,6 +212,13 @@ const TEMPLATES: Record<string, (d: Record<string, unknown>) => Rendered> = {
     const lines = [`We’re sorry: the courier has lost the parcel for your order ${n}.`, next];
     return { subject: `About your order ${n}`, text: lines.join(' '), html: layout(`About your order ${n}`, lines) };
   },
+  admin_ops_alert: (d) => {
+    const sev = str(d.severity, 'severity');
+    const title = str(d.title, 'title');
+    const detail = str(d.detail, 'detail');
+    return { subject: `[ArtQ ${sev}] ${title}`, text: `${detail} Open Jobs & Webhooks or Payment Exceptions in the admin panel. (${str(d.key, 'key')})`,
+      html: layout(`${sev}: ${title}`, [detail, 'Open Jobs & Webhooks or Payment Exceptions in the admin panel.']) };
+  },
   admin_cod_overdue: (d) => {
     const count = str(d.count, 'count');
     const total = formatINR(Number(str(d.total, 'total')));
@@ -234,8 +241,8 @@ const TEMPLATES: Record<string, (d: Record<string, unknown>) => Rendered> = {
     const order = d.order_id === null || d.order_id === undefined ? 'no order' : `order id ${str(d.order_id, 'order_id')}`;
     return {
       subject: `[ArtQ] Payment exception: ${type}`,
-      text: `A payment exception was raised: ${type} (${order}). Review it in Payments → Exceptions.`,
-      html: layout('Payment exception', [`Type: ${type}`, `Related: ${order}`, 'Review it in Payments → Exceptions in the admin panel.']),
+      text: `A payment exception was raised: ${type} (${order}). Review it in Payment Exceptions.`,
+      html: layout('Payment exception', [`Type: ${type}`, `Related: ${order}`, 'Review it in Payment Exceptions in the admin panel.']),
     };
   },
 };
