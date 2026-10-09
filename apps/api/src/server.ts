@@ -29,6 +29,7 @@ import { registerCouponRoutes } from './coupons/admin-routes.js';
 import { registerOrderRoutes } from './orders/admin-routes.js';
 import { DispatchService } from './orders/dispatch.js';
 import { customerOrderRouter, registerCancelRoutes } from './orders/cancel.js';
+import { registerCodRoutes } from './orders/cod.js';
 import { registerRefundRoutes } from './payments/refund-admin.js';
 import { customerReturnRouter, registerReturnRoutes } from './returns/routes.js';
 import { registerShippingRoutes } from './shipping/admin-routes.js';
@@ -93,6 +94,7 @@ registerOrderRoutes(admin, prisma, new DispatchService(prisma, mediaStorageFromE
 registerCancelRoutes(admin, prisma, log);
 registerRefundRoutes(admin, prisma, log);
 registerReturnRoutes(admin, prisma, log, media);
+registerCodRoutes(admin, prisma);
 registerImportRoutes(admin, prisma, new ImportService({ prisma, readFile: (m) => media.read(m), enqueue: importEnqueue(importValidateQueue, importApplyQueue) }));
 
 const app = createApp({

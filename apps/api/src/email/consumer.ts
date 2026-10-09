@@ -38,7 +38,7 @@ const dedupeKey = (deliveryId: number, to: string) => `outbox-${deliveryId}-${cr
 /** Order events (task 4.10) → the customer's email, built from the order as it is now. */
 const CUSTOMER_ORDER_EMAIL: Record<string, string> = {
   'order.placed': 'order_placed', 'order.expired': 'order_expired', 'order.cancelled': 'order_cancelled',
-  'payment.refund_notice': 'payment_refund_notice', 'refund.processed': 'refund_processed',
+  'payment.refund_notice': 'payment_refund_notice', 'refund.processed': 'refund_processed', 'order.lost': 'order_lost',
 };
 /** `order.status_changed` (task 5.1): the new value → the customer's email. */
 const STATUS_EMAIL: Record<string, string> = { CONFIRMED: 'order_confirmed', SHIPPED: 'order_shipped', DELIVERED: 'order_delivered' };
@@ -83,6 +83,10 @@ async function messagesFor(tx: Prisma.TransactionClient, consumer: EmailConsumer
     if (!to.includes('@')) throw new TypeError(`email.auth event ${ev.eventId} has no recipient`);
     const userId = /^\d+$/.test(ev.aggregateId) && ev.aggregateId !== '0' ? Number(ev.aggregateId) : null;
     return [{ to, template, rendered: render(template, (p.data ?? {}) as Record<string, unknown>), userId, orderId: null, dedupeKey: dedupeKey(ev.deliveryId, to) }];
+  }
+  if (ev.eventType === 'cod.remittance_overdue') {
+    const rendered = render('admin_cod_overdue', p);
+    return (await adminRecipients(tx)).map((to) => ({ to, template: 'admin_cod_overdue', rendered, userId: null, orderId: null, dedupeKey: dedupeKey(ev.deliveryId, to) }));
   }
   if (ev.eventType !== 'payment.exception_raised') throw new UnsupportedEmailEventError(consumer, ev.eventType);
   const rendered = render('admin_payment_exception', p);

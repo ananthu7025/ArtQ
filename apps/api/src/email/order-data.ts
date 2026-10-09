@@ -17,7 +17,7 @@ export async function orderEmailData(tx: Prisma.TransactionClient, o: Order & { 
   const ret = typeof payload.return_id === 'number'
     ? await tx.returnRequest.findUnique({ where: { id: payload.return_id }, include: { items: { include: { orderItem: { select: { productName: true, variantLabel: true } } }, orderBy: { orderItemId: 'asc' } } } })
     : null;
-  const lastPayment = payload.reason ? await tx.payment.findFirst({ where: { orderId: o.id, allocation: { in: ['EXCESS', 'LATE'] } }, orderBy: { id: 'desc' }, select: { amount: true } }) : null;
+  const lastPayment = payload.reason && payload.reason !== 'RTO' ? await tx.payment.findFirst({ where: { orderId: o.id, allocation: { in: ['EXCESS', 'LATE'] } }, orderBy: { id: 'desc' }, select: { amount: true } }) : null;
   return {
     orderNumber: o.orderNumber, firstName: firstName(o.shipName), paymentMethod: o.paymentMethod,
     lines: o.items.map((i) => ({ name: i.productName, label: i.variantLabel, quantity: i.quantity, total: i.lineTotal })),
@@ -28,6 +28,7 @@ export async function orderEmailData(tx: Prisma.TransactionClient, o: Order & { 
     shipment: shipment ? { courier: shipment.courierName, awb: shipment.awbNumber, trackingUrl: shipment.trackingUrl } : null,
     refundAmount: refund?.amount ?? null,
     reason: payload.reason ?? null,
+    resolution: payload.resolution ?? null,
     amount: refund?.amount ?? lastPayment?.amount ?? o.total,
     return: ret ? {
       id: ret.id, reason: ret.reason, note: ret.adminNote,

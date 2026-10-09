@@ -23,6 +23,8 @@ export const DB_ERROR_CODES = [
   'AWB_IN_USE',
   'INVOICE_INVALID',
   'RETURN_NOT_ALLOWED',
+  'RTO_INSPECTION_INVALID',
+  'COD_REMITTANCE_INVALID',
   'INVARIANT',
 ] as const;
 export type DbErrorCode = (typeof DB_ERROR_CODES)[number];

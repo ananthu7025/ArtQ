@@ -26,6 +26,8 @@ const DATA: Record<string, Record<string, unknown>> = {
   return_approved: { orderNumber: 'AQ1', firstName: 'Hema', return: { id: 12, reason: 'DAMAGED', note: 'One is fine', items: [{ name: 'Epoxy Resin', label: '500 ml', quantity: 1 }, { name: 'Frame', label: '', quantity: 0 }] } },
   return_rejected: { orderNumber: 'AQ1', firstName: 'Hema', return: { id: 12, reason: 'DAMAGED', note: 'The photo shows wear from use', items: [{ name: 'Epoxy Resin', label: '500 ml', quantity: 2 }] } },
   return_received: { orderNumber: 'AQ1', firstName: 'Hema', return: { id: 12, reason: 'DAMAGED', note: null, items: [{ name: 'Epoxy Resin', label: '500 ml', quantity: 1 }] } },
+  order_lost: { orderNumber: 'AQ1', resolution: 'REFUND', refundAmount: 110_800 },
+  admin_cod_overdue: { count: 3, total: 331_200, days: 14 },
   set_password_link: { link: 'https://artq.in/set-password?token=abc' },
   admin_order_placed: { orderNumber: 'AQ1', total: 49_900, paymentMethod: 'RAZORPAY', itemCount: 2, customer: 'Hema R, Kochi' },
 };
@@ -119,6 +121,14 @@ describe('email templates', () => {
     expect(render('return_rejected', DATA.return_rejected!).text).toContain('Why: The photo shows wear from use');
     expect(render('return_rejected', { ...DATA.return_rejected!, return: { id: 12, reason: 'DAMAGED', note: '<b>x</b>', items: [] } }).html).toContain('&lt;b&gt;x&lt;/b&gt;');
     expect(() => render('return_received', { orderNumber: 'AQ1', firstName: 'Hema' })).toThrow(/return/);
+  });
+  it('RTO cancellation and lost parcels: what happens to the money', () => {
+    expect(render('order_cancelled', { orderNumber: 'AQ1', reason: 'RTO', refundAmount: 150_000, paymentMethod: 'RAZORPAY' }).text).toContain('₹1,500 for the items is being refunded to your original payment method (the shipping charge isn’t refunded)');
+    expect(render('order_cancelled', { orderNumber: 'AQ1', reason: 'RTO', refundAmount: null, paymentMethod: 'COD' }).text).toBe('Your order AQ1 came back to us without being delivered, so we’ve cancelled it. You don’t need to pay anything. If you still want it, you’re welcome to order again.');
+    expect(render('order_lost', DATA.order_lost!).text).toContain('₹1,108 is being refunded');
+    expect(render('order_lost', { orderNumber: 'AQ1', resolution: 'RESHIP' }).text).toContain('We’re sending you a replacement');
+    expect(render('order_lost', { orderNumber: 'AQ1', resolution: 'REFUND', refundAmount: null }).text).toContain('You don’t need to pay anything.');
+    expect(render('admin_cod_overdue', DATA.admin_cod_overdue!).subject).toBe('[ArtQ] COD cash overdue: 3 order(s), ₹3,312');
   });
   it('refund notice explains why (paid twice / arrived late)', () => {
     expect(render('payment_refund_notice', DATA.payment_refund_notice!).text).toMatch(/two payments for order AQ1\. The extra payment of ₹499/);

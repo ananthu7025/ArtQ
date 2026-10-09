@@ -12,7 +12,7 @@ export type OrderPaymentStatusValue = (typeof ORDER_PAYMENT_STATUSES)[number];
 export type FulfilmentStatusValue = (typeof FULFILMENT_STATUSES)[number];
 export type ReturnStatusValue = (typeof RETURN_STATUSES)[number];
 
-const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use a date like 2026-10-05').refine((s) => !Number.isNaN(Date.parse(`${s}T00:00:00Z`)), 'Use a real date');
+const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use a date like 2026-10-05').refine((s) => { const d = new Date(`${s}T00:00:00Z`); return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s; }, 'Use a real date');   // 2026-02-30 is not a day
 
 /** GET /admin/orders. `from`/`to` are calendar days (India time) of when the order was created, both inclusive. */
 export const adminOrderListQuery = z.strictObject({
@@ -53,6 +53,29 @@ export const adminCancelOrderBody = z.strictObject({
 export const customerCancelOrderBody = z.strictObject({
   reason: z.string().trim().max(CANCEL_REASON_MAX, `Use at most ${CANCEL_REASON_MAX} characters`).transform((v) => v || null).nullable().default(null),
 });
+/**
+ * POST /admin/orders/:id/rto-received (task 5.6): every unit of every line inspected (sellable go back into stock).
+ * The order is cancelled: prepaid items refunded (shipping kept, D-9), COD not collected.
+ */
+export const rtoReceivedBody = z.strictObject({
+  items: z.array(z.strictObject({
+    orderItemId: z.number().int().positive(),
+    sellableQty: z.number({ error: 'Enter the sellable units' }).int('Use whole units').min(0, 'Use 0 or more').max(10_000, 'At most 10,000'),
+    damagedQty: z.number({ error: 'Enter the damaged units' }).int('Use whole units').min(0, 'Use 0 or more').max(10_000, 'At most 10,000'),
+  })).min(1, 'Inspect every item').max(100),
+  notifyCustomer: z.boolean().default(true),
+}).superRefine((b, ctx) => {
+  const seen = new Set<number>();
+  b.items.forEach((it, i) => { if (seen.has(it.orderItemId)) ctx.addIssue({ code: 'custom', path: ['items', i, 'orderItemId'], message: 'Each item only once' }); seen.add(it.orderItemId); });
+});
+export type RtoReceivedInput = z.input<typeof rtoReceivedBody>;
+/** POST /admin/orders/:id/lost (task 5.6): refund (the order is cancelled) or reship (send a replacement as a new order). */
+export const lostOrderBody = z.strictObject({
+  resolution: z.enum(['REFUND', 'RESHIP'], { error: 'Choose refund or reship' }),
+  note: z.string({ error: 'Note the courier’s claim or reference' }).trim().min(3, 'Note the courier’s claim or reference').max(300, 'Use at most 300 characters'),
+  notifyCustomer: z.boolean().default(true),
+});
+export type LostOrderInput = z.input<typeof lostOrderBody>;
 /** POST /admin/orders/:id/pack and /out-for-delivery. */
 export const orderEmptyBody = z.strictObject({});
 
@@ -75,7 +98,7 @@ export type ResendableEmail = (typeof RESENDABLE_EMAILS)[number];
 export const resendEmailBody = z.strictObject({ template: z.enum(RESENDABLE_EMAILS, { error: 'Choose an email' }) });
 
 /** What staff can do to the order now (the server checks again). */
-export type OrderAction = 'confirm' | 'pack' | 'ship' | 'out-for-delivery' | 'deliver' | 'edit-address' | 'cancel';
+export type OrderAction = 'confirm' | 'pack' | 'ship' | 'out-for-delivery' | 'deliver' | 'edit-address' | 'cancel' | 'rto' | 'rto-received' | 'lost';
 
 export type AdminOrderRow = {
   id: number; orderNumber: string; createdAt: string; placedAt: string | null;

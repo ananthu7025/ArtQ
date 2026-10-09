@@ -24,6 +24,7 @@ import { razorpayHandlers } from './payments/webhook-handlers.js';
 import { processCreditNote, RefundAdminService } from './payments/refund-admin.js';
 import { processRefundSend, reconcileRefunds } from './payments/refunds.js';
 import { mediaServiceFromEnv, mediaStorageFromEnv } from './media/factory.js';
+import { codOverdueCheck } from './orders/cod.js';
 import { DispatchService, processInvoiceRender } from './orders/dispatch.js';
 import { createWorkerRuntime } from './worker/runtime.js';
 import { DEFAULT_AUTH_TIMINGS } from './auth/service.js';
@@ -71,6 +72,7 @@ const runtime = createWorkerRuntime({
       if (job.name === 'payments-reconcile') return payments ? reconcileAttempts(payments) : 'no Razorpay keys';
       if (job.name === 'orders-expire') return expirePending({ prisma, provider: razorpay, checkout, log });
       if (job.name === 'payments-daily') return payments ? reconcileDaily(payments) : 'no Razorpay keys';
+      if (job.name === 'cod-overdue') return codOverdueCheck(prisma);
       if (job.name === 'refunds-reconcile') return razorpay ? reconcileRefunds({ prisma, provider: razorpay, log }) : 'no Razorpay keys';
       if (job.name === 'catalog-check') {
         const r = await runCatalogChecks(prisma);
@@ -117,6 +119,7 @@ const runtime = createWorkerRuntime({
     // Payments (architecture.md §7.4). The daily reconciliation covers the previous IST day, so its run time is free.
     { queue: QUEUE.maintenance, id: 'payments-reconcile', everyMs: 60_000, jobName: 'payments-reconcile' },
     { queue: QUEUE.maintenance, id: 'refunds-reconcile', everyMs: 300_000, jobName: 'refunds-reconcile' },
+    { queue: QUEUE.maintenance, id: 'cod-overdue', everyMs: 86_400_000, jobName: 'cod-overdue' },
     { queue: QUEUE.maintenance, id: 'orders-expire', everyMs: 60_000, jobName: 'orders-expire' },
     { queue: QUEUE.maintenance, id: 'payments-daily', everyMs: 86_400_000, jobName: 'payments-daily' },
     { queue: QUEUE.outboxDispatch, id: 'outbox-dispatch', everyMs: 1000, jobName: 'dispatch' },

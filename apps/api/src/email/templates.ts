@@ -149,6 +149,13 @@ const TEMPLATES: Record<string, (d: Record<string, unknown>) => Rendered> = {
   order_cancelled: (d) => {
     const n = str(d.orderNumber, 'orderNumber');
     const refund = typeof d.refundAmount === 'number' && d.refundAmount > 0 ? formatINR(d.refundAmount) : null;
+    if (d.reason === 'RTO') {
+      const lines = [`Your order ${n} came back to us without being delivered, so we’ve cancelled it.`,
+        refund ? `${refund} for the items is being refunded to your original payment method (the shipping charge isn’t refunded). Refunds usually reach your account in 5–7 working days.`
+          : d.paymentMethod === 'COD' ? 'You don’t need to pay anything.' : 'Anything you paid for the items is refunded to your original payment method.',
+        'If you still want it, you’re welcome to order again.'];
+      return { subject: `Order ${n} returned to us and cancelled`, text: lines.join(' '), html: layout(`Order ${n} cancelled`, lines) };
+    }
     const money = refund ? `${refund} is being refunded to your original payment method. Refunds usually reach your account in 5–7 working days.`
       : d.paymentMethod === 'COD' ? 'You don’t need to pay anything.' : 'If you paid for it, the money is refunded to your original payment method.';
     return { subject: `Order ${n} cancelled`, text: `Your order ${n} was cancelled. ${money}`, html: layout(`Order ${n} cancelled`, [`Your order ${n} was cancelled.`, money]) };
@@ -189,6 +196,22 @@ const TEMPLATES: Record<string, (d: Record<string, unknown>) => Rendered> = {
     const r = ret(d);
     const intro = [`Hi ${str(d.firstName, 'firstName')}, your returned items for order ${n} (return #${r.id}) have arrived.`, 'We’ll check them and refund you; we’ll email you when the refund is on its way.'];
     return { subject: `Return for order ${n} received`, text: intro.join(' '), html: layout('Your return has arrived', intro) };
+  },
+  order_lost: (d) => {
+    const n = str(d.orderNumber, 'orderNumber');
+    const refund = typeof d.refundAmount === 'number' && d.refundAmount > 0 ? formatINR(d.refundAmount) : null;
+    const next = d.resolution === 'RESHIP' ? 'We’re sending you a replacement and will email you its tracking details.'
+      : refund ? `We’ve cancelled the order and ${refund} is being refunded to your original payment method. Refunds usually reach your account in 5–7 working days.`
+      : 'We’ve cancelled the order. You don’t need to pay anything.';
+    const lines = [`We’re sorry: the courier has lost the parcel for your order ${n}.`, next];
+    return { subject: `About your order ${n}`, text: lines.join(' '), html: layout(`About your order ${n}`, lines) };
+  },
+  admin_cod_overdue: (d) => {
+    const count = str(d.count, 'count');
+    const total = formatINR(Number(str(d.total, 'total')));
+    const days = str(d.days, 'days');
+    return { subject: `[ArtQ] COD cash overdue: ${count} order(s), ${total}`, text: `${count} delivered cash-on-delivery order(s) worth ${total} have waited more than ${days} days for the courier's payout. Check COD Remittances in the admin panel.`,
+      html: layout('COD cash overdue', [`${count} delivered cash-on-delivery order(s) worth ${total} have waited more than ${days} days for the courier’s payout.`, 'Check COD Remittances in the admin panel and chase the courier.']) };
   },
   set_password_link: (d) => {
     const link = str(d.link, 'link');

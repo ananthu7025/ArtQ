@@ -201,8 +201,8 @@ describe('transitions', () => {
   it('shipped → out for delivery → delivered: the shipment follows; COD cash is now collected (payment history); "delivered" email', async () => {
     const o = await placed('COD');
     await shipped(o.orderId);
-    expect((await call('get', `/orders/${o.orderId}`)).body.actions).toEqual(['out-for-delivery', 'deliver']);
-    expect((await call('post', `/orders/${o.orderId}/out-for-delivery`, {}, STAFF)).body).toMatchObject({ fulfilmentStatus: 'OUT_FOR_DELIVERY', shipment: { status: 'OUT_FOR_DELIVERY' }, actions: ['deliver'] });
+    expect((await call('get', `/orders/${o.orderId}`)).body.actions).toEqual(['out-for-delivery', 'deliver', 'rto', 'lost']);
+    expect((await call('post', `/orders/${o.orderId}/out-for-delivery`, {}, STAFF)).body).toMatchObject({ fulfilmentStatus: 'OUT_FOR_DELIVERY', shipment: { status: 'OUT_FOR_DELIVERY' }, actions: ['deliver', 'rto', 'lost'] });
     const d = await call('post', `/orders/${o.orderId}/deliver`, {}, STAFF);
     expect(d.body).toMatchObject({ fulfilmentStatus: 'DELIVERED', paymentStatus: 'COD_COLLECTED', shipment: { status: 'DELIVERED', deliveredAt: expect.any(String) }, actions: [], resendable: ['order_placed', 'order_confirmed', 'order_shipped', 'order_delivered'] });
     expect(d.body.history.slice(-2).map((h: { dimension: string; from: string; to: string }) => `${h.dimension}:${h.from}→${h.to}`).sort()).toEqual(['FULFILMENT:OUT_FOR_DELIVERY→DELIVERED', 'PAYMENT:COD_PENDING→COD_COLLECTED']);

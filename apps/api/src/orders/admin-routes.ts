@@ -1,8 +1,8 @@
 // Admin Orders routes (tasks 5.1, 5.2; api.md §4.3). orders:read for the list, detail, packing slip and invoice;
-// orders:fulfil for confirm / pack / ship / out for delivery / delivered, the address correction and staff note, and resending an email.
+// orders:fulfil for confirm / pack / ship / out for delivery / delivered, RTO (returning, received) and lost (task 5.6), the address correction and staff note, and resending an email.
 // Contact details are masked for staff without customers:write (architecture.md §5.9).
 import {
-  adminOrderListQuery, can, orderEmptyBody, orderNotifyBody, orderPatchBody, resendEmailBody, shipOrderBody, type Permission,
+  adminOrderListQuery, can, lostOrderBody, orderEmptyBody, rtoReceivedBody, orderNotifyBody, orderPatchBody, resendEmailBody, shipOrderBody, type Permission,
 } from '@artq/shared';
 import type { PrismaClient } from '@prisma/client';
 import type { Request, RequestHandler, Response, Router } from 'express';
@@ -12,6 +12,7 @@ import { validate } from '../middleware/validate.js';
 import { AdminOrderService, type Actor } from './admin-service.js';
 import type { DispatchService } from './dispatch.js';
 import { renderPackingSlip } from './packing-slip.js';
+import { markLost, receiveRto } from './rto.js';
 
 type AdminRoutes = { routes: Router; can: (p: Permission) => RequestHandler };
 const idParam = z.strictObject({ id: z.coerce.number().int().positive().max(2_147_483_647) });
@@ -63,6 +64,17 @@ export function registerOrderRoutes(admin: AdminRoutes, prisma: PrismaClient, di
   });
   r.post('/orders/:id/deliver', fulfil, validate({ params: idParam, body: orderNotifyBody }), async (req, res) => {
     noStore(res).json(await service.deliver(idOf(req), actor(req, res), notify(req)));
+  });
+  r.post('/orders/:id/rto', fulfil, validate({ params: idParam, body: orderEmptyBody }), async (req, res) => {
+    noStore(res).json(await service.rto(idOf(req), actor(req, res)));
+  });
+  r.post('/orders/:id/rto-received', fulfil, validate({ params: idParam, body: rtoReceivedBody }), async (req, res) => {
+    await receiveRto(prisma, idOf(req), req.body as z.output<typeof rtoReceivedBody>, actor(req, res));
+    noStore(res).json(await service.detail(idOf(req), seeContact(req)));
+  });
+  r.post('/orders/:id/lost', fulfil, validate({ params: idParam, body: lostOrderBody }), async (req, res) => {
+    await markLost(prisma, idOf(req), req.body as z.output<typeof lostOrderBody>, actor(req, res));
+    noStore(res).json(await service.detail(idOf(req), seeContact(req)));
   });
   r.patch('/orders/:id', fulfil, validate({ params: idParam, body: orderPatchBody }), async (req, res) => {
     noStore(res).json(await service.patch(idOf(req), req.body as z.output<typeof orderPatchBody>, actor(req, res)));

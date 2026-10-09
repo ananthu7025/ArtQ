@@ -5,7 +5,8 @@
 // Every transition is one conditional UPDATE (the order row is the lock, database.md §4.1), so two people pressing the
 // same button change the order once and the second gets INVALID_TRANSITION. Each change writes order_status_history,
 // bumps `version`, is audited, and (confirm, deliver) emits `order.status_changed` for the customer email.
-// Ship (dispatch: stock and invoice) is in dispatch.ts (task 5.2); cancellation 5.3, RTO and lost 5.6.
+// Ship (dispatch: stock and invoice) is in dispatch.ts (task 5.2), cancellation in cancel.ts (5.3); RTO received and lost
+// in rto.ts (5.6). Marking an order as returning to us (RTO) changes no money or stock and is a plain transition here.
 import {
   maskContact, parseSetting, type orderAddressBody, type orderPatchBody, surfaceAvailable, type AdminOrderDetail, type AdminOrderRow, type OrderAction, type ResendableEmail, type adminOrderListQuery,
 } from '@artq/shared';
@@ -33,6 +34,9 @@ export function actionsFor(o: OrderState): OrderAction[] {
   if (o.status === 'CONFIRMED' && ['SHIPPED', 'OUT_FOR_DELIVERY'].includes(o.fulfilmentStatus)) a.push('deliver');
   if (['PLACED', 'CONFIRMED'].includes(o.status) && o.fulfilmentStatus === 'UNFULFILLED') a.push('edit-address');
   if (o.status === 'PENDING_PAYMENT' || (['PLACED', 'CONFIRMED'].includes(o.status) && ['UNFULFILLED', 'PACKED'].includes(o.fulfilmentStatus))) a.push('cancel');
+  if (o.status === 'CONFIRMED' && ['SHIPPED', 'OUT_FOR_DELIVERY'].includes(o.fulfilmentStatus)) a.push('rto');
+  if (o.status === 'CONFIRMED' && o.fulfilmentStatus === 'RTO_IN_TRANSIT') a.push('rto-received');
+  if (o.status === 'CONFIRMED' && ['SHIPPED', 'OUT_FOR_DELIVERY', 'RTO_IN_TRANSIT'].includes(o.fulfilmentStatus)) a.push('lost');
   return a;
 }
 export function resendableFor(o: OrderState): ResendableEmail[] {
@@ -156,6 +160,13 @@ export class AdminOrderService {
       Prisma.sql`fulfilment_status = 'DELIVERED', payment_status = CASE WHEN payment_status = 'COD_PENDING' THEN 'COD_COLLECTED'::"OrderPaymentStatus" ELSE payment_status END`,
       'marked delivered', notify ? 'DELIVERED' : null,
       (tx) => tx.$executeRaw`UPDATE shipments SET status = 'DELIVERED', delivered_at = now(), updated_at = now() WHERE order_id = ${id}`);
+  }
+
+  /** SHIPPED / OUT_FOR_DELIVERY → RTO_IN_TRANSIT: the courier is bringing the parcel back (refused or undeliverable). */
+  rto(id: number, actor: Actor) {
+    return this.transition(id, actor, 'order.rto', Prisma.sql`status = 'CONFIRMED' AND fulfilment_status IN ('SHIPPED', 'OUT_FOR_DELIVERY')`,
+      Prisma.sql`fulfilment_status = 'RTO_IN_TRANSIT'`, 'marked as returning to us', null,
+      (tx) => tx.$executeRaw`UPDATE shipments SET status = 'RTO_IN_TRANSIT', rto_initiated_at = now(), updated_at = now() WHERE order_id = ${id}`);
   }
 
   private async transition(id: number, actor: Actor, action: string, when: Prisma.Sql, set: Prisma.Sql, verb: string, emailFor: 'CONFIRMED' | 'DELIVERED' | null, also?: (tx: Tx) => Promise<unknown>): Promise<AdminOrderDetail> {
