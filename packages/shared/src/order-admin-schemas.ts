@@ -104,6 +104,8 @@ export type AdminOrderDetail = AdminOrderRow & {
   exceptions: { id: number; type: string; status: string; amount: number | null; createdAt: string; resolvedAt: string | null }[];
   shipment: { courierName: string; awbNumber: string; trackingUrl: string | null; status: string; weightG: number | null; shippedAt: string | null; deliveredAt: string | null } | null;
   invoices: { id: number; kind: string; number: string; issuedAt: string; grandTotal: number }[];
+  /** Return requests (task 5.5); details at /admin/returns/:id. */
+  returns: { id: number; reason: string; status: string; units: number; createdAt: string }[];
   history: { dimension: string; from: string | null; to: string; note: string | null; actor: string; actorName: string | null; at: string }[];
   emails: { id: number; template: string; subject: string; to: string; status: string; at: string }[];
   actions: OrderAction[];

@@ -22,3 +22,4 @@ export * from './checkout-schemas.js';
 export * from './order-admin-schemas.js';
 export * from './invoice.js';
 export * from './refund-schemas.js';
+export * from './return-schemas.js';

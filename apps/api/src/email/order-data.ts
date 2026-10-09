@@ -14,6 +14,9 @@ export async function orderEmailData(tx: Prisma.TransactionClient, o: Order & { 
   const hasPassword = wantsLink ? (await tx.user.findFirst({ where: { email: o.contactEmail, deletedAt: null, passwordHash: { not: null } }, select: { id: true } })) !== null : true;
   const refund = typeof payload.refund_id === 'number' ? await tx.refund.findUnique({ where: { id: payload.refund_id }, select: { amount: true } }) : null;
   const shipment = await tx.shipment.findUnique({ where: { orderId: o.id }, select: { courierName: true, awbNumber: true, trackingUrl: true } });
+  const ret = typeof payload.return_id === 'number'
+    ? await tx.returnRequest.findUnique({ where: { id: payload.return_id }, include: { items: { include: { orderItem: { select: { productName: true, variantLabel: true } } }, orderBy: { orderItemId: 'asc' } } } })
+    : null;
   const lastPayment = payload.reason ? await tx.payment.findFirst({ where: { orderId: o.id, allocation: { in: ['EXCESS', 'LATE'] } }, orderBy: { id: 'desc' }, select: { amount: true } }) : null;
   return {
     orderNumber: o.orderNumber, firstName: firstName(o.shipName), paymentMethod: o.paymentMethod,
@@ -26,5 +29,9 @@ export async function orderEmailData(tx: Prisma.TransactionClient, o: Order & { 
     refundAmount: refund?.amount ?? null,
     reason: payload.reason ?? null,
     amount: refund?.amount ?? lastPayment?.amount ?? o.total,
+    return: ret ? {
+      id: ret.id, reason: ret.reason, note: ret.adminNote,
+      items: ret.items.map((i) => ({ name: i.orderItem.productName, label: i.orderItem.variantLabel, quantity: i.approvedQty ?? i.requestedQty, received: i.receivedQty })),
+    } : null,
   };
 }

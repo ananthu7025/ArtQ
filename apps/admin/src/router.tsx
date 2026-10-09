@@ -17,6 +17,7 @@ import { ShippingPage } from './pages/shipping/ShippingPage';
 import { OrderDetailPage } from './pages/orders/OrderDetailPage';
 import { OrdersPage } from './pages/orders/OrdersPage';
 import { RefundsPage } from './pages/orders/RefundsPage';
+import { ReturnDetailPage } from './pages/returns/ReturnDetailPage';
 import { ProductEditorPage } from './pages/products/editor/ProductEditorPage';
 import { DashboardPage, ForbiddenPage, FullPageSpinner, ModulePlaceholder, NotFoundPage } from './pages/simple';
 
@@ -53,6 +54,7 @@ const PRODUCTS = ALL_NAV_ITEMS.find((i) => i.path === '/products')!;
 const IMPORTS = ALL_NAV_ITEMS.find((i) => i.path === '/imports')!;
 const COUPONS = ALL_NAV_ITEMS.find((i) => i.path === '/coupons')!;
 const ORDERS = ALL_NAV_ITEMS.find((i) => i.path === '/orders')!;
+const RETURNS = ALL_NAV_ITEMS.find((i) => i.path === '/returns')!;
 
 export const routes: RouteObject[] = [
   { path: '/login', element: <LoginPage /> },
@@ -69,6 +71,7 @@ export const routes: RouteObject[] = [
         { path: '/imports/:id', element: <Guard item={IMPORTS}><ImportDetailPage /></Guard> },
         { path: '/coupons/:id', element: <Guard item={COUPONS}><CouponEditorPage /></Guard> },
         { path: '/orders/:id', element: <Guard item={ORDERS}><OrderDetailPage /></Guard> },
+        { path: '/returns/:id', element: <Guard item={RETURNS}><ReturnDetailPage /></Guard> },
         { path: '*', element: <NotFoundPage /> },
       ],
     }],

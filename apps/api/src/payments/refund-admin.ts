@@ -27,10 +27,11 @@ const SCOPE_TEXT: Record<string, string> = {
   item: 'more than is left to refund on an item (pending refunds count too)',
   order: 'more than is left to refund on the order, its shipping or its COD fee (pending refunds count too)',
   payment: 'more than is left on the payment (pending refunds count too)',
+  return: 'more units of an item than this return received, or more than those units’ share of the price (refunds already made for this return count too)',
 };
 
 /** Turns the database's refusals into answers staff can act on. */
-function refusal(e: unknown): never {
+export function refusal(e: unknown): never {
   if (e instanceof DbFunctionError) {
     if (e.code === 'REFUND_EXCEEDS_CAPACITY') {
       const [scope, itemId] = (e.detail ?? '').split(':');

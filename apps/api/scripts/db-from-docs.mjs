@@ -7,6 +7,7 @@
 //   migrations/0008_dispatch_order/…                 ← <!-- validate:0008.sql --> (verbatim; task 5.2, §8.4)
 //   migrations/0009_cancel_order/…                   ← <!-- validate:0009.sql --> (verbatim; task 5.3, §8.3a)
 //   migrations/0010_credit_note/…                    ← <!-- validate:0010.sql --> (verbatim; task 5.4, §8.5a)
+//   migrations/0011_returns/…                        ← <!-- validate:0011.sql --> (verbatim; task 5.5, §8.5b)
 //
 //   node scripts/db-from-docs.mjs          write the files
 //   node scripts/db-from-docs.mjs --check  exit 1 if any file differs (CI drift guard)
@@ -25,7 +26,7 @@ const DOC = join(API, '..', '..', 'docs', 'database.md');
 
 export const MIGRATIONS = ['0001_init', '0002_constraints_search_integrity', '0003_money_stock_functions'];
 /** Later migrations generated from a validated doc block: block → [directory, doc section]. */
-export const DOC_MIGRATIONS = { '0008.sql': ['0008_dispatch_order', '§8.4'], '0009.sql': ['0009_cancel_order', '§8.3a'], '0010.sql': ['0010_credit_note', '§8.5a'] };
+export const DOC_MIGRATIONS = { '0008.sql': ['0008_dispatch_order', '§8.4'], '0009.sql': ['0009_cancel_order', '§8.3a'], '0010.sql': ['0010_credit_note', '§8.5a'], '0011.sql': ['0011_returns', '§8.5b'] };
 const SCHEMA_HEADER = '// GENERATED from docs/database.md §5 by scripts/db-from-docs.mjs. Edit the doc, then regenerate.\n';
 const SQL_HEADER = (section) => `-- GENERATED from docs/database.md ${section} by scripts/db-from-docs.mjs. Do not edit.\n`;
 

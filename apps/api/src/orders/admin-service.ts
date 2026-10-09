@@ -97,6 +97,7 @@ export class AdminOrderService {
       paymentAttempts: { orderBy: { id: 'asc' } }, payments: { orderBy: { id: 'asc' } }, refunds: { orderBy: { id: 'asc' } },
       exceptions: { orderBy: { id: 'asc' } }, shipment: true, invoices: { orderBy: { id: 'asc' } },
       history: { orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] },
+      returns: { orderBy: { id: 'asc' }, include: { items: { select: { requestedQty: true } } } },
     } });
     if (!o) throw new AppError(404, 'NOT_FOUND', 'Order not found');
     const [state, emails, actors] = await Promise.all([
@@ -121,6 +122,7 @@ export class AdminOrderService {
       exceptions: o.exceptions.map((e) => ({ id: e.id, type: e.type, status: e.status, amount: e.amount, createdAt: e.createdAt.toISOString(), resolvedAt: iso(e.resolvedAt) })),
       shipment: o.shipment ? { courierName: o.shipment.courierName, awbNumber: o.shipment.awbNumber, trackingUrl: o.shipment.trackingUrl, status: o.shipment.status, weightG: o.shipment.weightG, shippedAt: iso(o.shipment.shippedAt), deliveredAt: iso(o.shipment.deliveredAt) } : null,
       invoices: o.invoices.map((v) => ({ id: v.id, kind: v.kind, number: v.number, issuedAt: v.issuedAt.toISOString(), grandTotal: v.grandTotal })),
+      returns: o.returns.map((r) => ({ id: r.id, reason: r.reason, status: r.status, units: r.items.reduce((n, i) => n + i.requestedQty, 0), createdAt: r.createdAt.toISOString() })),
       history: o.history.map((h) => {
         const who = actors.find((u) => u.id === h.actorId);
         return { dimension: h.dimension, from: h.fromValue, to: h.toValue, note: h.note, actor: h.actorType, actorName: who ? (who.name ?? who.email) : null, at: h.createdAt.toISOString() };

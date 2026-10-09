@@ -22,6 +22,10 @@ const DATA: Record<string, Record<string, unknown>> = {
   order_cancelled: { orderNumber: 'AQ1' },
   payment_refund_notice: { orderNumber: 'AQ1', reason: 'EXCESS', amount: 49_900 },
   refund_processed: { orderNumber: 'AQ1', amount: 49_900 },
+  return_requested: { orderNumber: 'AQ1', firstName: 'Hema', return: { id: 12, reason: 'DAMAGED', note: null, items: [{ name: 'Epoxy Resin', label: '500 ml', quantity: 2 }] } },
+  return_approved: { orderNumber: 'AQ1', firstName: 'Hema', return: { id: 12, reason: 'DAMAGED', note: 'One is fine', items: [{ name: 'Epoxy Resin', label: '500 ml', quantity: 1 }, { name: 'Frame', label: '', quantity: 0 }] } },
+  return_rejected: { orderNumber: 'AQ1', firstName: 'Hema', return: { id: 12, reason: 'DAMAGED', note: 'The photo shows wear from use', items: [{ name: 'Epoxy Resin', label: '500 ml', quantity: 2 }] } },
+  return_received: { orderNumber: 'AQ1', firstName: 'Hema', return: { id: 12, reason: 'DAMAGED', note: null, items: [{ name: 'Epoxy Resin', label: '500 ml', quantity: 1 }] } },
   set_password_link: { link: 'https://artq.in/set-password?token=abc' },
   admin_order_placed: { orderNumber: 'AQ1', total: 49_900, paymentMethod: 'RAZORPAY', itemCount: 2, customer: 'Hema R, Kochi' },
 };
@@ -104,6 +108,17 @@ describe('email templates', () => {
     expect(render('order_cancelled', { orderNumber: 'AQ1', refundAmount: 110_800, paymentMethod: 'RAZORPAY' }).text).toBe('Your order AQ1 was cancelled. ₹1,108 is being refunded to your original payment method. Refunds usually reach your account in 5–7 working days.');
     expect(render('order_cancelled', { orderNumber: 'AQ1', refundAmount: null, paymentMethod: 'COD' }).text).toBe('Your order AQ1 was cancelled. You don’t need to pay anything.');
     expect(render('order_cancelled', { orderNumber: 'AQ1' }).text).toContain('If you paid for it');
+  });
+  it('returns: the units (approved ones only), what happens next by reason, the staff note; missing data fails', () => {
+    expect(render('return_requested', DATA.return_requested!).text).toBe('Hi Hema, we’ve received your return request #12 for order AQ1. Items: 2 × Epoxy Resin (500 ml). We’ll look at it and email you within 2 working days.');
+    const ok = render('return_approved', DATA.return_approved!).text;
+    expect(ok).toContain('Approved: 1 × Epoxy Resin (500 ml).');
+    expect(ok).not.toContain('Frame');
+    expect(ok).toContain('Note from us: One is fine');
+    expect(render('return_approved', { ...DATA.return_approved!, return: { id: 12, reason: 'MISSING_ITEM', note: null, items: [{ name: 'Frame', label: 'A4', quantity: 1 }] } }).text).toContain('We’ll refund the missing item to you shortly.');
+    expect(render('return_rejected', DATA.return_rejected!).text).toContain('Why: The photo shows wear from use');
+    expect(render('return_rejected', { ...DATA.return_rejected!, return: { id: 12, reason: 'DAMAGED', note: '<b>x</b>', items: [] } }).html).toContain('&lt;b&gt;x&lt;/b&gt;');
+    expect(() => render('return_received', { orderNumber: 'AQ1', firstName: 'Hema' })).toThrow(/return/);
   });
   it('refund notice explains why (paid twice / arrived late)', () => {
     expect(render('payment_refund_notice', DATA.payment_refund_notice!).text).toMatch(/two payments for order AQ1\. The extra payment of ₹499/);

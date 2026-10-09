@@ -42,6 +42,8 @@ const CUSTOMER_ORDER_EMAIL: Record<string, string> = {
 };
 /** `order.status_changed` (task 5.1): the new value → the customer's email. */
 const STATUS_EMAIL: Record<string, string> = { CONFIRMED: 'order_confirmed', SHIPPED: 'order_shipped', DELIVERED: 'order_delivered' };
+/** `return.status_changed` (task 5.5): the return's new status → the customer's email. */
+const RETURN_EMAIL: Record<string, string> = { REQUESTED: 'return_requested', APPROVED: 'return_approved', REJECTED: 'return_rejected', RECEIVED: 'return_received' };
 /** `order.email_resend` (task 5.1): an admin sends one of these again; a new delivery, so a new dedupe key. */
 const RESEND_EMAIL = new Set(['order_placed', 'order_confirmed', 'order_shipped', 'order_delivered']);
 
@@ -50,6 +52,7 @@ function orderTemplate(ev: OutboxEventRow): string | null {
   const p = (ev.payload ?? {}) as Record<string, unknown>;
   if (CUSTOMER_ORDER_EMAIL[ev.eventType]) return CUSTOMER_ORDER_EMAIL[ev.eventType]!;
   if (ev.eventType === 'order.status_changed') return STATUS_EMAIL[String(p.to)] ?? null;
+  if (ev.eventType === 'return.status_changed') return RETURN_EMAIL[String(p.to)] ?? null;
   if (ev.eventType === 'order.email_resend') return RESEND_EMAIL.has(String(p.template)) ? String(p.template) : null;
   return null;
 }

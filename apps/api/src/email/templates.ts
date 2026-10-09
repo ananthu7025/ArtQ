@@ -34,6 +34,10 @@ export class UnknownTemplateError extends Error {
   constructor(name: string) { super(`unknown email template "${name}"`); this.name = 'UnknownTemplateError'; }
 }
 
+type ReturnData = { id: number; reason: string; note: string | null; items: { name: string; label: string; quantity: number }[] };
+const ret = (d: Record<string, unknown>) => { const r = d.return as ReturnData | null | undefined; if (!r || !Array.isArray(r.items)) throw new TypeError('template data "return" is missing'); return r; };
+const units = (r: ReturnData) => r.items.filter((i) => i.quantity > 0).map((i) => `${i.quantity} × ${i.name}${i.label ? ` (${i.label})` : ''}`).join(', ');
+
 const str = (v: unknown, name: string) => {
   if (typeof v !== 'string' && typeof v !== 'number') throw new TypeError(`template data "${name}" is missing`);
   return String(v);
@@ -160,6 +164,31 @@ const TEMPLATES: Record<string, (d: Record<string, unknown>) => Rendered> = {
     const n = str(d.orderNumber, 'orderNumber');
     const amount = formatINR(Number(str(d.amount, 'amount')));
     return { subject: `Refund of ${amount} processed`, text: `We’ve refunded ${amount} for order ${n} to your original payment method. It can take 5–7 working days to show in your account.`, html: layout(`Refund of ${amount} processed`, [`We’ve refunded ${amount} for order ${n} to your original payment method.`, 'It can take 5–7 working days to show in your account.']) };
+  },
+  return_requested: (d) => {
+    const n = str(d.orderNumber, 'orderNumber');
+    const r = ret(d);
+    const intro = [`Hi ${str(d.firstName, 'firstName')}, we’ve received your return request #${r.id} for order ${n}.`, `Items: ${units(r)}.`, 'We’ll look at it and email you within 2 working days.'];
+    return { subject: `Return request for order ${n} received`, text: intro.join(' '), html: layout('We’ve received your return request', intro) };
+  },
+  return_approved: (d) => {
+    const n = str(d.orderNumber, 'orderNumber');
+    const r = ret(d);
+    const next = r.reason === 'MISSING_ITEM' ? 'We’ll refund the missing item to you shortly.' : 'Please pack the items securely. We’ll arrange the pickup or tell you where to send them; once they arrive and are checked, we refund you.';
+    const intro = [`Hi ${str(d.firstName, 'firstName')}, your return #${r.id} for order ${n} is approved.`, `Approved: ${units(r)}.`, next, ...(r.note ? [`Note from us: ${r.note}`] : [])];
+    return { subject: `Return approved for order ${n}`, text: intro.join(' '), html: layout('Your return is approved', intro) };
+  },
+  return_rejected: (d) => {
+    const n = str(d.orderNumber, 'orderNumber');
+    const r = ret(d);
+    const intro = [`Hi ${str(d.firstName, 'firstName')}, we’re sorry, we can’t accept return #${r.id} for order ${n}.`, ...(r.note ? [`Why: ${r.note}`] : []), 'If you think this is a mistake, reply to this email and we’ll take another look.'];
+    return { subject: `About your return for order ${n}`, text: intro.join(' '), html: layout('About your return request', intro) };
+  },
+  return_received: (d) => {
+    const n = str(d.orderNumber, 'orderNumber');
+    const r = ret(d);
+    const intro = [`Hi ${str(d.firstName, 'firstName')}, your returned items for order ${n} (return #${r.id}) have arrived.`, 'We’ll check them and refund you; we’ll email you when the refund is on its way.'];
+    return { subject: `Return for order ${n} received`, text: intro.join(' '), html: layout('Your return has arrived', intro) };
   },
   set_password_link: (d) => {
     const link = str(d.link, 'link');

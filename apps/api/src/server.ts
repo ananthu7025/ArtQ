@@ -30,6 +30,7 @@ import { registerOrderRoutes } from './orders/admin-routes.js';
 import { DispatchService } from './orders/dispatch.js';
 import { customerOrderRouter, registerCancelRoutes } from './orders/cancel.js';
 import { registerRefundRoutes } from './payments/refund-admin.js';
+import { customerReturnRouter, registerReturnRoutes } from './returns/routes.js';
 import { registerShippingRoutes } from './shipping/admin-routes.js';
 import { ImportService } from './imports/service.js';
 import { razorpayProvider } from './webhooks/provider.js';
@@ -91,6 +92,7 @@ registerShippingRoutes(admin, prisma, appCache);
 registerOrderRoutes(admin, prisma, new DispatchService(prisma, mediaStorageFromEnv(env)));
 registerCancelRoutes(admin, prisma, log);
 registerRefundRoutes(admin, prisma, log);
+registerReturnRoutes(admin, prisma, log, media);
 registerImportRoutes(admin, prisma, new ImportService({ prisma, readFile: (m) => media.read(m), enqueue: importEnqueue(importValidateQueue, importApplyQueue) }));
 
 const app = createApp({
@@ -108,6 +110,7 @@ const app = createApp({
     checkoutPaymentRouter({ prisma, cache, jwt, env: env.NODE_ENV, provider: razorpay, log, limiter, onRateLimitError, links: { webUrl: env.WEB_URL, linkSecret: env.AUTH_LINK_SECRET, setPasswordTtlS: DEFAULT_AUTH_TIMINGS.setPasswordTtlS }, checkout: new CheckoutService({ prisma, carts: new CartService(prisma, mediaUrl), provider: razorpay, mediaUrl, storeName: 'ArtQ' }) }),
     accountRouter({ prisma, cache, jwt, service, env: env.NODE_ENV, mediaUrl, limiter, onRateLimitError }),
     customerOrderRouter({ prisma, cache, jwt, log }),
+    customerReturnRouter({ prisma, cache, jwt, log, media }),
     storefrontRouter({ prisma, cache: appCache, mediaUrl, limiter, onRateLimitError, onInvalidSetting: (key) => log.warn({ key }, 'stored setting is invalid; serving the default'), onSearchLogError: (err) => log.warn({ err: String(err) }, 'search log not written') }),
     webhookRouter({ prisma, queue: webhookQueue, providers: [razorpayProvider(env.RAZORPAY_WEBHOOK_SECRET || undefined)], log }),
     admin.router,

@@ -3,7 +3,7 @@
 // and (once shipped) the tax invoice, items
 // and totals, payments and refunds, the timeline, customer and delivery address (correctable before packing), the
 // staff note, and the emails sent (any fitting one can be sent again); Cancel (orders:cancel, task 5.3) refunds a
-// prepaid order automatically. Refunds, RTO and returns arrive with tasks 5.4–5.6. A refused step (someone else moved the order) explains itself and reloads.
+// prepaid order automatically. Refunds (5.4) and returns (5.5, each linking to its return page) are listed; RTO arrives with 5.6. A refused step (someone else moved the order) explains itself and reloads.
 import {
   adminCancelOrderBody, adminNoteField, formatINR, orderAddressBody, shipOrderBody, type AdminOrderDetail, type OrderAction, type ResendableEmail,
 } from '@artq/shared';
@@ -25,6 +25,7 @@ import { convertedForm, optionalNumber, wholeProblems } from '../../components/f
 import { NotFoundPage } from '../simple';
 import { FULFILMENT_LABEL, ORDER_LABEL, PAYMENT_LABEL, Pill, RETURN_LABEL, when } from './labels';
 import { OrderRefunds, RefundDialog } from './refunds';
+import { reasonLabel, ReturnPill } from '../returns/labels';
 
 const card = 'rounded-lg border border-surface-200 bg-white p-5';
 const primary = `${btn} bg-brand-700 text-white disabled:opacity-80`;
@@ -40,7 +41,8 @@ const STEPS: Step[] = [
   { action: 'deliver', label: 'Mark delivered', title: 'Mark as delivered?', description: 'The courier confirmed delivery. For cash on delivery, the cash is now recorded as collected by the courier.', notify: true },
 ];
 const EMAIL_LABEL: Record<ResendableEmail, string> = { order_placed: 'Order placed', order_confirmed: 'Order confirmed', order_shipped: 'Order shipped', order_delivered: 'Order delivered' };
-const TEMPLATE_LABEL: Record<string, string> = { ...EMAIL_LABEL, order_expired: 'Order not completed', order_cancelled: 'Order cancelled', payment_refund_notice: 'Refund notice', refund_processed: 'Refund processed', set_password_link: 'Set a password', admin_order_placed: 'New order (staff)' };
+const TEMPLATE_LABEL: Record<string, string> = { ...EMAIL_LABEL, order_expired: 'Order not completed', order_cancelled: 'Order cancelled', payment_refund_notice: 'Refund notice', refund_processed: 'Refund processed',
+  return_requested: 'Return requested', return_approved: 'Return approved', return_rejected: 'Return rejected', return_received: 'Return received', set_password_link: 'Set a password', admin_order_placed: 'New order (staff)' };
 const DIMENSION: Record<string, string> = { ORDER: 'Order', PAYMENT: 'Payment', FULFILMENT: 'Fulfilment', RETURN: 'Return' };
 const VALUE: Record<string, string> = Object.fromEntries([...Object.entries(ORDER_LABEL), ...Object.entries(PAYMENT_LABEL), ...Object.entries(FULFILMENT_LABEL), ...Object.entries(RETURN_LABEL)].map(([k, [v]]) => [k, v]));
 
@@ -115,6 +117,7 @@ export function OrderDetailPage() {
         <div className="space-y-5">
           <Items o={o} />
           <Payments o={o} />
+          <OrderReturns o={o} />
           <OrderRefunds orderId={o.id} onChanged={() => void q.refetch()} />
           <Timeline o={o} />
         </div>
@@ -201,6 +204,23 @@ function Items({ o }: { o: AdminOrderDetail }) {
         {t.refundedAmount > 0 && row('Refunded', `−${formatINR(t.refundedAmount)}`, 'text-danger-700')}
       </dl>
       <p className="ml-auto mt-1 max-w-xs text-xs text-ink-700">Weight {(o.weights.chargeableG / 1000).toLocaleString('en-IN')} kg chargeable</p>
+    </section>
+  );
+}
+
+function OrderReturns({ o }: { o: AdminOrderDetail }) {
+  if (o.returns.length === 0) return null;
+  return (
+    <section aria-labelledby="returns-h" className={card}>
+      <h2 id="returns-h" className={h2}>Returns</h2>
+      <ul className="divide-y divide-surface-100 text-sm">
+        {o.returns.map((r) => (
+          <li key={r.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
+            <span><Link to={`/returns/${r.id}`} className="font-medium text-brand-700 underline-offset-2 hover:underline">Return #{r.id}</Link> <span className="text-ink-700">· {reasonLabel(r.reason)} · {r.units} unit{r.units === 1 ? '' : 's'} · {when(r.createdAt)}</span></span>
+            <ReturnPill status={r.status} />
+          </li>
+        ))}
+      </ul>
     </section>
   );
 }
