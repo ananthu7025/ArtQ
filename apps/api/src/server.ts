@@ -30,6 +30,9 @@ import { registerOrderRoutes } from './orders/admin-routes.js';
 import { DispatchService } from './orders/dispatch.js';
 import { customerOrderRouter, registerCancelRoutes } from './orders/cancel.js';
 import { registerCodRoutes } from './orders/cod.js';
+import { registerCustomerRoutes } from './customers/admin.js';
+import { registerDashboardRoutes } from './dashboard/routes.js';
+import { registerRestockRoutes } from './restock/service.js';
 import { registerOpsRoutes } from './ops/routes.js';
 import { lastRunKey, OpsService } from './ops/service.js';
 import { OUTBOX_CONSUMERS } from './outbox/dispatcher.js';
@@ -99,6 +102,9 @@ registerCancelRoutes(admin, prisma, log);
 registerRefundRoutes(admin, prisma, log);
 registerReturnRoutes(admin, prisma, log, media);
 registerCodRoutes(admin, prisma);
+registerCustomerRoutes(admin, prisma, service);
+registerRestockRoutes(admin, prisma);
+registerDashboardRoutes(admin, prisma);
 // Jobs & Webhooks reads every queue (depths, failed jobs) on the API's Redis connection; the worker owns processing.
 const opsQueues = new Map<string, Queue>([[webhookQueue.name, webhookQueue], [mediaQueue.name, mediaQueue], [importValidateQueue.name, importValidateQueue], [importApplyQueue.name, importApplyQueue]]);
 for (const name of [QUEUE.maintenance, QUEUE.outboxDispatch, QUEUE.searchReindex, ...new Set(Object.values(OUTBOX_CONSUMERS))]) {

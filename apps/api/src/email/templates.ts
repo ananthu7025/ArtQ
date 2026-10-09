@@ -226,6 +226,13 @@ const TEMPLATES: Record<string, (d: Record<string, unknown>) => Rendered> = {
     return { subject: `[ArtQ] COD cash overdue: ${count} order(s), ${total}`, text: `${count} delivered cash-on-delivery order(s) worth ${total} have waited more than ${days} days for the courier's payout. Check COD Remittances in the admin panel.`,
       html: layout('COD cash overdue', [`${count} delivered cash-on-delivery order(s) worth ${total} have waited more than ${days} days for the courier’s payout.`, 'Check COD Remittances in the admin panel and chase the courier.']) };
   },
+  back_in_stock: (d) => {
+    const product = str(d.product, 'product');
+    const label = typeof d.label === 'string' && d.label ? ` (${d.label})` : '';
+    const link = typeof d.link === 'string' ? d.link : null;
+    const lines = [`Good news: ${product}${label} is back in stock.`, 'Stock is limited, so order soon if you’d like it. You asked us to tell you; we won’t email you about it again.'];
+    return { subject: `${product} is back in stock`, text: [...lines, ...(link ? [link] : [])].join(' '), html: layout('It’s back in stock', lines, link ? { label: 'Shop now', href: link } : undefined) };
+  },
   set_password_link: (d) => {
     const link = str(d.link, 'link');
     return { subject: 'Set a password for your ArtQ account', text: `Set a password to track your orders and check out faster: ${link} (the link works for 7 days).`, html: layout('Set a password', ['Set a password to track your orders and check out faster. The link works for 7 days.'], { label: 'Set a password', href: link }) };

@@ -28,6 +28,7 @@ const DATA: Record<string, Record<string, unknown>> = {
   return_received: { orderNumber: 'AQ1', firstName: 'Hema', return: { id: 12, reason: 'DAMAGED', note: null, items: [{ name: 'Epoxy Resin', label: '500 ml', quantity: 1 }] } },
   order_lost: { orderNumber: 'AQ1', resolution: 'REFUND', refundAmount: 110_800 },
   admin_cod_overdue: { count: 3, total: 331_200, days: 14 },
+  back_in_stock: { product: 'Epoxy Resin', label: '500 ml', link: 'https://artq.in/product/epoxy?variant=RES-500' },
   admin_ops_alert: { key: 'webhooks-failing', severity: 'P1', title: 'Razorpay notifications are failing', detail: '2 notification(s) failed.' },
   set_password_link: { link: 'https://artq.in/set-password?token=abc' },
   admin_order_placed: { orderNumber: 'AQ1', total: 49_900, paymentMethod: 'RAZORPAY', itemCount: 2, customer: 'Hema R, Kochi' },

@@ -25,6 +25,7 @@ import { processCreditNote, RefundAdminService } from './payments/refund-admin.j
 import { processRefundSend, reconcileRefunds } from './payments/refunds.js';
 import { mediaServiceFromEnv, mediaStorageFromEnv } from './media/factory.js';
 import { codOverdueCheck } from './orders/cod.js';
+import { processRestockNotify } from './restock/service.js';
 import { notifyAlerts } from './ops/alerts.js';
 import { countRecentFailed, lastRunKey, syncAllBadges } from './ops/service.js';
 import { DispatchService, processInvoiceRender } from './orders/dispatch.js';
@@ -115,6 +116,8 @@ const runtime = createWorkerRuntime({
     { name: OUTBOX_CONSUMERS['invoice.credit_note'], concurrency: 2, processor: async (job) => processCreditNote({ prisma, refunds: new RefundAdminService(prisma), log }, (job.data as OutboxJobData).deliveryId) },
     { name: OUTBOX_CONSUMERS['invoice.render'], concurrency: 2, processor: async (job) => processInvoiceRender({ prisma, dispatch: invoices, log }, (job.data as OutboxJobData).deliveryId) },
     { name: OUTBOX_CONSUMERS['email.admin'], concurrency: 2, processor: email('email.admin') },
+    // Back in stock (task 5.9): waiting customers are emailed once while the size is available.
+    { name: OUTBOX_CONSUMERS['restock.notify'], concurrency: 1, processor: async (job) => processRestockNotify({ prisma, log }, (job.data as OutboxJobData).deliveryId) },
     // Payment exceptions raised by the database functions notify staff by email (task 5.8).
     { name: OUTBOX_CONSUMERS['notify.admin'], concurrency: 2, processor: email('email.admin') },
   ],

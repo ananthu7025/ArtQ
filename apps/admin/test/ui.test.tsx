@@ -95,7 +95,12 @@ describe('shell and navigation', () => {
     expect(links).toEqual(['Dashboard', 'Orders', 'Customers', 'Products', 'Restock Requests', 'Inventory', 'Returns & Refunds', 'Imports']);
     expect(within(sidebar).getByRole('link', { name: 'Customers' }).getAttribute('aria-current')).toBe('page');
     expect(within(sidebar).getByRole('link', { name: 'Orders' }).getAttribute('aria-current')).toBeNull();
-    expect(await screen.findByText(/delivered by task 5.9/)).toBeTruthy();   // a module not built yet shows its placeholder
+    expect(await screen.findByRole('heading', { name: 'Customers' })).toBeTruthy();
+  });
+
+  it('a module not built yet shows its placeholder', async () => {
+    setup({ path: '/cms', session: 'ADMIN' });
+    expect(await screen.findByText(/delivered by task 6.1/)).toBeTruthy();
   });
 
   it('a module the role cannot use shows "No access" even when typed into the address bar', async () => {

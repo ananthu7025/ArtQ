@@ -76,6 +76,14 @@ async function messagesFor(tx: Prisma.TransactionClient, consumer: EmailConsumer
     const rendered = render('admin_order_placed', { orderNumber: o.orderNumber, total: o.total, paymentMethod: o.paymentMethod, itemCount: o.items.reduce((n, i) => n + i.quantity, 0), customer: `${o.shipName}, ${o.shipCity}` });
     return (await adminRecipients(tx)).map((to) => ({ to, template: 'admin_order_placed', rendered, userId: null, orderId: o.id, dedupeKey: dedupeKey(ev.deliveryId, to) }));
   }
+  if (consumer === 'email.customer' && ev.eventType === 'restock.email') {
+    // Back in stock (task 5.9): the product link is built at send time from the storefront address.
+    const to = String(p.to ?? '');
+    if (!to.includes('@')) throw new TypeError(`restock.email event ${ev.eventId} has no recipient`);
+    const link = links ? `${links.webUrl.replace(/\/$/, '')}/product/${encodeURIComponent(String(p.slug))}?variant=${encodeURIComponent(String(p.sku))}` : null;
+    const userId = typeof p.user_id === 'number' ? p.user_id : null;
+    return [{ to, template: 'back_in_stock', rendered: render('back_in_stock', { product: p.product, label: p.label, link }), userId, orderId: null, dedupeKey: dedupeKey(ev.deliveryId, to) }];
+  }
   if (consumer === 'email.customer') {
     if (ev.eventType !== 'email.auth') throw new UnsupportedEmailEventError(consumer, ev.eventType);
     const to = String(p.to ?? '');
