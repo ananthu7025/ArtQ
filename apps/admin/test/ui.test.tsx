@@ -99,8 +99,8 @@ describe('shell and navigation', () => {
   });
 
   it('a module not built yet shows its placeholder', async () => {
-    setup({ path: '/cms', session: 'ADMIN' });
-    expect(await screen.findByText(/delivered by task 6.1/)).toBeTruthy();
+    setup({ path: '/settings', session: 'SUPER_ADMIN' });
+    expect(await screen.findByText(/delivered by task 6.5/)).toBeTruthy();
   });
 
   it('a module the role cannot use shows "No access" even when typed into the address bar', async () => {

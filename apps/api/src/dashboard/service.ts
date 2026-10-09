@@ -44,7 +44,7 @@ export class DashboardService {
           (SELECT count(*)::int FROM orders o JOIN shipments s ON s.order_id = o.id WHERE o.payment_method = 'COD' AND o.fulfilment_status = 'DELIVERED'
               AND o.payment_status IN ('COD_COLLECTED', 'PARTIALLY_REFUNDED', 'REFUNDED') AND s.delivered_at < now() - make_interval(days => ${COD_OVERDUE_DAYS}::int)
               AND NOT EXISTS (SELECT 1 FROM cod_remittance_items c WHERE c.order_id = o.id)) AS "codOverdue",
-          NULL::int AS messages`,
+          (SELECT count(*)::int FROM contact_messages WHERE status = 'NEW') AS messages`,
       this.prisma.$queryRaw<{ variant_id: number; product_id: number; name: string; label: string; sku: string; available: number; threshold: number }[]>`
         SELECT v.id AS variant_id, p.id AS product_id, p.name, coalesce(v.label, v.size, '') AS label, v.sku, (v.on_hand - v.reserved)::int AS available, v.low_stock_threshold AS threshold
           FROM product_variants v JOIN products p ON p.id = v.product_id

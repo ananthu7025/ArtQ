@@ -13,7 +13,7 @@ export type Dashboard = {
   salesSeries: { label: string; revenue: number; orders: number }[];
   /** Orders placed in the range by lifecycle status. */
   ordersByStatus: Record<string, number>;
-  pendingActions: { toConfirm: number; toPack: number; toShip: number; returnsToDecide: number; openExceptions: number; restockRequests: number; codOverdue: number; messages: number | null };
+  pendingActions: { toConfirm: number; toPack: number; toShip: number; returnsToDecide: number; openExceptions: number; restockRequests: number; codOverdue: number; messages: number };
   lowStock: { variantId: number; productId: number; productName: string; label: string; sku: string; available: number; threshold: number }[];
   topProducts: { productId: number | null; name: string; units: number; revenue: number }[];
 };

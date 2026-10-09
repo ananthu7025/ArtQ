@@ -19,6 +19,7 @@ import { OrdersPage } from './pages/orders/OrdersPage';
 import { RefundsPage } from './pages/orders/RefundsPage';
 import { CodRemittancesPage } from './pages/cod/CodRemittancesPage';
 import { JobsPage } from './pages/ops/JobsPage';
+import { CmsPage } from './pages/cms/CmsPage';
 import { CustomerDetailPage, CustomersPage } from './pages/customers/CustomersPage';
 import { DashboardPage } from './pages/dashboard/DashboardPage';
 import { RestockRequestsPage } from './pages/restock/RestockRequestsPage';
@@ -58,6 +59,7 @@ const BUILT: Record<string, () => React.ReactNode> = {
   '/cod-remittances': () => <CodRemittancesPage />,
   '/payment-exceptions': () => <PaymentExceptionsPage />,
   '/jobs': () => <JobsPage />,
+  '/cms': () => <CmsPage />,
   '/customers': () => <CustomersPage />,
   '/restock-requests': () => <RestockRequestsPage />,
 };

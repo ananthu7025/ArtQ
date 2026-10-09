@@ -224,7 +224,8 @@ Reconciliation, refund safety, authorization and inventory correctness are **MVP
 - [ ] **M3 demo** with the client's admin user.
 
 ## Phase 6: Content, SEO, admin completeness (7 d)
-- [ ] **6.1 CMS & Messages admin** (2 d).
+- [x] **6.1 CMS & Messages admin** (2 d).
+  **Done 2026-10-10:** API (content:write): hero slides, reels, testimonials and FAQs (create, edit, delete, reorder, on/off; media and products checked; slides scheduled with a live flag; FAQs ordered within their group), pages (rich text cleaned like product descriptions; the footer's policy pages keep their address and can only be unpublished), the home settings content staff edit (announcement bar, home sections, hero timing, Instagram, social links; the public settings cache dropped on save) and the messages inbox (filters, private attachments, status and note). Everything audited. The dashboard's "new messages" count is now real. Admin: one CMS & Messages page with a tab per kind (ordered lists with move up/down, editors on the shared schemas, image and video upload, the rich-text editor, home settings, inbox). Found and fixed while building: a manual error on a whole form list blocked the next save (React Hook Form keeps it), so list forms use the shared-schema resolver; the daily Razorpay reconciliation picked the previous India day when it ran between midnight and 05:30 India time (it took the UTC date), now `istDayWindow` with a boundary test. Tests: API integration (7), shared (6), admin (7), Playwright (FAQ, page, announcement served by the public settings, inbox).
 - [ ] **6.2 Content pages** (1 d): about, contact, custom work (private uploads), FAQs, policies, 404.
 - [ ] **6.3 Newsletter & back-in-stock** (1 d). (Sign-up endpoint and footer form done in 3.1; back-in-stock emails done in 5.9; left: unsubscribe link/page, admin list + CSV export.)
 - [ ] **6.4 SEO** (2 d): metadata, JSON-LD, sitemap, robots, canonical, redirects.

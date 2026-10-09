@@ -27,3 +27,4 @@ export * from './cod-schemas.js';
 export * from './customer-order-schemas.js';
 export * from './ops-schemas.js';
 export * from './customer-admin-schemas.js';
+export * from './cms-schemas.js';
