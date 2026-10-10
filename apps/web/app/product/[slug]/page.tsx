@@ -9,7 +9,7 @@ import { ProductView } from '../../../components/product/ProductView';
 import { RecentlyViewed } from '../../../components/product/RecentlyViewed';
 import { FormAlert } from '../../../components/form/fields';
 import { loadLayout, loadProduct, loadRelated } from '../../../lib/api';
-import { jsonLdScript, plainText, productJsonLd } from '../../../lib/seo';
+import { jsonLdScript, plainText, productJsonLd, withSeo } from '../../../lib/seo';
 import { formatINR } from '@artq/shared';
 
 type Props = { params: Promise<{ slug: string }>; searchParams: Promise<Record<string, string | string[] | undefined>> };
@@ -18,11 +18,10 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const p = await loadProduct((await params).slug);
   if (typeof p !== 'object' || 'redirectTo' in p) return {};
   const description = p.metaDescription ?? p.shortDescription ?? (plainText(p.description).slice(0, 160) || undefined);
-  return {
+  return withSeo(`/product/${p.slug}`, {
     title: p.metaTitle ?? p.name, ...(description ? { description } : {}),
-    alternates: { canonical: `/product/${p.slug}` },
-    openGraph: { title: p.name, ...(description ? { description } : {}), ...(p.images[0] ? { images: [{ url: p.images[0].url, width: p.images[0].width, height: p.images[0].height }] } : {}) },
-  };
+    ...(p.images[0] ? { openGraph: { images: [{ url: p.images[0].url, width: p.images[0].width, height: p.images[0].height }] } } : {}),
+  });
 }
 
 function Section({ title, children, open = false }: { title: string; children: ReactNode; open?: boolean }) {

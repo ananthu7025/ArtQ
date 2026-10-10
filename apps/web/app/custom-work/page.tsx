@@ -1,9 +1,12 @@
 // Custom work (task 6.2; persona "Preservation Priya"): flower and garland preservation, frames and made-to-order resin
 // pieces. The request (with up to 4 private photos) lands in the admin inbox; the visitor gets an acknowledgement.
 import type { Metadata } from 'next';
+import { withSeo } from '../../lib/seo';
 import { CustomWorkForm } from '../../components/content/forms';
 
-export const metadata: Metadata = { title: 'Custom work', description: 'Preserve wedding flowers and garlands, or order a resin piece made for you.', alternates: { canonical: '/custom-work' } };
+export function generateMetadata(): Promise<Metadata> {
+  return withSeo('/custom-work', { title: 'Custom work', description: 'Preserve wedding flowers and garlands, or order a resin piece made for you.' });
+}
 
 export default function CustomWorkPage() {
   return (

@@ -5,9 +5,12 @@ import { describe, expect, it } from 'vitest';
 
 const next = join(import.meta.dirname, '..', '.next');
 
+/** Next.js metadata files compiled to handlers (architecture.md §4: app/sitemap.ts, app/robots.ts); they only call
+ *  public, cacheable API paths, so they are pages in all but name. */
+const METADATA_ROUTES = new Set(['/sitemap.xml/route', '/robots.txt/route']);
 /** Route keys that are API/route handlers rather than pages. */
 export function handlerRoutes(manifest) {
-  return Object.keys(manifest).filter((k) => /\/route$/.test(k) || k.startsWith('/api/'));
+  return Object.keys(manifest).filter((k) => !METADATA_ROUTES.has(k) && (/\/route$/.test(k) || k.startsWith('/api/')));
 }
 
 describe('handlerRoutes', () => {
@@ -16,6 +19,7 @@ describe('handlerRoutes', () => {
   });
   it('flags route handlers and api routes', () => {
     expect(handlerRoutes({ '/page': '/', '/api/cart/route': '/api/cart', '/feed.xml/route': '/feed.xml' })).toEqual(['/api/cart/route', '/feed.xml/route']);
+    expect(handlerRoutes({ '/sitemap.xml/route': '/sitemap.xml', '/robots.txt/route': '/robots.txt', '/sitemap.xml/api/route': '/x' })).toEqual(['/sitemap.xml/api/route']);
   });
 });
 

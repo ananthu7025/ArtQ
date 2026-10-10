@@ -41,6 +41,7 @@ import { OUTBOX_CONSUMERS } from './outbox/dispatcher.js';
 import { customerOrdersRouter } from './orders/customer-routes.js';
 import { contentRouter } from './content/routes.js';
 import { registerNewsletterRoutes } from './content/newsletter-admin.js';
+import { registerSeoAdminRoutes, seoRouter } from './seo/routes.js';
 import { registerRefundRoutes } from './payments/refund-admin.js';
 import { customerReturnRouter, registerReturnRoutes } from './returns/routes.js';
 import { registerShippingRoutes } from './shipping/admin-routes.js';
@@ -110,6 +111,7 @@ registerCustomerRoutes(admin, prisma, service);
 registerRestockRoutes(admin, prisma);
 registerDashboardRoutes(admin, prisma);
 registerNewsletterRoutes(admin, prisma, env.WEB_URL);
+registerSeoAdminRoutes(admin, prisma);
 registerCmsRoutes(admin, new CmsService(prisma, (m) => media.view(m), appCache, mediaUrl), media);
 // Jobs & Webhooks reads every queue (depths, failed jobs) on the API's Redis connection; the worker owns processing.
 const opsQueues = new Map<string, Queue>([[webhookQueue.name, webhookQueue], [mediaQueue.name, mediaQueue], [importValidateQueue.name, importValidateQueue], [importApplyQueue.name, importApplyQueue]]);
@@ -144,6 +146,7 @@ const app = createApp({
     customerReturnRouter({ prisma, cache, jwt, log, media }),
     contentRouter({ prisma, cache, jwt, env: env.NODE_ENV, log, media, mediaUrl, limiter, onRateLimitError }),
     customerOrdersRouter({ prisma, cache, jwt, log, env: env.NODE_ENV, linkSecret: env.AUTH_LINK_SECRET, auth: service, media, dispatch: new DispatchService(prisma, mediaStorageFromEnv(env)), limiter, onRateLimitError }),
+    seoRouter({ prisma, mediaUrl }),
     storefrontRouter({ prisma, cache: appCache, mediaUrl, limiter, onRateLimitError, onInvalidSetting: (key) => log.warn({ key }, 'stored setting is invalid; serving the default'), onSearchLogError: (err) => log.warn({ err: String(err) }, 'search log not written') }),
     webhookRouter({ prisma, queue: webhookQueue, providers: [razorpayProvider(env.RAZORPAY_WEBHOOK_SECRET || undefined)], log }),
     admin.router,

@@ -123,7 +123,7 @@ artq/
 │   │   │                       # wishlist, about, contact, faqs, custom-work, [policy]
 │   │   ├── app/(auth)/…        # login, signup, verify, forgot-password, reset-password, set-password
 │   │   ├── app/(account)/…     # account, account/addresses, orders, orders/[orderNumber], track/[orderNumber]
-│   │   ├── app/sitemap.ts, robots.ts, not-found.tsx, error.tsx, layout.tsx, middleware.ts (redirect lookup only)
+│   │   ├── app/sitemap.ts, robots.ts, not-found.tsx, error.tsx, layout.tsx, proxy.ts (Next.js 16's renamed middleware: redirect lookup only)
 │   │   ├── lib/                # api-client (public SSR fetch vs. browser fetch), auth-client (refresh coordinator), analytics, format
 │   │   └── components/…
 │   ├── admin/                  # React + Vite admin SPA

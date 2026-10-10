@@ -1,12 +1,15 @@
 // Contact (task 6.2): the store's phone, email and WhatsApp (public settings) and the contact form (saved to the admin
 // inbox). The page is static; the form talks to the API in the browser.
 import type { Metadata } from 'next';
+import { withSeo } from '../../lib/seo';
 import Link from 'next/link';
 import { ContactForm } from '../../components/content/forms';
 import { loadLayout } from '../../lib/api';
 
 export const revalidate = 60;
-export const metadata: Metadata = { title: 'Contact us', description: 'Questions about an order, a product or custom work? Write to ArtQ.', alternates: { canonical: '/contact' } };
+export function generateMetadata(): Promise<Metadata> {
+  return withSeo('/contact', { title: 'Contact us', description: 'Questions about an order, a product or custom work? Write to ArtQ.' });
+}
 
 export default async function ContactPage() {
   const { settings } = await loadLayout();

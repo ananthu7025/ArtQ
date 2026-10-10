@@ -5,6 +5,7 @@
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { loadPage } from '../../lib/api';
+import { withSeo } from '../../lib/seo';
 
 export const revalidate = 60;
 type Props = { params: Promise<{ slug: string }> };
@@ -12,7 +13,7 @@ type Props = { params: Promise<{ slug: string }> };
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const p = await loadPage((await params).slug);
   if (typeof p !== 'object') return {};
-  return { title: p.metaTitle ?? p.title, ...(p.metaDescription ? { description: p.metaDescription } : {}), alternates: { canonical: `/${p.slug}` } };
+  return withSeo(`/${p.slug}`, { title: p.metaTitle ?? p.title, ...(p.metaDescription ? { description: p.metaDescription } : {}) });
 }
 
 const updated = new Intl.DateTimeFormat('en-IN', { dateStyle: 'long', timeZone: 'Asia/Kolkata' });

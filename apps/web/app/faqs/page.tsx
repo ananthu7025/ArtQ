@@ -3,10 +3,12 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import { loadFaqs } from '../../lib/api';
-import { jsonLdScript } from '../../lib/seo';
+import { jsonLdScript, withSeo } from '../../lib/seo';
 
 export const revalidate = 60;
-export const metadata: Metadata = { title: 'FAQs', description: 'Answers about orders, shipping, payments, our products and returns.', alternates: { canonical: '/faqs' } };
+export function generateMetadata(): Promise<Metadata> {
+  return withSeo('/faqs', { title: 'FAQs', description: 'Answers about orders, shipping, payments, our products and returns.' });
+}
 
 export default async function FaqsPage() {
   const faqs = await loadFaqs();
