@@ -26,6 +26,7 @@ import { RestockRequestsPage } from './pages/restock/RestockRequestsPage';
 import { PaymentExceptionsPage } from './pages/ops/PaymentExceptionsPage';
 import { ReturnDetailPage } from './pages/returns/ReturnDetailPage';
 import { ProductEditorPage } from './pages/products/editor/ProductEditorPage';
+import { SettingsPage } from './pages/settings/SettingsPage';
 import { ForbiddenPage, FullPageSpinner, ModulePlaceholder, NotFoundPage } from './pages/simple';
 
 function RequireSession() {
@@ -42,9 +43,10 @@ function Guard({ item, children }: { item: NavItem; children: React.ReactNode })
 }
 
 /** Modules built so far; everything else renders its placeholder. */
-const BUILT: Record<string, () => React.ReactNode> = {
+export const BUILT: Record<string, () => React.ReactNode> = {
   '/dashboard': () => <DashboardPage />,
   '/audit-logs': () => <AuditLogsPage />,
+  '/settings': () => <SettingsPage />,
   '/staff': () => <StaffPage />,
   '/products': () => <ProductsPage />,
   '/product-types': () => <TaxonomyPage key="type" kind="type" />,
