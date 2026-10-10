@@ -32,6 +32,11 @@ export async function recordAudit(db: Db, req: Request, res: Response, e: AuditE
   res.locals.audited = true;
 }
 
+/** For a POST that changes nothing (a calculation such as the shipping preview): nothing to audit. */
+export function markReadOnly(res: Response): void {
+  res.locals.audited = true;
+}
+
 /** Codes of rejected admin requests that are security-relevant attempts (AT-10: "audit records attempts"). */
 const AUDITED_REJECTIONS = new Set(['FORBIDDEN', 'STEP_UP_REQUIRED', 'VALIDATION_ERROR']);
 

@@ -29,12 +29,14 @@ export function MediaSection({ product, canEdit }: { product: ProductPayload; ca
   const images = product.images;
   const items = (list: Image[]): Item[] => list.map((i) => ({ mediaId: i.mediaId, alt: alts[i.mediaId] ?? i.alt, isCover: i.isCover }));
 
-  const save = async (next: Item[]) => {
+  /** Saves the list; true when the server accepted it (the caller only confirms success then). */
+  const save = async (next: Item[]): Promise<boolean> => {
     setError(null);
     try {
       await api.request('PUT', `/admin/products/${product.id}/images`, { body: { images: next.map((i) => ({ mediaId: i.mediaId, alt: i.alt?.trim() ? i.alt.trim() : null, isCover: i.isCover })) } });
       await qc.invalidateQueries({ queryKey: ['product', product.id] });
-    } catch (e) { setError(errorMessage(e)); }
+      return true;
+    } catch (e) { setError(errorMessage(e)); return false; }
   };
 
   const upload = async (files: FileList) => {
@@ -52,8 +54,8 @@ export function MediaSection({ product, canEdit }: { product: ProductPayload; ca
     if (added.length) {
       const next = [...items(images), ...added];
       if (!next.some((i) => i.isCover)) next[0]!.isCover = true;
-      await save(next);
-      toast.success(added.length === 1 ? 'Image added' : `${added.length} images added`);
+      // Uploaded is not attached: only say so once the product's list was saved (otherwise the error is shown).
+      if (await save(next)) toast.success(added.length === 1 ? 'Image added' : `${added.length} images added`);
     }
     if (input.current) input.current.value = '';
   };

@@ -2,7 +2,7 @@
 // Header (product.md §4.2, design-system.md §6.1): sticky; on phones it slides away while scrolling down and comes back
 // when scrolling up (never while a menu is open or focus is inside it). Desktop (≥ 1024 px): logo · links with the SHOP
 // mega-menu (types → categories) · search, login, wishlist, cart. Below 1024 px: ☰ + 🔍 · logo · account, wishlist, cart,
-// with the menu in a focus-trapped drawer. Counts show 0 until the cart and wishlist arrive (Phase 4).
+// with the menu in a focus-trapped drawer. Signed in: the first name (desktop) and the 👤 lead to the account.
 import type { Navigation } from '@artq/shared';
 import { ChevronDown, Heart, Menu, Search, ShoppingBag, User } from 'lucide-react';
 import Link from 'next/link';
@@ -12,6 +12,11 @@ import { MobileDrawer } from './MobileDrawer';
 import { NAV_LINKS } from './links';
 import { SearchDialog } from './SearchDialog';
 import { useShop } from '../shop/ShopProvider';
+import { useAuth } from '../account/AuthProvider';
+import type { Customer } from '../../lib/session';
+
+/** The header greets by first name (or "Account" when no name is set). */
+const firstName = (u: Customer) => u.name?.trim().split(/\s+/)[0] || 'Account';
 
 // Display is set per use (`inline-flex`, or `hidden lg:inline-flex`): two display classes on one element fight.
 const iconBox = 'relative h-11 w-11 items-center justify-center rounded-md text-ink-900 hover:bg-surface-100';
@@ -111,6 +116,7 @@ function MegaMenu({ navigation }: { navigation: Navigation }) {
 
 export function Header({ navigation, cartCount, wishlistCount }: { navigation: Navigation; cartCount?: number; wishlistCount?: number }) {
   const shop = useShop();
+  const { user } = useAuth();
   cartCount ??= shop.cartCount;
   wishlistCount ??= shop.wishlist.length;
   const pathname = usePathname();
@@ -149,8 +155,10 @@ export function Header({ navigation, cartCount, wishlistCount }: { navigation: N
 
         <div className="flex items-center justify-self-end">
           <button ref={(el) => { searchButtons.current[1] = el; }} type="button" className={`hidden lg:inline-flex ${iconBox}`} onClick={() => openSearch(1)} aria-label="Search"><Search aria-hidden size={22} strokeWidth={1.75} /></button>
-          <Link href="/login" className={`inline-flex lg:hidden ${iconBox}`} aria-label="Log in or sign up"><User aria-hidden size={22} strokeWidth={1.75} /></Link>
-          <Link href="/login" className="font-eyebrow hidden h-11 items-center whitespace-nowrap px-3 text-[13px] uppercase tracking-[0.12em] text-ink-900 hover:text-brand-700 lg:inline-flex">Login / Sign up</Link>
+          <Link href={user ? '/account' : '/login'} className={`inline-flex lg:hidden ${iconBox}`} aria-label={user ? 'Your account' : 'Log in or sign up'}><User aria-hidden size={22} strokeWidth={1.75} /></Link>
+          {user
+            ? <Link href="/account" aria-label="Your account" className="font-eyebrow hidden h-11 max-w-[180px] items-center gap-2 px-3 text-[13px] uppercase tracking-[0.12em] text-ink-900 hover:text-brand-700 lg:inline-flex"><User aria-hidden size={18} strokeWidth={1.75} className="shrink-0" /><span className="truncate">{firstName(user)}</span></Link>
+            : <Link href="/login" className="font-eyebrow hidden h-11 items-center whitespace-nowrap px-3 text-[13px] uppercase tracking-[0.12em] text-ink-900 hover:text-brand-700 lg:inline-flex">Login / Sign up</Link>}
           <Link href="/wishlist" className={iconBtn}><Heart aria-hidden size={22} strokeWidth={1.75} /><Count n={wishlistCount} label="Wishlist" /></Link>
           <Link href="/cart" className={iconBtn}><ShoppingBag aria-hidden size={22} strokeWidth={1.75} /><Count n={cartCount} label="Cart" /></Link>
         </div>

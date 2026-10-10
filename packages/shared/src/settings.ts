@@ -21,15 +21,27 @@ export const settingSchemas = {
   HERO: z.strictObject({ slideIntervalMs: z.number().int().min(2000).max(30_000) }),
   INSTAGRAM_MOMENTS: z.strictObject({ enabled: z.boolean(), handle: z.string().nullable() }),
   SOCIAL: z.strictObject({ instagram: z.url().nullable(), facebook: z.url().nullable(), youtube: z.url().nullable(), whatsapp: z.string().nullable() }),
+  /** Edited on the admin Shipping Rates page (task 4.4); the same schema validates the form and the API. */
   SHIPPING: z.strictObject({
-    freeThreshold: paise,
-    packagingWeightG: z.number().int().min(0).max(5000),
-    volumetricDivisor: z.number().int().positive(),
-    heavyCapG: z.number().int().positive(),
+    freeThreshold: z.number({ error: 'Enter an amount' }).int('Use whole paise').min(0, 'Use 0 or more').max(10_000_000, 'At most ₹1,00,000'),
+    packagingWeightG: z.number({ error: 'Enter a weight in grams' }).int('Use whole grams').min(0, 'Use 0 or more').max(5000, 'At most 5,000 g'),
+    volumetricDivisor: z.number({ error: 'Enter the divisor' }).int('Use a whole number').min(1000, 'Use at least 1,000').max(10_000, 'At most 10,000'),
+    heavyCapG: z.number({ error: 'Enter a weight in grams' }).int('Use whole grams').min(500, 'Use at least 500 g').max(100_000, 'At most 100 kg'),
     heavyCapEnabled: z.boolean(),
     defaultServiceable: z.boolean(),
     defaultCod: z.boolean(),
-    estimatedDays: z.strictObject({ min: z.number().int().min(0), max: z.number().int().min(0) }).refine((d) => d.min <= d.max, 'min must not exceed max'),
+    estimatedDays: z.strictObject({
+      min: z.number({ error: 'Enter days' }).int('Use whole days').min(0, 'Use 0 or more').max(60, 'At most 60 days'),
+      max: z.number({ error: 'Enter days' }).int('Use whole days').min(0, 'Use 0 or more').max(60, 'At most 60 days'),
+    }).refine((d) => d.min <= d.max, { path: ['max'], message: 'Use at least the minimum' }),
+    /**
+     * Pincode prefixes that surface transport cannot reach (decision D-7): SURFACE_ONLY items (resin) cannot ship there.
+     * Defaults: Andaman & Nicobar (744) and Lakshadweep (68255), for the owner and courier to confirm.
+     */
+    airOnlyPincodePrefixes: z.array(z.string().trim().regex(/^[1-9]\d{1,5}$/, 'Use 2 to 6 digits of a pincode, e.g. 744'))
+      .max(50, 'At most 50 prefixes')
+      .refine((l) => new Set(l).size === l.length, 'Each prefix only once')
+      .default(['744', '68255']),
   }),
   PAYMENT: z.strictObject({
     razorpayEnabled: z.boolean(),
@@ -65,7 +77,7 @@ export const DEFAULT_SETTINGS: { [K in SettingKey]: SettingValue<K> } = {
   HERO: { slideIntervalMs: 6000 },
   INSTAGRAM_MOMENTS: { enabled: false, handle: null },
   SOCIAL: { instagram: null, facebook: null, youtube: null, whatsapp: null },
-  SHIPPING: { freeThreshold: 100_000, packagingWeightG: 150, volumetricDivisor: 5000, heavyCapG: 10_000, heavyCapEnabled: true, defaultServiceable: true, defaultCod: true, estimatedDays: { min: 4, max: 7 } },
+  SHIPPING: { freeThreshold: 100_000, packagingWeightG: 150, volumetricDivisor: 5000, heavyCapG: 10_000, heavyCapEnabled: true, defaultServiceable: true, defaultCod: true, estimatedDays: { min: 4, max: 7 }, airOnlyPincodePrefixes: ['744', '68255'] },
   PAYMENT: { razorpayEnabled: true, codEnabled: true, codFee: 4000, codMin: 20_000, codMax: 500_000, pendingExpiryMinutes: 30, autoRefundExcessCapture: true },
   ORDER: { customerCancelUntil: 'UNFULFILLED', returnWindowHours: 48, completeAfterDays: 7 },
   TAX: { pricesIncludeTax: true, shippingTaxRule: 'CA_DECISION', invoiceAt: 'DISPATCH' },

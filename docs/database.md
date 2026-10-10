@@ -100,7 +100,7 @@ erDiagram
 |-------|-----------------|
 | `countries`, `states` | India + 36 states/UTs with GST state code (`gst_code`, Kerala = `32`) and `shipping_zone_id` |
 | `postal_codes` | **Geography only** (India Post directory): pincode → office, district, state. Used to auto-fill city/state. *Existence of a pincode does not mean ArtQ can deliver there* |
-| `pincode_serviceability` | **Commercial delivery rules**: deliverable?, COD allowed?, surface-only?, EDD range, source (`MANUAL` at launch, courier API later). Resolution order: explicit row → default policy setting `SHIPPING.defaultServiceable` / `SHIPPING.defaultCod` (business decision D-6, product.md §11) |
+| `pincode_serviceability` | **Commercial delivery rules**: deliverable?, COD allowed?, EDD range, source (`MANUAL` or `CSV` at launch, courier API later). Resolution order: explicit row → default policy setting `SHIPPING.defaultServiceable` / `SHIPPING.defaultCod` (business decision D-6, product.md §11). **Surface reach (D-7, settled in task 4.4):** whether surface transport reaches a pincode comes from `SHIPPING.airOnlyPincodePrefixes` (default `744` Andaman & Nicobar, `68255` Lakshadweep; owner + courier to confirm), not from this table: SURFACE_ONLY items (resin) cannot ship to an air-only pincode (`SHIPPING_RESTRICTED`). The `surface_only` column cannot express "air only", so it is informational only and not used by the shipping algorithm (dropping it would be a contract-phase migration) |
 | `addresses` | Customer address book (max 10, one default). Orders never reference addresses; they snapshot them |
 
 ### 3.3 Catalogue
@@ -169,7 +169,7 @@ Rules:
 
 ### 3.6 Cart
 
-`carts.token_hash` = sha256 of the `aq_cart` cookie value (raw token never stored). `contact_email/phone` captured at checkout step 1 are **unverified** and used only for that checkout and abandoned-cart reminders (post-launch, consent-gated). Cart items hold `added_price` only for "price changed" notices; checkout always re-prices.
+`carts.token_hash` = sha256 of the `aq_cart` cookie value (raw token never stored). `contact_email/phone` captured at checkout step 1 are **unverified** and used only for that checkout and abandoned-cart reminders (post-launch, consent-gated). Cart items hold `added_price` only for "price changed" notices; checkout always re-prices. **Retention** (hourly job, task 4.1): a cart idle 30 days that is a guest cart or no longer an account's `ACTIVE` cart is deleted when no order refers to it; otherwise it is kept (the guest's cookie still opens the order) but its items, coupon, pincode and contact are cleared and `ACTIVE` becomes `ABANDONED`. An account's `ACTIVE` cart and any cart with a `PENDING_PAYMENT` order are never touched.
 
 ### 3.7 Coupons
 
@@ -183,7 +183,7 @@ Rules:
 | `REVERSED` | A *redeemed* order was cancelled before shipment and policy restores the use | `redeemed −1` |
 
 `over_limit = true` marks a redemption honoured without capacity (late capture after the last use was taken). It is **excluded from counters**, raises `COUPON_OVER_LIMIT`, and the customer is never charged more than they paid.
-Functions: `aq_reserve_coupon` (checkout), redemption inside `aq_apply_provider_payment`, release inside `aq_release_unpaid_order`. Every counter change is gated by the redemption-row transition that justifies it (`UPDATE … WHERE status = 'RESERVED'` with an affected-row check), so a repeated call cannot move a counter twice.
+Functions: `aq_reserve_coupon` (checkout), redemption inside `aq_apply_provider_payment`, release inside `aq_release_unpaid_order`, reversal by `aq_reverse_coupon` (migration `0006`, inside the cancellation transaction). Every counter change is gated by the redemption-row transition that justifies it (`UPDATE … WHERE status = 'RESERVED'` with an affected-row check), so a repeated call cannot move a counter twice.
 Per-customer limit counts `RESERVED` + `REDEEMED` (not over-limit) rows matching `user_id`, or for guests `customer_email` (normalised). Guest email/phone are unverified, so this limit is best-effort for guests (documented limitation).
 
 ### 3.8 Shipping
@@ -254,7 +254,7 @@ Other order rules:
 | `STORE_INFO` | `{name:"ArtQ", legalName, gstin, address, stateCode:"32", phone, email, whatsapp}` | partly |
 | `ANNOUNCEMENT_BAR` | `{enabled:true, messages:["Shipping all over India","Free shipping on orders above ₹1000"]}` | ✓ |
 | `HOME_SECTIONS`, `HERO`, `INSTAGRAM_MOMENTS`, `SOCIAL` | home layout & content | ✓ |
-| `SHIPPING` | `{freeThreshold:100000, packagingWeightG:150, volumetricDivisor:5000, heavyCapG:10000, heavyCapEnabled:true, defaultServiceable:true, defaultCod:true, estimatedDays:{min:4,max:7}}` | ✓ (subset) |
+| `SHIPPING` | `{freeThreshold:100000, packagingWeightG:150, volumetricDivisor:5000, heavyCapG:10000, heavyCapEnabled:true, defaultServiceable:true, defaultCod:true, estimatedDays:{min:4,max:7}, airOnlyPincodePrefixes:['744','68255']}` (edited on the admin Shipping Rates page; a stored value without `airOnlyPincodePrefixes` reads as the default) | ✓ (subset) |
 | `PAYMENT` | `{razorpayEnabled:true, codEnabled:true, codFee:4000, codMin:20000, codMax:500000, pendingExpiryMinutes:30, autoRefundExcessCapture:true}` | ✓ (no secrets) |
 | `ORDER` | `{customerCancelUntil:"UNFULFILLED", returnWindowHours:48, completeAfterDays:7}` | ✓ |
 | `TAX` | `{pricesIncludeTax:true, shippingTaxRule:"CA_DECISION", invoiceAt:"DISPATCH"}` | |
@@ -299,13 +299,13 @@ Every transaction acquires row locks in this order and only in this order. Expli
 | From | To | Trigger | Notes |
 |------|----|---------|-------|
 | — | `PENDING_PAYMENT` | prepaid checkout initiated | reservations + coupon `RESERVED`; `expires_at = now + 30 min` |
-| — | `PLACED` | COD checkout | `payment_status = COD_PENDING`; coupon `REDEEMED` |
+| — | `PLACED` | COD checkout (`aq_place_cod_order`, migration `0007`) | `payment_status = COD_PENDING`; coupon `REDEEMED` |
 | `PENDING_PAYMENT` | `PLACED` | captured payment applied | `payment_status = PAID`; coupon `REDEEMED` |
 | `PENDING_PAYMENT` | `EXPIRED` | expiry job, **after** pre-expiry provider check finds no authorized/captured payment | reservations `RELEASED`; coupon `RELEASED` |
 | `PENDING_PAYMENT` | `CANCELLED` | customer abandons ("cancel and edit cart") / admin | same releases; any later capture → refund (§4.6) |
 | `EXPIRED` | `PLACED` | late capture **and** stock reacquired for every line | new reservations; coupon re-reserved/redeemed or `over_limit` |
 | `PLACED` | `CONFIRMED` | admin confirms | |
-| `PLACED`, `CONFIRMED` | `CANCELLED` | customer (only while `fulfilment_status = UNFULFILLED`) or admin (while `UNFULFILLED`/`PACKED`) | one transaction, lock order §4.1: `UPDATE orders … WHERE status IN ('PLACED','CONFIRMED') AND fulfilment_status IN (…)` must affect 1 row, then release ACTIVE reservations, then prepaid ⇒ `aq_request_refund(kind CANCELLATION, all items + shipping)`, then coupon `UPDATE coupon_redemptions SET status='REVERSED' WHERE order_id=… AND status='REDEEMED'` and only if that affected 1 row (and not over-limit) `redeemed_count − 1` (D-14) |
+| `PLACED`, `CONFIRMED` | `CANCELLED` | customer (only while `fulfilment_status = UNFULFILLED`) or admin (while `UNFULFILLED`/`PACKED`) | one transaction, lock order §4.1: `UPDATE orders … WHERE status IN ('PLACED','CONFIRMED') AND fulfilment_status IN (…)` must affect 1 row, then release ACTIVE reservations, then prepaid ⇒ `aq_request_refund(kind CANCELLATION, all items + shipping)`, then coupon `aq_reverse_coupon(order)` (migration `0006`): `UPDATE coupon_redemptions SET status='REVERSED' WHERE order_id=… AND status='REDEEMED'` and only if that affected 1 row (and not over-limit) `redeemed_count − 1` (D-14) |
 | `CONFIRMED` | `COMPLETED` | system, `completeAfterDays` after `DELIVERED` with no open return | |
 | `CONFIRMED` | `CANCELLED` | RTO received (fulfilment `RTO_RECEIVED`) | prepaid ⇒ refund per policy; COD ⇒ `NOT_COLLECTED` |
 | `CANCELLED`, `EXPIRED`*, `COMPLETED` | — | terminal (*except the late-capture path above) | |
@@ -2625,6 +2625,8 @@ critical is left to comments. Behaviour is exercised by checks C03–C13 (review
 | `aq_request_refund`, `aq_retry_refund`, `aq_refund_attempt_result`, `aq_mark_refund_processed`, `aq_cancel_manual_refund`, `aq_refund_capacity` | refund API, `refund.send` consumer, webhook, reconciler | capacity + provider attempts |
 | `aq_adjust_on_hand`, `aq_edit_variants`, `aq_refresh_products` | Inventory page/import, catalogue editor | lock-ordered stock and catalogue writes |
 | `aq_import_initial_stock` (migration `0004`) | catalogue import | initial `on_hand` of a variant the import just created (`IMPORT_INITIAL`, stays uncounted); refuses a variant with stock or history (`STOCK_ALREADY_SET`), so retried batches never double stock; caller refreshes aggregates after locking the batch's variants |
+| `aq_reverse_coupon` (migration `0006`) | order cancellation (D-14) | a CANCELLED order's REDEEMED coupon use → `REVERSED`, `redeemed_count − 1` unless over-limit; repeated calls return false; refuses an order that is not `CANCELLED` (`INVARIANT`) |
+| `aq_place_cod_order` (migration `0007`) | checkout TX1 (COD), payment retry → COD | pending COD order → `PLACED` + `COD_PENDING`: open attempts `CLOSED`, sold counts, coupon `RESERVED → REDEEMED` (gated), cart `CONVERTED`, history, `order.placed`; `DUPLICATE` if already placed; `INVALID_TRANSITION` otherwise |
 | `aq_process_search_queue` | search worker | deferred search rebuild |
 | `aq_webhook_claim/begin/renew/complete/fail` | webhook worker + sweeper | fenced inbox leases |
 | `aq_emit`, `aq_outbox_claim`, `aq_outbox_mark_published`, `aq_outbox_publish_failed`, `aq_outbox_begin_consume`, `aq_outbox_complete` | domain functions, dispatcher, consumers | outbox deliveries |
@@ -3619,6 +3621,8 @@ END $$ LANGUAGE plpgsql;
 |-----------|------|------|
 | `0004_import_initial_stock` | 2.7 | `aq_import_initial_stock(p_variant, p_quantity, p_import, p_actor)`: locks the variant, refuses stock already set or any movement (`STOCK_ALREADY_SET`), sets `on_hand` (never `inventory_counted_at`), inserts the `IMPORT_INITIAL` movement. Wrapper `importInitialStock` |
 | `0005_refresh_products_lock_first` | 2.8 | Replaces `aq_refresh_products`: locks each product (`FOR NO KEY UPDATE`) in one statement and computes its aggregates in the next. The `0003` version computed inside the `UPDATE` that waited for the lock, so under READ COMMITTED two transactions changing **different variants of the same product** (a stock count and a checkout, which lock only their own variants) could write aggregates missing the other's committed change (`product_aggregate_drift`). Found by the task 2.8 concurrency test; regression test in `inventory.test.ts` |
+| `0006_coupon_reverse` | 4.3 | `aq_reverse_coupon(p_order)`: locks the order (must be `CANCELLED`), moves its `REDEEMED` redemption to `REVERSED` and, unless over-limit, locks the coupon and decrements `redeemed_count` (D-14). Gated by the row transition, so a retry changes nothing. Wrapper `reverseCoupon` |
+| `0007_place_cod_order` | 4.7 | `aq_place_cod_order(p_order, p_actor)`: the COD placement step (§5 COD row) as one gated function mirroring the APPLIED branch of `aq_apply_provider_payment` without a payment; refuses an order with an authorized/captured payment or an item without an active reservation. Wrapper `placeCodOrder` |
 
 ---
 

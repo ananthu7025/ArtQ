@@ -351,6 +351,79 @@ export class AuthService {
     return userView(await this.prisma.user.findUniqueOrThrow({ where: { id: userId } }));
   }
 
+  // ── Account (api.md §3.5, task 4.2) ──────────────────────────────────────
+
+  async updateProfile(userId: number, input: { name: string; phone?: string | null | undefined; marketingOptIn?: boolean | undefined }): Promise<UserView> {
+    const u = await this.prisma.user.update({ where: { id: userId }, data: { name: input.name, ...(input.phone !== undefined ? { phone: input.phone } : {}), ...(input.marketingOptIn !== undefined ? { marketingOptIn: input.marketingOptIn } : {}) } });
+    return userView(u);
+  }
+
+  /**
+   * Re-checks the signed-in user's password for an account change. Wrong guesses count towards the login lockout;
+   * a wrong password is reported on the form field (400), not as a lost session (a 401 would send the client to log in).
+   */
+  private async confirmPassword(userId: number, password: string, field: string): Promise<User> {
+    const user = await this.prisma.user.findFirst({ where: { id: userId, deletedAt: null } });
+    if (!user) throw new AppError(401, 'SESSION_INVALID', 'Your session has ended. Please log in again.');
+    try { return await this.checkPassword(user.email, password); }
+    catch (e) {
+      if (e instanceof AppError && e.code === 'INVALID_CREDENTIALS') throw new AppError(400, 'VALIDATION_ERROR', 'Request validation failed', [{ location: 'body', path: field, message: 'This password is not correct' }]);
+      throw e;
+    }
+  }
+
+  /** Changes the password and logs out everywhere (architecture.md §5.2 table); the client logs in again. */
+  async changePassword(userId: number, input: { currentPassword: string; newPassword: string }): Promise<{ ok: true }> {
+    const user = await this.confirmPassword(userId, input.currentPassword, 'currentPassword');
+    const passwordHash = await hashPassword(input.newPassword);
+    await this.revokeAll(userId, 'PASSWORD_CHANGED', false, async (tx) => {
+      await tx.user.update({ where: { id: userId }, data: { passwordHash, failedLoginCount: 0, lockedUntil: null } });
+      await this.mail(tx, userId, user.email, 'password_changed', {});
+    });
+    return { ok: true };
+  }
+
+  /** Sends a code to the new address (it must prove the mailbox) and tells the current address. */
+  async requestEmailChange(userId: number, input: { newEmail: string; password: string }): Promise<{ otpSentTo: string }> {
+    const user = await this.confirmPassword(userId, input.password, 'password');
+    const newEmail = normaliseEmail(input.newEmail);
+    const field = (message: string) => new AppError(400, 'VALIDATION_ERROR', 'Request validation failed', [{ location: 'body', path: 'newEmail', message }]);
+    if (newEmail === user.email) throw field('This is already your email address');
+    if (await this.liveUser(this.prisma, newEmail)) throw field('Another account uses this email address');
+    await this.prisma.$transaction(async (tx) => {
+      await this.issueOtp(tx, newEmail, 'EMAIL_CHANGE', userId);
+      await this.mail(tx, userId, user.email, 'email_change_requested', { newEmail: maskEmail(newEmail) });
+    }, TX);
+    return { otpSentTo: maskEmail(newEmail) };
+  }
+
+  /** Confirms the code sent to the new address, switches the email and logs out everywhere (api.md §3.5). */
+  async verifyEmailChange(userId: number, input: { code: string }): Promise<{ ok: true; email: string }> {
+    const [pending] = await this.prisma.$queryRaw<{ target: string }[]>`
+      SELECT target FROM otp_codes WHERE user_id = ${userId} AND purpose = 'EMAIL_CHANGE' AND consumed_at IS NULL ORDER BY created_at DESC, id DESC LIMIT 1`;
+    if (!pending) throw new AppError(422, 'OTP_INVALID', 'The code is not valid');
+    const old = await this.prisma.user.findUniqueOrThrow({ where: { id: userId } });
+    await this.otpTransaction(pending.target, 'EMAIL_CHANGE', input.code, async (tx) => {
+      if (await tx.user.findFirst({ where: { email: pending.target, deletedAt: null, id: { not: userId } } })) throw new AppError(409, 'EMAIL_TAKEN', 'Another account uses this email address');
+      await tx.user.update({ where: { id: userId }, data: { email: pending.target, emailVerifiedAt: new Date() } });
+      await this.mail(tx, userId, old.email, 'email_changed', { newEmail: maskEmail(pending.target) });
+    });
+    await this.revokeAll(userId, 'EMAIL_CHANGED');
+    return { ok: true, email: pending.target };
+  }
+
+  /** Soft delete (api.md §3.5): logged out everywhere now; personal data anonymised after 30 days; orders are kept. */
+  async deleteAccount(userId: number, input: { password: string }): Promise<{ ok: true }> {
+    const user = await this.confirmPassword(userId, input.password, 'password');
+    await this.revokeAll(userId, 'ACCOUNT_DELETED', false, async (tx) => {
+      await tx.user.update({ where: { id: userId }, data: { deletedAt: new Date() } });
+      await tx.cart.updateMany({ where: { userId, status: 'ACTIVE' }, data: { status: 'ABANDONED' } });
+      await this.mail(tx, userId, user.email, 'account_deleted', {});
+      await tx.auditLog.create({ data: { actorId: userId, action: 'account.delete', entity: 'user', entityId: String(userId) } });
+    });
+    return { ok: true };
+  }
+
   // ── Internals ────────────────────────────────────────────────────────────
 
   private locked(until: Date) {
@@ -443,7 +516,7 @@ export class AuthService {
     await this.cache.revoke(sids);
   }
 
-  private async issueOtp(tx: Tx, target: string, purpose: 'SIGNUP_VERIFY' | 'LOGIN', userId: number) {
+  private async issueOtp(tx: Tx, target: string, purpose: 'SIGNUP_VERIFY' | 'LOGIN' | 'EMAIL_CHANGE', userId: number) {
     const [w] = await tx.$queryRaw<{ last_hour: number; recent: number }[]>`
       SELECT count(*) FILTER (WHERE created_at > now() - interval '1 hour')::int AS last_hour,
              count(*) FILTER (WHERE created_at > now() - make_interval(secs => ${this.cfg.otpCooldownS}::int))::int AS recent
@@ -458,7 +531,7 @@ export class AuthService {
    * Verifies the latest code for target/purpose (5 attempts, single use) and runs `then` in the same transaction.
    * A wrong code still commits its attempt count; the error is thrown after the commit.
    */
-  private async otpTransaction<T>(target: string, purpose: 'SIGNUP_VERIFY' | 'LOGIN', code: string, then: (tx: Tx) => Promise<T>): Promise<T> {
+  private async otpTransaction<T>(target: string, purpose: 'SIGNUP_VERIFY' | 'LOGIN' | 'EMAIL_CHANGE', code: string, then: (tx: Tx) => Promise<T>): Promise<T> {
     const r = await this.prisma.$transaction(async (tx): Promise<{ error: AppError } | { value: T }> => {
       const [otp] = await tx.$queryRaw<{ id: number; code_hash: string; attempts: number; expired: boolean; consumed: boolean }[]>`
         SELECT id, code_hash, attempts, expires_at <= now() AS expired, consumed_at IS NOT NULL AS consumed

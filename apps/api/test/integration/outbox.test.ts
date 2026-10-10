@@ -210,10 +210,17 @@ describe('email consumer', () => {
   });
 
   it('events the consumer has no email for fail loudly and stay open (they surface as OUTBOX_DEAD, never silently dropped)', async () => {
-    const e = await fn.emit(prisma, { aggregateType: 'order', aggregateId: 'AQ1', type: 'order.placed', payload: {}, consumers: ['email.customer'] });
+    const e = await fn.emit(prisma, { aggregateType: 'order', aggregateId: 'AQ1', type: 'order.shipped', payload: {}, consumers: ['email.customer'] });
     const id = Number((await prisma.outboxDelivery.findFirstOrThrow({ where: { eventId: e } })).id);
     await expect(processEmailDelivery(emailDeps(), 'email.customer', id)).rejects.toBeInstanceOf(UnsupportedEmailEventError);
     expect((await delivery(id)).status).not.toBe('COMPLETED');
+    // An order email whose order is missing (or not named) fails the same way instead of sending something empty.
+    for (const payload of [{}, { order_id: 999_999_999 }]) {
+      const o = await fn.emit(prisma, { aggregateType: 'order', aggregateId: 'AQ1', type: 'order.placed', payload, consumers: ['email.customer'] });
+      const oid = Number((await prisma.outboxDelivery.findFirstOrThrow({ where: { eventId: o } })).id);
+      await expect(processEmailDelivery(emailDeps(), 'email.customer', oid)).rejects.toThrow(/order .* not found/);
+      expect((await delivery(oid)).status).not.toBe('COMPLETED');
+    }
     const bad = await fn.emit(prisma, { aggregateType: 'user', aggregateId: '0', type: 'email.auth', payload: { template: 'no_such_template', to: 'a@x.in', data: {} }, consumers: ['email.customer'] });
     await expect(processEmailDelivery(emailDeps(), 'email.customer', Number((await prisma.outboxDelivery.findFirstOrThrow({ where: { eventId: bad } })).id))).rejects.toThrow(/unknown email template/);
     expect(transport.sent).toHaveLength(0);
@@ -300,7 +307,7 @@ describe('retention', () => {
     expect(await prisma.session.findUnique({ where: { id: liveSession!.id } })).not.toBeNull();
     expect(await prisma.otpCode.count({ where: { target: 'o@x.in' } })).toBe(1);
     expect(await prisma.passwordResetToken.count({ where: { userId: user.id } })).toBe(1);
-    expect(await runRetention(prisma)).toEqual({ outboxDeliveries: 0, outboxEvents: 0, emailPayloadsScrubbed: 0, sessions: 0, otpCodes: 0, resetTokens: 0, idempotencyKeys: 0 });
+    expect(await runRetention(prisma)).toEqual({ outboxDeliveries: 0, outboxEvents: 0, emailPayloadsScrubbed: 0, sessions: 0, otpCodes: 0, resetTokens: 0, idempotencyKeys: 0, accountsAnonymised: 0, cartsDeleted: 0, cartsStripped: 0 });
   });
 
   it('works through backlogs larger than one batch', async () => {

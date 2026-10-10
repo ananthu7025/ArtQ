@@ -23,7 +23,7 @@
 | Errors | `{ "error": { "code", "message", "details" } }` |
 
 ### 1.1 Error codes
-`VALIDATION_ERROR` 400 · `UNAUTHENTICATED` 401 · `SESSION_INVALID` 401 · `INVALID_CREDENTIALS` 401 · `STEP_UP_REQUIRED` 401 · `FORBIDDEN` 403 · `NOT_VERIFIED` 403 · `ACCOUNT_BLOCKED` 403 · `ORIGIN_REJECTED` 403 · `ACCOUNT_EXISTS` 409 (set-password link for an email that already has a password) · `TOKEN_INVALID` 422 (reset / set-password link invalid, used or expired) · `NOT_FOUND` 404 · `VERSION_CONFLICT` 409 · `OUT_OF_STOCK` 409 · `PRICE_CHANGED` 409 · `REQUEST_IN_PROGRESS` 409 · `REQUEST_SUPERSEDED` 409 · `REFUND_EXCEEDS_CAPACITY` 409 (`details.scope` = `item` (+ `orderItemId`) / `order` / `payment`) · `REFUND_NOT_RETRYABLE` 409 · `REFUND_RECONCILIATION_REQUIRED` 409 (provider refunds on the payment not yet reconciled) · `REFUND_NOT_CANCELLABLE` 409 · `IDEMPOTENCY_KEY_REUSED` 422 · `COUPON_INVALID` / `COUPON_EXPIRED` / `COUPON_MIN_ORDER` / `COUPON_USAGE_EXCEEDED` / `COUPON_NOT_ELIGIBLE` 422 · `COD_NOT_AVAILABLE` 422 · `PINCODE_NOT_SERVICEABLE` 422 · `SHIPPING_RESTRICTED` 422 · `NOT_PUBLISHABLE` 422 · Staff: `STAFF_EXISTS` / `LAST_SUPER_ADMIN` 409 · `CANNOT_CHANGE_SELF` 422 · Catalogue: `MEDIA_NOT_USABLE` / `RELATION_SELF` / `RELATION_NOT_FOUND` 422 · `UNPUBLISH_FIRST` / `TAXONOMY_IN_USE` / `NAME_TAKEN` 409 (a change would make a live product fail a publication check; `details.failures`) · `SLUG_TAKEN` / `SKU_EXISTS` / `VARIANT_OPTIONS_EXIST` / `ARCHIVE_INSTEAD` (`details.reason`) 409 · `CATEGORY_TYPE_MISMATCH` / `TAXONOMY_NOT_FOUND` / `MEDIA_NOT_FOUND` / `SIZE_INVALID` / `DIMENSIONS_INCOMPLETE` / `MRP_BELOW_PRICE` / `FLAGS_ADD_FORBIDDEN` 422 · `INVALID_TRANSITION` 422 · `RETURN_NOT_ALLOWED` 422 · `OTP_INVALID` / `OTP_EXPIRED` / `MFA_INVALID` 422 · `PAYMENT_VERIFICATION_FAILED` 422 · `ACCOUNT_LOCKED` 423 · `RATE_LIMITED` 429 · `PAYMENT_PROVIDER_UNAVAILABLE` 503 · `INTERNAL` 500.
+`VALIDATION_ERROR` 400 · `UNAUTHENTICATED` 401 · `SESSION_INVALID` 401 · `INVALID_CREDENTIALS` 401 · `STEP_UP_REQUIRED` 401 · `FORBIDDEN` 403 · `NOT_VERIFIED` 403 · `ACCOUNT_BLOCKED` 403 · `ORIGIN_REJECTED` 403 · `ACCOUNT_EXISTS` 409 (set-password link for an email that already has a password) · `TOKEN_INVALID` 422 (reset / set-password link invalid, used or expired) · `NOT_FOUND` 404 · `VERSION_CONFLICT` 409 · `OUT_OF_STOCK` 409 · `PRICE_CHANGED` 409 · `REQUEST_IN_PROGRESS` 409 · `REQUEST_SUPERSEDED` 409 · `REFUND_EXCEEDS_CAPACITY` 409 (`details.scope` = `item` (+ `orderItemId`) / `order` / `payment`) · `REFUND_NOT_RETRYABLE` 409 · `REFUND_RECONCILIATION_REQUIRED` 409 (provider refunds on the payment not yet reconciled) · `REFUND_NOT_CANCELLABLE` 409 · `IDEMPOTENCY_KEY_REUSED` 422 · `COUPON_INVALID` / `COUPON_EXPIRED` / `COUPON_MIN_ORDER` / `COUPON_USAGE_EXCEEDED` / `COUPON_NOT_ELIGIBLE` 422 · `COUPON_IN_USE` 409 · `ZONE_IN_USE` 409 · `ORDER_EXPIRED` / `PAYMENT_IN_PROGRESS` 409 · `CART_EMPTY` / `PAYMENT_METHOD_UNAVAILABLE` 422 · `COD_NOT_AVAILABLE` 422 · `PINCODE_NOT_SERVICEABLE` 422 · `SHIPPING_RESTRICTED` 422 · `NOT_PUBLISHABLE` 422 · Staff: `STAFF_EXISTS` / `LAST_SUPER_ADMIN` 409 · `CANNOT_CHANGE_SELF` 422 · Catalogue: `MEDIA_NOT_USABLE` / `RELATION_SELF` / `RELATION_NOT_FOUND` 422 · `UNPUBLISH_FIRST` / `TAXONOMY_IN_USE` / `NAME_TAKEN` 409 (a change would make a live product fail a publication check; `details.failures`) · `SLUG_TAKEN` / `SKU_EXISTS` / `VARIANT_OPTIONS_EXIST` / `ARCHIVE_INSTEAD` (`details.reason`) 409 · `CATEGORY_TYPE_MISMATCH` / `TAXONOMY_NOT_FOUND` / `MEDIA_NOT_FOUND` / `SIZE_INVALID` / `DIMENSIONS_INCOMPLETE` / `MRP_BELOW_PRICE` / `FLAGS_ADD_FORBIDDEN` 422 · `INVALID_TRANSITION` 422 · `RETURN_NOT_ALLOWED` 422 · `OTP_INVALID` / `OTP_EXPIRED` / `MFA_INVALID` 422 · `PAYMENT_VERIFICATION_FAILED` 422 · `ACCOUNT_LOCKED` 423 · `RATE_LIMITED` 429 · `PAYMENT_PROVIDER_UNAVAILABLE` 503 · `INTERNAL` 500.
 
 ### 1.2 Idempotency (required header `Idempotency-Key: <uuid>` on these operations)
 
@@ -86,13 +86,16 @@ type Variant = {
 };
 
 type CartView = {
-  items: { id: number; variantId: number; productSlug: string; productName: string; variantLabel: string;
+  items: { id: number; variantId: number; productId: number; productSlug: string; productName: string; variantLabel: string;
            image: MediaRef | null; unitPrice: Money; unitMrp: Money | null; quantity: number; lineTotal: Money;
            maxQuantity: number; available: boolean; priceChanged: boolean; warning?: string }[];
-  coupon: { code: string; title: string; discount: Money } | null;
+  coupon: { code: string; title: string; summary: string; type: 'PERCENT' | 'FLAT' | 'FREE_SHIPPING'; applied: boolean;
+            discount: Money; freeShipping: boolean; problem: { code: string; message: string; shortBy?: Money } | null } | null;
   totals: { itemCount: number; subtotal: Money; mrpTotal: Money; mrpDiscount: Money; couponDiscount: Money;
+            // With ?pincode=: amount (included in total) or problem (UNKNOWN_PINCODE | NO_ZONE | PINCODE_NOT_SERVICEABLE |
+            // SHIPPING_RESTRICTED | DIMENSIONS_REQUIRED | NO_RATE); without: amount null, estimated true.
             shipping: { amount: Money | null; estimated: boolean; freeApplied: boolean; heavySurcharge: Money;
-                        actualWeightG: number; chargeableWeightG: number };
+                        pincode: string | null; problem: string | null };
             codFee: Money; total: Money; savings: Money;
             freeShippingThreshold: Money; freeShippingRemaining: Money };
   warnings: string[];
@@ -127,7 +130,7 @@ type OrderView = {
 ### 3.2 Uncached public utilities
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/pincodes/:pincode/serviceability` | `PincodeCheck` `{pincode, place:{district,state}\|null, serviceable, codAvailable, surfaceOnly, estimatedDays:{min,max}\|null, reason:'UNKNOWN_PINCODE'\|'NOT_SERVICEABLE'\|null}`: an explicit `pincode_serviceability` row, else the default policy (D-6); a pincode in neither the postal directory nor the rules → `UNKNOWN_PINCODE` (probably mistyped). 400 "Enter a 6-digit pincode" (`pincodeField`) |
+| GET | `/pincodes/:pincode/serviceability` | `PincodeCheck` `{pincode, place:{district,state}\|null, serviceable, codAvailable, surfaceOnly, surfaceAvailable (false in an air-only area, D-7), estimatedDays:{min,max}\|null, reason:'UNKNOWN_PINCODE'\|'NOT_SERVICEABLE'\|null}`: an explicit `pincode_serviceability` row, else the default policy (D-6); a pincode in neither the postal directory nor the rules → `UNKNOWN_PINCODE` (probably mistyped). 400 "Enter a 6-digit pincode" (`pincodeField`) |
 | POST | `/newsletter/subscribe` | `{email, source?:'footer'|'checkout'|'account'}` (`newsletterSubscribeBody`) → `201 {status:'SUBSCRIBED'}` (new, or previously unsubscribed) / `200 {status:'ALREADY_SUBSCRIBED'}`; email case-insensitive; 5/min per IP (task 3.1) |
 | GET | `/newsletter/unsubscribe?token=` | Unsubscribe |
 | POST | `/contact` | `{name, email, phone?, subject, message, orderNumber?}` |
@@ -156,7 +159,7 @@ Implemented in task 3.5 (`storefrontListQuery` in `@artq/shared`, strict: unknow
 ### 3.4 Customer auth (launch: email only)
 | Method | Path | Body → Response |
 |--------|------|-----------------|
-| POST | `/auth/signup` | `{name, email, phone?, password, marketingOptIn}` → `201 {otpSentTo:"e***@gmail.com"}` (always the same shape, even if the email exists: an existing verified account instead receives a "someone tried to sign up" email) |
+| POST | `/auth/signup` | `{name, email, phone?, password (≥ 8 with a letter and a number, as every new customer password: reset, set-password, change), marketingOptIn}` → `201 {otpSentTo:"e***@gmail.com"}` (always the same shape, even if the email exists: an existing verified account instead receives a "someone tried to sign up" email) |
 | POST | `/auth/signup/verify` | `{email, code}` → `{accessToken, user}` + refresh cookie; links verified-email guest orders; merges cart & wishlist |
 | POST | `/auth/login` | `{email, password}` → `{accessToken, user}` + cookie. `INVALID_CREDENTIALS` (same response for unknown email and wrong password), `ACCOUNT_LOCKED` (`details.retryAfterSeconds`), `NOT_VERIFIED` / `ACCOUNT_BLOCKED` (only after a correct password) |
 | POST | `/auth/otp/request` | `{email, purpose:'LOGIN'}` → always `{sent:true, resendAfter:30}` |
@@ -178,7 +181,7 @@ Implemented in task 3.5 (`storefrontListQuery` in `@artq/shared`, strict: unknow
 | POST | `/me/password` | `{currentPassword, newPassword}` |
 | DELETE | `/me` | `{password}` → soft delete (anonymised after 30 days; orders retained) |
 | CRUD | `/me/addresses[/:id]`, `POST /me/addresses/:id/default` | Max 10 |
-| GET | `/me/wishlist` · POST `/me/wishlist/toggle {productId}` · POST `/me/wishlist/merge {productIds[]}` | |
+| GET | `/me/wishlist` · POST `/me/wishlist/toggle {productId}` · POST `/me/wishlist/merge {productIds[]}` | Newest first, at most 100 (a new save past 100 drops the oldest); `{productIds, data: ProductCard[]}` (cards only for live products) |
 | GET | `/me/orders?status=&page=` | Summary list |
 | GET | `/me/orders/:orderNumber` | `OrderView` |
 | POST | `/me/orders/:orderNumber/cancel` | Idempotency-Key; `{reason}`; allowed while `PLACED/CONFIRMED` + `UNFULFILLED` |
@@ -186,6 +189,8 @@ Implemented in task 3.5 (`storefrontListQuery` in `@artq/shared`, strict: unknow
 | POST | `/me/orders/:orderNumber/reorder` | Adds available items to cart → `CartView` |
 | GET | `/me/orders/:orderNumber/invoice` | 302 to a short-lived private URL (if issued) |
 | GET | `/me/attachments/:mediaId` | 302 to a private URL if the media belongs to the user's order/return |
+
+Implemented in task 4.2 (bodies in `@artq/shared` auth-schemas, shared with the forms): password-checking routes (`/me/password`, `/me/email/*`, `DELETE /me`) share the per-IP login limit and the account lockout; a wrong password is a 400 `VALIDATION_ERROR` on the password field, so the form shows it under that field. Password change, email change and deletion revoke every session and clear the refresh cookie. Email change: `{newEmail, password}` → `{otpSentTo}` (masked); a taken or unchanged address is a field error; `{code}` → `{ok, email}` (409 `EMAIL_TAKEN` if someone claimed it meanwhile). `DELETE /me` `{password, confirm: true}`; the email can sign up again at once; after 30 days the retention job removes addresses and wishlist and blanks name, phone, password and email. Addresses: the first is the default, deleting the default promotes the most recently updated one, the 11th → 422 `ADDRESS_LIMIT` (serialised per user), another user's id → 404; an inactive state → field error on `stateId`, a pincode the postal directory places in another state → `This pincode is in <State>` on `pincode`. Helpers (public, cacheable): `GET /states` (active Indian states by name), `GET /pincodes/:pincode` → `{pincode, district, state}` or 404 (address autofill). Cart at sign-in (rest of 4.1): every sign-in route claims the guest cart cookie: with no account cart the guest cart becomes it, else its lines are added (quantity summed, capped at 50 and at stock) and it is marked `MERGED`; a failure never fails the sign-in. `/cart` with a Bearer uses the account cart on any device; an invalid Bearer → 401 (the client refreshes); the cookie alone never opens an account cart.
 
 ### 3.6 Guest order access
 | Method | Path | Description |
@@ -196,31 +201,37 @@ Implemented in task 3.5 (`storefrontListQuery` in `@artq/shared`, strict: unknow
 | GET | `/orders/:orderNumber` | `OrderView` (requires the order cookie) |
 | POST | `/orders/:orderNumber/cancel` · `/orders/:orderNumber/returns` | Idempotency-Key; same rules as account |
 | GET | `/orders/:orderNumber/invoice` · `/orders/:orderNumber/attachments/:mediaId` | Private redirects |
-| POST | `/orders/:orderNumber/payment/retry` | Idempotency-Key (op `payment.retry`); order cookie, cart cookie or owner Bearer → new Razorpay order details |
+| POST | `/orders/:orderNumber/payment/retry` | Idempotency-Key (op `payment.retry`); order cookie, cart cookie or owner Bearer; `{paymentMethod:'RAZORPAY'\|'COD'}` (`paymentRetryBody`): `RAZORPAY` → new Razorpay order details (same shapes as initiate), `COD` → switch the pending order to cash on delivery when allowed → `{orderNumber, status:'PLACED', total}`. First every payment already made on the open attempts is fetched and applied (an order already paid answers `PLACED`; an authorization in progress → 409 `PAYMENT_IN_PROGRESS`; Razorpay unreachable → 503 `PAYMENT_PROVIDER_UNAVAILABLE`); then the open attempts are `CLOSED` and a new attempt `AQA_<id>_<n>` is created with the hold extended by up to 15 minutes (60 in all), or the COD fee is added and the order placed (`COD_NOT_AVAILABLE` when not allowed). Expired → 409 `ORDER_EXPIRED` |
 
 ### 3.7 Cart (cart cookie; Bearer optional)
 | Method | Path | Notes |
 |--------|------|-------|
-| GET | `/cart` | `CartView` (re-priced live, quantities clamped to available) |
+| GET | `/cart` | `CartView` (re-priced live, quantities clamped to available). Every cart call accepts `?pincode=` (6 digits; other query keys → 400): the shipping for that pincode through the one algorithm is quoted and added to `total` (task 4.5) |
 | POST | `/cart/items` | `{variantId, quantity 1–50}` (`cartAddBody`); the first add creates the cart and its cookie. Merges with the same variant; 409 `OUT_OF_STOCK` `{available, inCart}` (available = on hand − reserved; carts never reserve); 422 `QUANTITY_LIMIT` above 50 per line; 404 for drafts/inactive/unknown. Every cart response is the re-priced `CartView`: quantities above stock are lowered and saved with a warning, sold-out and unpublished lines stay listed but are not counted, a price change is flagged once (task 3.4; merge on login with 4.2) |
 | PATCH / DELETE | `/cart/items/:itemId` | quantity 0 = remove |
 | DELETE | `/cart` | Clear |
-| POST / DELETE | `/cart/coupon` | `{code}`; validation only, **capacity is reserved at checkout** |
-| GET | `/cart/coupons` | Public coupons with eligibility |
+| POST / DELETE | `/cart/coupon` | `{code}` (case-insensitive) → `CartView`; validation only, **capacity is reserved at checkout**. Refused with the first failing check (product.md §8.4): `COUPON_INVALID` (unknown, off, not started), `COUPON_EXPIRED`, `COUPON_USAGE_EXCEEDED` (used up, or by this customer: account, or the email once given at checkout), `COUPON_NOT_ELIGIBLE` (first order only, no eligible items, empty cart), `COUPON_MIN_ORDER` (`details.shortBy`, eligible items only); the cart keeps its previous coupon. 10/min/IP |
+| GET | `/cart/coupons` | Public coupons (active, in window, not used up; newest 20) → `{data: [{code, title, description, type, value, maxDiscount, minOrderValue, endsAt, eligible, reason}]}` for this cart |
+
+The cart's coupon is re-checked on every read: one that stops qualifying stays on the cart as `coupon: {…, applied: false, discount: 0, problem: {code, message, shortBy?}}` and applies again by itself when the cart qualifies; a deleted coupon is dropped. `CartView.coupon` = `{code, title, summary, type, applied, discount, freeShipping, problem}`; free-shipping progress counts the coupon (`subtotal − couponDiscount`). Implemented in task 4.3.
 | POST | `/cart/estimate` | `{pincode, paymentMethod?}` → `CartView` with real shipping (or 422 not serviceable) |
 | POST | `/cart/contact` | `{email, phone}` (unverified; checkout step 1) |
 
 ### 3.8 Checkout & payments
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/checkout/quote` | `{shippingAddressId | shippingAddress, paymentMethod}` → `CartView` + `codAvailable`, `codReason?` |
+| POST | `/checkout/quote` | `{shippingAddressId (the signed-in customer's own, else 404) \| pincode, paymentMethod:'RAZORPAY'\|'COD'}` (`checkoutQuoteBody`) → `CheckoutQuote` `{cart: CartView (shipping for that pincode; COD fee in the total when COD), onlineEnabled, cod:{available, reason:'COD_DISABLED'\|'PINCODE_NO_COD'\|'BELOW_MIN'\|'ABOVE_MAX'\|'NO_DESTINATION'\|null, fee, min, max}, blocking[]}` (e.g. `UNKNOWN_PINCODE`, `PINCODE_NOT_SERVICEABLE`, `SHIPPING_RESTRICTED`, `NO_ZONE`, `CART_EMPTY`, `UNAVAILABLE:<variantId>`, `COD_NOT_AVAILABLE`, `ONLINE_DISABLED`). 20/min per cart (account when signed in). Task 4.6 |
 | POST | `/checkout/initiate` | **Idempotency-Key required.** Creates or returns the order (below) |
 | POST | `/checkout/verify` | `{orderNumber, razorpayPaymentId, razorpaySignature}`. **`razorpay_order_id` from the client is ignored**: the server checks the signature against the stored provider order id, fetches the payment from Razorpay and calls the same `aq_apply_provider_payment` used by the webhook and reconciler. Response `200 {status:'PLACED'}` (also when the payment was already applied by the webhook) / `202 {status:'PROCESSING'}` (authorized, provider unreachable, or recorded `UNLINKED` because the provider order mapping is not saved yet; reconciliation recovers it) / `200 {status:'REVIEW'}` (held: amount/currency mismatch, partially refunded before apply, or identity conflict) / `200 {status:'PAYMENT_REFUNDED'}` (the payment was already fully refunded at the provider: the order is not placed) / `422 PAYMENT_VERIFICATION_FAILED` |
 | GET | `/checkout/status/:orderNumber` | `{status, paymentStatus, displayStatus}` for polling; authorized by the cart cookie that created the order or the owner's Bearer (guests with order access use `GET /orders/:orderNumber`) |
 | POST | `/checkout/payment-failed` | `{orderNumber, razorpayPaymentId?, error}`: informational log only, never changes state by itself |
+| GET | `/checkout/orders/:orderNumber` | The confirmation page (`OrderConfirmation`): status, `displayStatus`, payment method, first name, contact email, items (name, label, quantity, line total, image), totals (subtotal, coupon, shipping, COD fee, total), address lines, `estimatedDays` from `SHIPPING`, and `canSetPassword` (a guest order whose email has no password yet). Same access as status; `Cache-Control: private, no-store` |
+| POST | `/checkout/orders/:orderNumber/set-password-link` | Guests: emails a set-password link to the order's email (`email.auth`, template `set_password_link`) when the order is placed and that email has no password; at most one per email per 10 minutes. Always `{sent:true}`, so it never reveals whether an account exists |
+
+Implemented in task 4.8 (`src/checkout/payment-routes.ts`, `src/payments/apply.ts`). Verify, status, payment-failed and retry are reachable by the cart cookie that created the order or by its owner's Bearer; anyone else gets 404. Verify checks the signature against each provider order id stored for the order (`checkout.verify_failed` is audited), fetches the payment and applies it; the answer comes from the payment's allocation: `APPLIED`/`EXCESS` on a placed order → `PLACED`, `VOID`/`LATE` → `PAYMENT_REFUNDED`, `HELD`/`CONFLICT` → `REVIEW`, otherwise (authorized, unlinked, provider unreachable) `202 PROCESSING`. Status `displayStatus`: Awaiting payment · Payment processing · Order placed · Payment not completed · Cancelled. The confirmation endpoints (`/checkout/orders/:n`, `…/set-password-link`) came with task 4.10.
 | POST | `/webhooks/razorpay` | Signature on raw body; inbox semantics (architecture.md §8.1) |
 
-**`POST /checkout/initiate`**
+**`POST /checkout/initiate`** (body: `checkoutInitiateBody` in `@artq/shared`; the checkout page sends the schema's output: mobile as `+91XXXXXXXXXX`, empty optional lines as `null`)
 ```json
 {
   "contact": { "email": "hema@example.com", "phone": "+919876543210", "sendSetPasswordLink": true },
@@ -244,6 +255,11 @@ Implemented in task 3.5 (`storefrontListQuery` in `@artq/shared`, strict: unknow
 | Existing pending order for this cart | 200 | Same as the first row, for that order |
 | Total changed | 409 | `PRICE_CHANGED` + `CartView` |
 | Out of stock | 409 | `OUT_OF_STOCK` + lines |
+| Cart empty (or its order already placed) | 422 | `CART_EMPTY` |
+| Address / delivery / payment refused | 400 / 422 | `VALIDATION_ERROR` on `shippingAddress.*` / `billingAddress.*` (state, pincode in another state, saved address not yours) · `PINCODE_NOT_SERVICEABLE` · `SHIPPING_RESTRICTED` · `COD_NOT_AVAILABLE` · `PAYMENT_METHOD_UNAVAILABLE` (paying online is off or the Razorpay keys are not set) · `COUPON_*` (the coupon was used up meanwhile) |
+| Resumed order no longer payable | 409 | `ORDER_EXPIRED` |
+
+Implemented in task 4.7 (`src/checkout/initiate.ts`). The key is scoped to `user:<id>` when signed in, else `cart:<cartId>`; target `cart:<cartId>`. A retry with the same key after the order was placed still replays (the converted cart is found for the replay). `PAYMENT_STARTING` keeps the key open for `retryAfter` s (3; 5 while waiting for the receipt lookup); a repeat before then gets `409 REQUEST_IN_PROGRESS` + `Retry-After`. Resume (same key after the lock, or a new key while a pending order exists): `CREATED` attempt → its details; `CREATION_FAILED` → `retryPayment`; `CREATING`/`PROVIDER_UNKNOWN` → adopt the earliest provider order with our receipt, else create one with the same receipt once 2 minutes have passed since the attempt started (task 4.0: lookups lag). `CheckoutService.recoverAttempt(id)` does the same without a client (scheduled by the reconciler in 4.9).
 
 ---
 
@@ -357,7 +373,8 @@ CRUD `/admin/product-types`, `/admin/categories`, `/admin/techniques` (image med
 | Resource | Endpoints | Permission |
 |----------|-----------|------------|
 | Customers | `GET /admin/customers?q=&page=`, `GET /admin/customers/:id` (orders, addresses, notes; contact masked for STAFF), `POST /admin/customers/:id/block` / `unblock` (revokes sessions), `PATCH /admin/customers/:id {adminNotes}` | customers:read / customers:write |
-| Coupons | CRUD `/admin/coupons` (value, type, limits, window, scope targets, public flag); `GET /admin/coupons/:id/redemptions` (status, order, customer). Editing `value`/`type` of a coupon with redemptions → 409 (create a new coupon) | coupons:write |
+| Coupons | `GET /admin/coupons?q=&state=active\|scheduled\|expired\|inactive&page=&limit=` · `POST` · `GET`/`PUT`/`DELETE /admin/coupons/:id` (shared `couponBody`: code 3–30 `[A-Za-z0-9_-]` stored in capitals, unique even against deleted coupons → field error on `code`; PERCENT 1–100 (+ optional `maxDiscount` ≥ ₹1), FLAT ≥ ₹1, FREE_SHIPPING 0; `minOrderValue`; `startsAt` < `endsAt`; `usageLimitTotal` (not below uses already taken), `usageLimitPerCustomer` (default 1, null = unlimited); `firstOrderOnly`, `isPublic`, `isActive`; `appliesTo` + existing `targetIds`). Editing `value`/`type` of a coupon with redemptions → 409 `COUPON_IN_USE` (create a new coupon). `DELETE` is a soft delete (stops working at once). `GET /admin/coupons/:id/redemptions` (status, over-limit, order number, customer). All audited | coupons:write |
+| Shipping Rates | `GET /admin/shipping` → `{zones[{id,name,extraPerKg,isActive,sortOrder,slabs[{maxWeightG,rate}],states[],usedByOrders}], states[{id,name,zoneId}], settings}` · `POST /admin/shipping/zones`, `PUT`/`DELETE /admin/shipping/zones/:id` (shared `zoneBody`: slabs lightest first, a heavier slab never cheaper, ≤ 20; delete only an unused zone without states, else 409 `ZONE_IN_USE` `details.reason` `STATES`/`ORDERS`) · `PUT /admin/shipping/state-zones` `{assignments[{stateId, zoneId\|null}]}` · `PUT /admin/shipping/settings` (the `SHIPPING` setting; drops the public settings cache) · `GET /admin/shipping/pincodes?q=&filter=blocked\|no_cod\|custom_days`, `PUT`/`DELETE /admin/shipping/pincodes/:pincode` (`pincodeRuleBody`: COD needs delivery; both delivery days or neither) · `POST /admin/shipping/pincodes/import` `{csv, dryRun}` (columns `pincode,deliverable,cod,edd_min_days,edd_max_days,note`; ≤ 20,000 rows, 2 MB; every row checked, all saved or none → `{rows, created, updated, unchanged, errors[{line,message}], saved}`) · `GET /admin/shipping/coverage?q=&state=&filter=delivered\|no_cod\|blocked\|no_rate\|air_only\|own_rule\|own_days\|unknown&page=&limit=` (every pincode in the postal directory plus pincodes that only have a rule, one row each: `{pincode, place{office,offices,district,stateId,state}\|null, zone, status DELIVERED\|NOT_DELIVERED\|NO_RATE\|UNKNOWN, cod, airOnly, days, rule\|null}`; `q` = pincode digits (prefix) or part of any office / district name; status follows checkout) · `GET /admin/shipping/coverage/summary` → `{known, delivered, deliveredCod, notDelivered, noRate, airOnly, rules, rulesOutsideDirectory}` · `POST /admin/shipping/preview` (one shipment through `shippingCharge`; read-only) | shipping:write |
 | Shipping Rates | `GET/PUT /admin/shipping/zones` (zones, `extraPerKg`, slabs, state mapping); `PUT /admin/settings/SHIPPING`; CRUD `/admin/shipping/serviceability` (pincode rules, CSV import); `POST /admin/shipping/preview {pincode, lines}` → shipping breakdown | shipping:write |
 | Restock Requests | `GET /admin/restock-requests?groupBy=variant&status=` → `{variant, product, pending, oldestAt, available}`; `POST /admin/restock-requests/notify {variantId}` (only when available > 0; idempotent per variant/day); `DELETE /admin/restock-requests/:id` | restock:read / restock:notify |
 
@@ -380,7 +397,7 @@ CRUD `/admin/product-types`, `/admin/categories`, `/admin/techniques` (image med
 ---
 
 ## 5. Webhooks (incoming)
-**Razorpay** `POST /v1/webhooks/razorpay`: architecture.md §8.1. Handled events: `payment.authorized`, `payment.captured`, `payment.failed`, `order.paid`, `refund.created`, `refund.processed`, `refund.failed`. Others → `IGNORED`. The handler always re-fetches the authoritative object before applying.
+**Razorpay** `POST /v1/webhooks/razorpay`: architecture.md §8.1. Handled events: `payment.authorized`, `payment.captured`, `payment.failed`, `order.paid`, `refund.created`, `refund.processed`, `refund.failed`. Others → `IGNORED`. The handler always re-fetches the authoritative object before applying. Implemented in task 4.9 (`src/payments/webhook-handlers.ts`): payment events re-fetch the payment (`payload.payment.entity.id`) and apply it; a payment Razorpay does not know is `IGNORED`; Razorpay unreachable → `FAILED` (retried with backoff by the sweeper). Refund events re-fetch the refund; ArtQ's own refund (provider id or `notes.aq_refund_id`) is marked processed when `processed`; others are `IGNORED` here and recorded by the refund reconciliation (5.4).
 **Courier** (post-launch, Shiprocket): same inbox pattern (`provider = 'SHIPROCKET'`).
 
 ---
@@ -398,6 +415,7 @@ CRUD `/admin/product-types`, `/admin/categories`, `/admin/techniques` (image med
 | `/checkout/*`, `/orders/:n/payment/retry` | 20/min/cart |
 | `/contact`, `/custom-work`, `/newsletter/subscribe`, `/uploads/presign` | 5/min/IP |
 | `/search/suggest` | 60/min/IP |
+| `POST /cart/coupon` | 10/min/IP (codes cannot be guessed) |
 | Default | 300/min/IP; admin 600/min/user |
 
 Fixed windows counted in Redis (`rl:<bucket>:<key>`); IPv6 clients are keyed by /64. 429 `RATE_LIMITED` carries `Retry-After` and `details.retryAfterSeconds`; every limited response has `RateLimit-Limit/-Remaining/-Reset`. If Redis is unavailable requests are allowed (logged): the account lockout and OTP caps in PostgreSQL still apply.

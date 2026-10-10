@@ -23,5 +23,10 @@ await prisma.setting.update({ where: { key: 'SOCIAL' }, data: { value: { ...DEFA
 // One real pincode for the product page's delivery check (the full India Post directory is loaded at deploy).
 const kerala = await prisma.state.findFirstOrThrow({ where: { gstCode: '32' } });
 await prisma.postalCode.upsert({ where: { pincode_officeName: { pincode: '682011', officeName: 'ERNAKULAM H.O' } }, update: {}, create: { pincode: '682011', officeName: 'ERNAKULAM H.O', district: 'ERNAKULAM', stateId: kerala.id } });
+// Coupons for the cart tests (task 4.5): one that applies to any cart, one no cart reaches.
+await prisma.coupon.createMany({ data: [
+  { code: 'WELCOME10', title: 'Welcome offer', type: 'PERCENT', value: 10, maxDiscount: 20_000, usageLimitPerCustomer: null, isPublic: true },
+  { code: 'BULK500', title: 'Bulk order', type: 'FLAT', value: 50_000, minOrderValue: 50_000_000, usageLimitPerCustomer: null, isPublic: true },
+], skipDuplicates: true });
 await prisma.$disconnect();
 console.log('storefront e2e data ready');

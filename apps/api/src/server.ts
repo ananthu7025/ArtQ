@@ -25,10 +25,17 @@ import { registerTaxonomyRoutes } from './catalog/taxonomy-routes.js';
 import { importEnqueue } from './imports/queues.js';
 import { registerImportRoutes } from './imports/routes.js';
 import { registerInventoryRoutes } from './inventory/routes.js';
+import { registerCouponRoutes } from './coupons/admin-routes.js';
+import { registerShippingRoutes } from './shipping/admin-routes.js';
 import { ImportService } from './imports/service.js';
 import { razorpayProvider } from './webhooks/provider.js';
 import { storefrontRouter } from './storefront/routes.js';
-import { cartRouter } from './cart/routes.js';
+import { cartRouter, claimGuestCartOnSignIn } from './cart/routes.js';
+import { RazorpayClient } from './payments/razorpay.js';
+import { CheckoutService } from './checkout/initiate.js';
+import { checkoutPaymentRouter } from './checkout/payment-routes.js';
+import { CartService } from './cart/service.js';
+import { accountRouter } from './account/routes.js';
 import { WEBHOOK_QUEUE, webhookRouter } from './webhooks/inbox.js';
 
 let env;
@@ -51,6 +58,9 @@ const service = new AuthService(prisma, cache, {
 });
 
 const limiter = new RedisRateLimiter(redis);
+const mediaUrl = (key: string) => `${env.MEDIA_PUBLIC_BASE_URL.replace(/\/$/, '')}/${key}`;
+/** Paying online needs the Razorpay keys; without them checkout offers COD only (the quote reports online payments off). */
+const razorpay = env.RAZORPAY_KEY_ID && env.RAZORPAY_KEY_SECRET ? new RazorpayClient(env.RAZORPAY_KEY_ID, env.RAZORPAY_KEY_SECRET) : null;
 const appCache = new RedisAppCache(redis, (op, err) => log.warn({ op, err: String(err) }, 'app cache unavailable; reading from the database'));
 const onRateLimitError = (err: unknown) => log.warn({ err: String(err) }, 'rate limiter unavailable; request allowed');
 
@@ -72,6 +82,8 @@ const importValidateQueue = new Queue(QUEUE.importValidate, { ...BULLMQ_BASE, co
 const importApplyQueue = new Queue(QUEUE.importApply, { ...BULLMQ_BASE, connection: webhookQueue.opts.connection });
 for (const q of [importValidateQueue, importApplyQueue]) q.on('error', (err) => log.warn({ err: err.message, queue: q.name }, 'import queue connection error'));
 registerInventoryRoutes(admin, prisma);
+registerCouponRoutes(admin, prisma);
+registerShippingRoutes(admin, prisma, appCache);
 registerImportRoutes(admin, prisma, new ImportService({ prisma, readFile: (m) => media.read(m), enqueue: importEnqueue(importValidateQueue, importApplyQueue) }));
 
 const app = createApp({
@@ -82,11 +94,13 @@ const app = createApp({
   rateLimiter: limiter,
   onRateLimitError,
   routes: [
-    authRouter({ prisma, cache, jwt, service, env: env.NODE_ENV, refreshMaxAgeS: DEFAULT_AUTH_TIMINGS.refreshIdleS, limiter, onRateLimitError }),
+    authRouter({ prisma, cache, jwt, service, env: env.NODE_ENV, refreshMaxAgeS: DEFAULT_AUTH_TIMINGS.refreshIdleS, limiter, onRateLimitError, onSignedIn: claimGuestCartOnSignIn({ prisma, env: env.NODE_ENV, mediaUrl }) }),
     adminAuthRouter({ prisma, cache, jwt, service, env: env.NODE_ENV, limiter, onRateLimitError }),
     customerMediaRouter({ prisma, cache, jwt }, media),
-    cartRouter({ prisma, env: env.NODE_ENV, mediaUrl: (key) => `${env.MEDIA_PUBLIC_BASE_URL.replace(/\/$/, '')}/${key}` }),
-    storefrontRouter({ prisma, cache: appCache, mediaUrl: (key) => `${env.MEDIA_PUBLIC_BASE_URL.replace(/\/$/, '')}/${key}`, limiter, onRateLimitError, onInvalidSetting: (key) => log.warn({ key }, 'stored setting is invalid; serving the default'), onSearchLogError: (err) => log.warn({ err: String(err) }, 'search log not written') }),
+    cartRouter({ prisma, cache, jwt, env: env.NODE_ENV, mediaUrl, limiter, onRateLimitError, checkout: { provider: razorpay, storeName: 'ArtQ', log } }),
+    checkoutPaymentRouter({ prisma, cache, jwt, env: env.NODE_ENV, provider: razorpay, log, limiter, onRateLimitError, links: { webUrl: env.WEB_URL, linkSecret: env.AUTH_LINK_SECRET, setPasswordTtlS: DEFAULT_AUTH_TIMINGS.setPasswordTtlS }, checkout: new CheckoutService({ prisma, carts: new CartService(prisma, mediaUrl), provider: razorpay, mediaUrl, storeName: 'ArtQ' }) }),
+    accountRouter({ prisma, cache, jwt, service, env: env.NODE_ENV, mediaUrl, limiter, onRateLimitError }),
+    storefrontRouter({ prisma, cache: appCache, mediaUrl, limiter, onRateLimitError, onInvalidSetting: (key) => log.warn({ key }, 'stored setting is invalid; serving the default'), onSearchLogError: (err) => log.warn({ err: String(err) }, 'search log not written') }),
     webhookRouter({ prisma, queue: webhookQueue, providers: [razorpayProvider(env.RAZORPAY_WEBHOOK_SECRET || undefined)], log }),
     admin.router,
   ],

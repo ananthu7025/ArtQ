@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AdminApi } from '../src/api/client';
 import { App } from '../src/App';
 import { expectFieldError } from './field';
+import { toast } from 'sonner';
 import { err, fakeServer, type Handler } from './fake-server';
 import { TECHNIQUES, teakFrame } from './product-fixture';
 
@@ -275,6 +276,23 @@ describe('media', () => {
     expect(calls(server, 'POST', '/admin/media/presign')[0]!.body).toEqual({ filename: 'front.png', contentType: 'image/png', size: 4, purpose: 'product-image' });
     expect(storage).toEqual(['PUT https://s3.test/put/202 image/png']);
     expect(calls(server, 'PUT', '/admin/products/1/images')[0]!.body).toEqual({ images: [{ mediaId: 101, alt: 'Front', isCover: true }, { mediaId: 202, alt: null, isCover: false }] });
+  });
+
+  it('uploaded but not attached (the list is refused): the error is shown and it does NOT say "Image added"', async () => {
+    const u = userEvent.setup();
+    const success = vi.spyOn(toast, 'success');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 200 })));
+    setup({ extra: {
+      'POST /admin/media/presign': () => [201, { media: { id: 202 }, upload: { url: 'https://s3.test/put/202', headers: {} } }],
+      'POST /admin/media/202/complete': () => [200, { id: 202, status: 'UPLOADED' }],
+      'PUT /admin/products/1/images': () => err(422, 'MEDIA_NOT_USABLE', 'Some images are missing, failed or are not product images', { mediaIds: [101] }),
+    } });
+    await ready();
+    await u.upload(screen.getByLabelText('Upload images'), new File([new Uint8Array([137, 80, 78, 71])], 'front.png', { type: 'image/png' }));
+    expect((await screen.findByRole('alert')).textContent).toBe('Some images are missing, failed or are not product images');
+    await new Promise((r) => setTimeout(r, 50));
+    expect(success).not.toHaveBeenCalled();   // (toasts are a shared store, so an earlier test's message may still be on screen)
+    success.mockRestore();
   });
 
   it('a file of the wrong type is refused before anything is uploaded', async () => {

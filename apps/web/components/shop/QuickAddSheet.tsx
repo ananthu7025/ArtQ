@@ -49,7 +49,7 @@ export function NotifyForm({ slug, variant }: { slug: string; variant: PublicVar
   );
 }
 
-export function QuickAddSheet({ slug, name, open, onOpenChange, onClosed }: { slug: string; name: string; open: boolean; onOpenChange: (o: boolean) => void; onClosed?: () => void }) {
+export function QuickAddSheet({ slug, name, open, onOpenChange, onClosed, returnFocus }: { slug: string; name: string; open: boolean; onOpenChange: (o: boolean) => void; onClosed?: () => void; /** Where focus goes after the mini-cart that follows an add. */ returnFocus?: () => HTMLElement | null }) {
   const { addToCart } = useShop();
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [failed, setFailed] = useState(false);
@@ -78,7 +78,7 @@ export function QuickAddSheet({ slug, name, open, onOpenChange, onClosed }: { sl
   const add = async () => {
     if (!selected || max === 0) return;
     setBusy(true); setProblem(null);
-    const r = await addToCart(selected.id, qty, `${loaded!.product.name} (${selected.label})`);
+    const r = await addToCart(selected.id, qty, `${loaded!.product.name} (${selected.label})`, { returnFocus: returnFocus?.() ?? null });
     setBusy(false);
     if (r.ok) onOpenChange(false); else setProblem(r.message);
   };

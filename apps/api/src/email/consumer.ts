@@ -11,10 +11,13 @@ import type { Prisma, PrismaClient } from '@prisma/client';
 import type { Logger } from 'pino';
 import * as fn from '../db/functions.js';
 import { loadDelivery, type OutboxEventRow } from '../outbox/consume.js';
+import { orderEmailData } from './order-data.js';
 import { render, type Rendered } from './templates.js';
 import { EmailSendError, type EmailTransport } from './transport.js';
 
-export type EmailDeps = { prisma: PrismaClient; transport: EmailTransport; from: string; log: Logger };
+/** Links built at send time (never stored in an event): the set-password link offered to guests in the order email. */
+export type EmailLinks = { webUrl: string; linkSecret: string; setPasswordTtlS: number };
+export type EmailDeps = { prisma: PrismaClient; transport: EmailTransport; from: string; log: Logger; links?: EmailLinks };
 export type EmailConsumer = 'email.customer' | 'email.admin';
 export type EmailResult = { status: 'ALREADY_DONE' | 'SENT' | 'NO_RECIPIENTS'; sent: number; skipped: number };
 
@@ -32,8 +35,30 @@ type Message = { to: string; template: string; rendered: Rendered; userId: numbe
 
 const dedupeKey = (deliveryId: number, to: string) => `outbox-${deliveryId}-${createHash('sha256').update(to.toLowerCase()).digest('hex').slice(0, 12)}`;
 
-async function messagesFor(tx: Prisma.TransactionClient, consumer: EmailConsumer, ev: OutboxEventRow): Promise<Message[]> {
+/** Order events (task 4.10) → the customer's email, built from the order as it is now. */
+const CUSTOMER_ORDER_EMAIL: Record<string, string> = {
+  'order.placed': 'order_placed', 'order.expired': 'order_expired', 'order.cancelled': 'order_cancelled',
+  'payment.refund_notice': 'payment_refund_notice', 'refund.processed': 'refund_processed',
+};
+
+async function orderMessage(tx: Prisma.TransactionClient, ev: OutboxEventRow, template: string, links: EmailLinks | undefined): Promise<Message[]> {
   const p = (ev.payload ?? {}) as Record<string, unknown>;
+  const id = Number(p.order_id);
+  const o = Number.isSafeInteger(id) && id > 0 ? await tx.order.findUnique({ where: { id }, include: { items: { orderBy: { id: 'asc' } } } }) : null;
+  if (!o) throw new TypeError(`${ev.eventType} event ${ev.eventId}: order ${String(p.order_id)} not found`);
+  const data = await orderEmailData(tx, o, p, links);
+  return [{ to: o.contactEmail, template, rendered: render(template, data), userId: o.userId, dedupeKey: dedupeKey(ev.deliveryId, o.contactEmail) }];
+}
+
+async function messagesFor(tx: Prisma.TransactionClient, consumer: EmailConsumer, ev: OutboxEventRow, links?: EmailLinks): Promise<Message[]> {
+  const p = (ev.payload ?? {}) as Record<string, unknown>;
+  if (consumer === 'email.customer' && CUSTOMER_ORDER_EMAIL[ev.eventType]) return orderMessage(tx, ev, CUSTOMER_ORDER_EMAIL[ev.eventType]!, links);
+  if (consumer === 'email.admin' && ev.eventType === 'order.placed') {
+    const o = await tx.order.findUnique({ where: { id: Number(p.order_id) }, include: { items: true } });
+    if (!o) throw new TypeError(`order.placed event ${ev.eventId}: order not found`);
+    const rendered = render('admin_order_placed', { orderNumber: o.orderNumber, total: o.total, paymentMethod: o.paymentMethod, itemCount: o.items.reduce((n, i) => n + i.quantity, 0), customer: `${o.shipName}, ${o.shipCity}` });
+    return (await adminRecipients(tx)).map((to) => ({ to, template: 'admin_order_placed', rendered, userId: null, dedupeKey: dedupeKey(ev.deliveryId, to) }));
+  }
   if (consumer === 'email.customer') {
     if (ev.eventType !== 'email.auth') throw new UnsupportedEmailEventError(consumer, ev.eventType);
     const to = String(p.to ?? '');
@@ -43,10 +68,14 @@ async function messagesFor(tx: Prisma.TransactionClient, consumer: EmailConsumer
     return [{ to, template, rendered: render(template, (p.data ?? {}) as Record<string, unknown>), userId, dedupeKey: dedupeKey(ev.deliveryId, to) }];
   }
   if (ev.eventType !== 'payment.exception_raised') throw new UnsupportedEmailEventError(consumer, ev.eventType);
+  const rendered = render('admin_payment_exception', p);
+  return (await adminRecipients(tx)).map((to) => ({ to, template: 'admin_payment_exception', rendered, userId: null, dedupeKey: dedupeKey(ev.deliveryId, to) }));
+}
+
+async function adminRecipients(tx: Prisma.TransactionClient): Promise<string[]> {
   const setting = await tx.setting.findUnique({ where: { key: 'NOTIFY' } });
   const recipients = setting ? parseSetting('NOTIFY', setting.value).adminEmails : [];
-  const rendered = render('admin_payment_exception', p);
-  return [...new Set(recipients.map((r) => r.toLowerCase()))].map((to) => ({ to, template: 'admin_payment_exception', rendered, userId: null, dedupeKey: dedupeKey(ev.deliveryId, to) }));
+  return [...new Set(recipients.map((r) => r.toLowerCase()))];
 }
 
 export async function processEmailDelivery(d: EmailDeps, consumer: EmailConsumer, deliveryId: number): Promise<EmailResult> {
@@ -55,7 +84,7 @@ export async function processEmailDelivery(d: EmailDeps, consumer: EmailConsumer
     if (!(await fn.outboxBeginConsume(tx, deliveryId))) return null;
     const ev = await loadDelivery(tx, deliveryId);
     if (!ev) return null;
-    const messages = await messagesFor(tx, consumer, ev);
+    const messages = await messagesFor(tx, consumer, ev, d.links);
     const pending: { m: Message; logId: number; idempotencyKey: string }[] = [];
     let skipped = 0;
     for (const m of messages) {

@@ -72,7 +72,7 @@ export function ProductView({ product, initialSku, returnWindowHours }: { produc
   const add = async (then?: 'buy') => {
     if (!selected || max === 0) return;
     setBusy(then === 'buy' ? 'buy' : 'add'); setProblem(null);
-    const r = await addToCart(selected.id, qty, product.variants.length > 1 ? `${product.name} (${selected.label})` : product.name);
+    const r = await addToCart(selected.id, qty, product.variants.length > 1 ? `${product.name} (${selected.label})` : product.name, { quiet: then === 'buy' });
     setBusy(null);
     if (!r.ok) { setProblem(r.message); return; }
     if (then === 'buy') router.push('/checkout');

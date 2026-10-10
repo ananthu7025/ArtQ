@@ -18,6 +18,7 @@ export const RATE_LIMITS = {
   checkout: { limit: 20, windowS: 60 },                  // per cart
   publicForm: { limit: 5, windowS: 60 },                 // contact, custom work, newsletter, presign per IP
   searchSuggest: { limit: 60, windowS: 60 },             // per IP
+  couponApply: { limit: 10, windowS: 60 },               // POST /cart/coupon per IP (codes cannot be guessed)
   admin: { limit: 600, windowS: 60 },                    // per admin user
 } as const satisfies Record<string, Limit>;
 

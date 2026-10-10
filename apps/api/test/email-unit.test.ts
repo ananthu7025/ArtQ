@@ -10,6 +10,17 @@ const DATA: Record<string, Record<string, unknown>> = {
   signup_attempt_existing: {},
   new_signin_activity: {},
   admin_payment_exception: { type: 'OUTBOX_DEAD', order_id: null },
+  email_change_requested: { newEmail: 'n***@example.com' },
+  email_changed: { newEmail: 'n***@example.com' },
+  account_deleted: {},
+  order_placed: { orderNumber: 'AQ10234', firstName: 'Hema', paymentMethod: 'COD', lines: [{ name: 'Epoxy <Resin>', label: '500 ml', quantity: 2, total: 99_800 }],
+    totals: { subtotal: 99_800, couponDiscount: 5000, couponCode: 'WELCOME10', shipping: 7000, codFee: 4000, total: 105_800 }, address: ['Hema R', '12 Rose Villa', 'Kochi, Kerala 682011'], estimate: '4–7 days', setPasswordLink: null },
+  order_expired: { orderNumber: 'AQ1' },
+  order_cancelled: { orderNumber: 'AQ1' },
+  payment_refund_notice: { orderNumber: 'AQ1', reason: 'EXCESS', amount: 49_900 },
+  refund_processed: { orderNumber: 'AQ1', amount: 49_900 },
+  set_password_link: { link: 'https://artq.in/set-password?token=abc' },
+  admin_order_placed: { orderNumber: 'AQ1', total: 49_900, paymentMethod: 'RAZORPAY', itemCount: 2, customer: 'Hema R, Kochi' },
 };
 
 describe('email templates', () => {
@@ -44,6 +55,37 @@ describe('email templates', () => {
     expect(r.html).toContain('&lt;script&gt;');
     expect(r.html).toContain('&quot;x&quot;');
     expect(render('password_reset', { link: 'https://artq.in/r?a=1&b="2"' }).html).toContain('href="https://artq.in/r?a=1&amp;b=&quot;2&quot;"');
+  });
+
+  it('email-change notices name the new address (escaped) and need it', () => {
+    for (const t of ['email_change_requested', 'email_changed'] as const) {
+      const r = render(t, { newEmail: '<b>@x.in' });
+      expect(r.text).toContain('<b>@x.in');
+      expect(r.html).toContain('&lt;b&gt;@x.in');
+      expect(() => render(t, {})).toThrow();
+    }
+    expect(render('account_deleted', {}).text).toMatch(/30 days/);
+  });
+
+  it('order placed: items, totals with coupon / shipping / COD fee, address, delivery days; COD asks to keep the amount ready; values escaped; the set-password link only when given', () => {
+    const r = render('order_placed', DATA.order_placed!);
+    expect(r.subject).toBe('Order AQ10234 placed');
+    expect(r.text).toContain('2 × Epoxy <Resin> (500 ml): ₹998');
+    expect(r.text).toContain('keep ₹1,058 ready');
+    expect(r.html).toContain('Epoxy &lt;Resin&gt;');
+    expect(r.html).toContain('−₹50');
+    expect(r.html).toContain('Cash on delivery fee');
+    expect(r.html).toContain('Kochi, Kerala 682011');
+    expect(r.text).toContain('4–7 days');
+    expect(r.html).not.toContain('Set a password');
+    const withLink = render('order_placed', { ...DATA.order_placed!, paymentMethod: 'RAZORPAY', setPasswordLink: 'https://artq.in/set-password?token=t"x' });
+    expect(withLink.text).toContain('Your payment is confirmed.');
+    expect(withLink.html).toContain('href="https://artq.in/set-password?token=t&quot;x"');
+    expect(() => render('order_placed', { ...DATA.order_placed!, lines: [] })).toThrow('lines');
+  });
+  it('refund notice explains why (paid twice / arrived late)', () => {
+    expect(render('payment_refund_notice', DATA.payment_refund_notice!).text).toMatch(/two payments for order AQ1\. The extra payment of ₹499/);
+    expect(render('payment_refund_notice', { ...DATA.payment_refund_notice!, reason: 'LATE' }).text).toMatch(/arrived after the order had closed/);
   });
 
   it('missing data and unknown templates fail loudly', () => {

@@ -53,11 +53,18 @@ export type IdempotencyContext = {
   tx<T>(work: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T>;
   /** Records the resource created for this request (call inside ctx.tx, in the same transaction that created it). */
   attach(tx: Prisma.TransactionClient, resourceType: string, resourceId: string): Promise<void>;
-  /** Extends the lock before/while a slow provider call. Throws SupersededError if a newer owner is in charge. */
-  renew(): Promise<void>;
+  /** Extends the lock (default: the spec's lock) before/while a slow provider call. Throws SupersededError if a newer owner is in charge. */
+  renew(lockSeconds?: number): Promise<void>;
 };
 
-export type IdempotentResult = { status: number; body: unknown; resource?: { type: string; id: string } };
+export type IdempotentResult = {
+  status: number; body: unknown; resource?: { type: string; id: string };
+  /**
+   * Answer without completing the key: it stays PROCESSING with a lock of `lockSeconds`, so a retry with the same key
+   * soon after TAKES OVER and resumes (e.g. 202 PAYMENT_STARTING when the provider's outcome is unknown).
+   */
+  keepOpenSeconds?: number;
+};
 
 export type IdempotencySpec = {
   operation: string;
@@ -112,8 +119,8 @@ export function idempotent(d: IdempotencyDeps, spec: IdempotencySpec, handler: (
       async attach(tx, resourceType, resourceId) {
         await fn.idempotencyAttach(tx, { ...k, ownerToken: token, resourceType, resourceId });
       },
-      async renew() {
-        if (!(await fn.idempotencyRenew(d.prisma, { ...k, ownerToken: token, lockSeconds }))) throw new SupersededError();
+      async renew(seconds = lockSeconds) {
+        if (!(await fn.idempotencyRenew(d.prisma, { ...k, ownerToken: token, lockSeconds: seconds }))) throw new SupersededError();
       },
     };
 
@@ -133,7 +140,11 @@ export function idempotent(d: IdempotencyDeps, spec: IdempotencySpec, handler: (
       await release(d.prisma, k, token).catch((err: unknown) => d.log.warn({ err: String(err) }, 'could not release idempotency key'));
       throw e;
     }
-    await complete(d, k, token, result.status, result.body, result.resource);
+    if (result.keepOpenSeconds !== undefined) {
+      try { await ctx.renew(result.keepOpenSeconds); } catch (e) { if (isOwnershipLost(e)) throw superseded(); throw e; }
+    } else {
+      await complete(d, k, token, result.status, result.body, result.resource);
+    }
     res.status(result.status).set('Cache-Control', 'no-store').json(result.body);
   };
 }

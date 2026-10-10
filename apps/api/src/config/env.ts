@@ -33,6 +33,9 @@ export const envSchema = z.object({
   RESEND_API_KEY: z.string().optional(),
   /** Razorpay webhook secret; without it POST /v1/webhooks/razorpay answers 503 (Razorpay retries). Required from Phase 4. */
   RAZORPAY_WEBHOOK_SECRET: z.string().optional(),
+  /** Razorpay API keys (task 4.7). Without them paying online is off (checkout offers COD only). Test keys outside production. */
+  RAZORPAY_KEY_ID: z.preprocess((v) => (v === '' ? undefined : v), z.string().regex(/^rzp_(test|live)_[A-Za-z0-9]+$/, 'must look like rzp_test_… or rzp_live_…').optional()),
+  RAZORPAY_KEY_SECRET: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(8).optional()),
   // Object storage (task 1.11): Cloudflare R2 in production, S3Mock locally.
   S3_ENDPOINT: z.url(),
   S3_REGION: z.string().min(1).default('auto'),
@@ -72,6 +75,9 @@ export function loadEnv(source: Record<string, string | undefined> = process.env
   if (r.data.NODE_ENV === 'production' && r.data.EMAIL_TRANSPORT !== 'resend') {
     issues.push('EMAIL_TRANSPORT: production must use a provider with idempotency keys (resend)');
   }
+  if (!!r.data.RAZORPAY_KEY_ID !== !!r.data.RAZORPAY_KEY_SECRET) issues.push('RAZORPAY_KEY_SECRET: set both RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET, or neither');
+  if (r.data.RAZORPAY_KEY_ID?.startsWith('rzp_live_') && r.data.NODE_ENV !== 'production') issues.push('RAZORPAY_KEY_ID: live keys are only allowed in production');
+  if (r.data.RAZORPAY_KEY_ID?.startsWith('rzp_test_') && r.data.NODE_ENV === 'production') issues.push('RAZORPAY_KEY_ID: production must use live keys');
   if (r.data.S3_BUCKET_PUBLIC === r.data.S3_BUCKET_PRIVATE) issues.push('S3_BUCKET_PRIVATE: must differ from S3_BUCKET_PUBLIC');
   if (r.data.NODE_ENV === 'production' && !r.data.S3_ENDPOINT.startsWith('https://')) issues.push('S3_ENDPOINT: production must use https://');
   if (issues.length) throw new ConfigError(issues);

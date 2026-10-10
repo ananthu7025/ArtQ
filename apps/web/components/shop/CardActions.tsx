@@ -22,7 +22,7 @@ export function CardActions({ card }: { card: ProductCard }) {
   const onPill = async () => {
     if (!direct) { setSheet(true); return; }
     setBusy(true);
-    const r = await addToCart(card.defaultVariantId!, 1, card.name);
+    const r = await addToCart(card.defaultVariantId!, 1, card.name, { returnFocus: pill.current });
     setBusy(false);
     if (!r.ok) {
       if (r.code === 'OUT_OF_STOCK') setSheet(true);   // sold out meanwhile: offer "Notify me"
@@ -41,7 +41,7 @@ export function CardActions({ card }: { card: ProductCard }) {
         className={`relative z-10 mt-2 inline-flex h-11 items-center justify-center self-start rounded-full px-5 text-[13px] font-semibold uppercase tracking-[0.06em] ${card.inStock ? 'bg-brand-700 text-white hover:bg-brand-800' : 'border-[1.5px] border-ink-900 text-ink-900 hover:bg-ink-900 hover:text-white'} disabled:bg-surface-100 disabled:text-ink-500`}>
         {busy ? 'Adding…' : label}
       </button>
-      {sheet && <QuickAddSheet slug={card.slug} name={card.name} open={sheet} onOpenChange={setSheet} onClosed={() => pill.current?.focus()} />}
+      {sheet && <QuickAddSheet slug={card.slug} name={card.name} open={sheet} onOpenChange={setSheet} onClosed={() => pill.current?.focus()} returnFocus={() => pill.current} />}
     </>
   );
 }

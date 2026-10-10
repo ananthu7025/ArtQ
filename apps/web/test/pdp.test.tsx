@@ -146,7 +146,7 @@ describe('gallery', () => {
 });
 
 describe('pincode check', () => {
-  const answer = (o: object) => () => json({ pincode: '682011', place: { district: 'ERNAKULAM', state: 'Kerala' }, serviceable: true, codAvailable: true, surfaceOnly: false, estimatedDays: { min: 4, max: 7 }, reason: null, ...o });
+  const answer = (o: object) => () => json({ pincode: '682011', place: { district: 'ERNAKULAM', state: 'Kerala' }, serviceable: true, codAvailable: true, surfaceOnly: false, surfaceAvailable: true, estimatedDays: { min: 4, max: 7 }, reason: null, ...o });
   it('wrong length → message on the field (shared rule); deliverable → place, days, COD; remembered for next time', async () => {
     const u = userEvent.setup();
     routes['GET /pincodes/682011/serviceability'] = answer({});
@@ -178,6 +178,9 @@ describe('pincode check', () => {
     expect(await screen.findByText('We couldn’t find pincode 682011. Please check the number.')).toBeTruthy();
     await run({ codAvailable: false });
     expect(await screen.findByText(/Prepaid only \(no cash on delivery here\)\./)).toBeTruthy();
+    expect(screen.queryByText(/travel by road only/)).toBeNull();
+    await run({ surfaceAvailable: false });
+    expect(await screen.findByText('Resin and other liquids travel by road only, so they can’t be delivered here.')).toBeTruthy();
     await run(null);
     expect((await screen.findByRole('alert')).textContent).toBe('We could not reach the store. Check your connection and try again.');
   });

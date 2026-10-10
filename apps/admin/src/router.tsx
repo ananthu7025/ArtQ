@@ -11,6 +11,9 @@ import { TaxonomyPage } from './pages/taxonomy/TaxonomyPage';
 import { ImportDetailPage } from './pages/imports/ImportDetailPage';
 import { ImportsPage } from './pages/imports/ImportsPage';
 import { InventoryPage } from './pages/inventory/InventoryPage';
+import { CouponEditorPage } from './pages/coupons/CouponEditorPage';
+import { CouponsPage } from './pages/coupons/CouponsPage';
+import { ShippingPage } from './pages/shipping/ShippingPage';
 import { ProductEditorPage } from './pages/products/editor/ProductEditorPage';
 import { DashboardPage, ForbiddenPage, FullPageSpinner, ModulePlaceholder, NotFoundPage } from './pages/simple';
 
@@ -38,9 +41,12 @@ const BUILT: Record<string, () => React.ReactNode> = {
   '/techniques': () => <TaxonomyPage key="technique" kind="technique" />,
   '/imports': () => <ImportsPage />,
   '/inventory': () => <InventoryPage />,
+  '/coupons': () => <CouponsPage />,
+  '/shipping-rates': () => <ShippingPage />,
 };
 const PRODUCTS = ALL_NAV_ITEMS.find((i) => i.path === '/products')!;
 const IMPORTS = ALL_NAV_ITEMS.find((i) => i.path === '/imports')!;
+const COUPONS = ALL_NAV_ITEMS.find((i) => i.path === '/coupons')!;
 
 export const routes: RouteObject[] = [
   { path: '/login', element: <LoginPage /> },
@@ -55,6 +61,7 @@ export const routes: RouteObject[] = [
         ...ALL_NAV_ITEMS.map((item) => ({ path: item.path, element: <Guard item={item}>{BUILT[item.path]?.() ?? <ModulePlaceholder item={item} />}</Guard> })),
         { path: '/products/:id', element: <Guard item={PRODUCTS}><ProductEditorPage /></Guard> },
         { path: '/imports/:id', element: <Guard item={IMPORTS}><ImportDetailPage /></Guard> },
+        { path: '/coupons/:id', element: <Guard item={COUPONS}><CouponEditorPage /></Guard> },
         { path: '*', element: <NotFoundPage /> },
       ],
     }],
