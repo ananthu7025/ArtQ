@@ -15,10 +15,21 @@ const DATA: Record<string, Record<string, unknown>> = {
   account_deleted: {},
   order_placed: { orderNumber: 'AQ10234', firstName: 'Hema', paymentMethod: 'COD', lines: [{ name: 'Epoxy <Resin>', label: '500 ml', quantity: 2, total: 99_800 }],
     totals: { subtotal: 99_800, couponDiscount: 5000, couponCode: 'WELCOME10', shipping: 7000, codFee: 4000, total: 105_800 }, address: ['Hema R', '12 Rose Villa', 'Kochi, Kerala 682011'], estimate: '4–7 days', setPasswordLink: null },
+  order_confirmed: { orderNumber: 'AQ1', firstName: 'Hema', estimate: '4–7 days' },
+  order_shipped: { orderNumber: 'AQ1', firstName: 'Hema', estimate: '4–7 days', shipment: { courier: 'DTDC', awb: 'D123', trackingUrl: 'https://track.test/D123' } },
+  order_delivered: { orderNumber: 'AQ1', firstName: 'Hema' },
   order_expired: { orderNumber: 'AQ1' },
   order_cancelled: { orderNumber: 'AQ1' },
   payment_refund_notice: { orderNumber: 'AQ1', reason: 'EXCESS', amount: 49_900 },
   refund_processed: { orderNumber: 'AQ1', amount: 49_900 },
+  return_requested: { orderNumber: 'AQ1', firstName: 'Hema', return: { id: 12, reason: 'DAMAGED', note: null, items: [{ name: 'Epoxy Resin', label: '500 ml', quantity: 2 }] } },
+  return_approved: { orderNumber: 'AQ1', firstName: 'Hema', return: { id: 12, reason: 'DAMAGED', note: 'One is fine', items: [{ name: 'Epoxy Resin', label: '500 ml', quantity: 1 }, { name: 'Frame', label: '', quantity: 0 }] } },
+  return_rejected: { orderNumber: 'AQ1', firstName: 'Hema', return: { id: 12, reason: 'DAMAGED', note: 'The photo shows wear from use', items: [{ name: 'Epoxy Resin', label: '500 ml', quantity: 2 }] } },
+  return_received: { orderNumber: 'AQ1', firstName: 'Hema', return: { id: 12, reason: 'DAMAGED', note: null, items: [{ name: 'Epoxy Resin', label: '500 ml', quantity: 1 }] } },
+  order_lost: { orderNumber: 'AQ1', resolution: 'REFUND', refundAmount: 110_800 },
+  admin_cod_overdue: { count: 3, total: 331_200, days: 14 },
+  back_in_stock: { product: 'Epoxy Resin', label: '500 ml', link: 'https://artq.in/product/epoxy?variant=RES-500' },
+  admin_ops_alert: { key: 'webhooks-failing', severity: 'P1', title: 'Razorpay notifications are failing', detail: '2 notification(s) failed.' },
   set_password_link: { link: 'https://artq.in/set-password?token=abc' },
   admin_order_placed: { orderNumber: 'AQ1', total: 49_900, paymentMethod: 'RAZORPAY', itemCount: 2, customer: 'Hema R, Kochi' },
 };
@@ -82,6 +93,44 @@ describe('email templates', () => {
     expect(withLink.text).toContain('Your payment is confirmed.');
     expect(withLink.html).toContain('href="https://artq.in/set-password?token=t&quot;x"');
     expect(() => render('order_placed', { ...DATA.order_placed!, lines: [] })).toThrow('lines');
+  });
+  it('confirmed / delivered: greet by name, name the order; missing data fails', () => {
+    expect(render('order_confirmed', DATA.order_confirmed!)).toMatchObject({ subject: 'Order AQ1 confirmed', text: expect.stringContaining('We usually deliver in 4–7 days') });
+    expect(render('order_delivered', DATA.order_delivered!)).toMatchObject({ subject: 'Order AQ1 delivered', text: expect.stringMatching(/^Hi Hema, your order AQ1 has been delivered/) });
+    expect(() => render('order_confirmed', { orderNumber: 'AQ1', firstName: 'Hema' })).toThrow(/estimate/);
+    expect(render('order_delivered', { orderNumber: 'AQ1', firstName: '<b>' }).html).toContain('&lt;b&gt;');
+  });
+  it('shipped: courier, tracking number and a tracking button when there is a link; needs the shipment', () => {
+    const r = render('order_shipped', DATA.order_shipped!);
+    expect(r.subject).toBe('Order AQ1 shipped');
+    expect(r.text).toContain('on its way with DTDC. Tracking number: D123.');
+    expect(r.html).toContain('href="https://track.test/D123"');
+    expect(render('order_shipped', { ...DATA.order_shipped!, shipment: { courier: 'DTDC', awb: 'D123', trackingUrl: null } }).html).not.toContain('Track your parcel');
+    expect(() => render('order_shipped', { ...DATA.order_shipped!, shipment: null })).toThrow(/shipment/);
+  });
+  it('cancelled: names the refund when there is one; COD owes nothing; otherwise the general line', () => {
+    expect(render('order_cancelled', { orderNumber: 'AQ1', refundAmount: 110_800, paymentMethod: 'RAZORPAY' }).text).toBe('Your order AQ1 was cancelled. ₹1,108 is being refunded to your original payment method. Refunds usually reach your account in 5–7 working days.');
+    expect(render('order_cancelled', { orderNumber: 'AQ1', refundAmount: null, paymentMethod: 'COD' }).text).toBe('Your order AQ1 was cancelled. You don’t need to pay anything.');
+    expect(render('order_cancelled', { orderNumber: 'AQ1' }).text).toContain('If you paid for it');
+  });
+  it('returns: the units (approved ones only), what happens next by reason, the staff note; missing data fails', () => {
+    expect(render('return_requested', DATA.return_requested!).text).toBe('Hi Hema, we’ve received your return request #12 for order AQ1. Items: 2 × Epoxy Resin (500 ml). We’ll look at it and email you within 2 working days.');
+    const ok = render('return_approved', DATA.return_approved!).text;
+    expect(ok).toContain('Approved: 1 × Epoxy Resin (500 ml).');
+    expect(ok).not.toContain('Frame');
+    expect(ok).toContain('Note from us: One is fine');
+    expect(render('return_approved', { ...DATA.return_approved!, return: { id: 12, reason: 'MISSING_ITEM', note: null, items: [{ name: 'Frame', label: 'A4', quantity: 1 }] } }).text).toContain('We’ll refund the missing item to you shortly.');
+    expect(render('return_rejected', DATA.return_rejected!).text).toContain('Why: The photo shows wear from use');
+    expect(render('return_rejected', { ...DATA.return_rejected!, return: { id: 12, reason: 'DAMAGED', note: '<b>x</b>', items: [] } }).html).toContain('&lt;b&gt;x&lt;/b&gt;');
+    expect(() => render('return_received', { orderNumber: 'AQ1', firstName: 'Hema' })).toThrow(/return/);
+  });
+  it('RTO cancellation and lost parcels: what happens to the money', () => {
+    expect(render('order_cancelled', { orderNumber: 'AQ1', reason: 'RTO', refundAmount: 150_000, paymentMethod: 'RAZORPAY' }).text).toContain('₹1,500 for the items is being refunded to your original payment method (the shipping charge isn’t refunded)');
+    expect(render('order_cancelled', { orderNumber: 'AQ1', reason: 'RTO', refundAmount: null, paymentMethod: 'COD' }).text).toBe('Your order AQ1 came back to us without being delivered, so we’ve cancelled it. You don’t need to pay anything. If you still want it, you’re welcome to order again.');
+    expect(render('order_lost', DATA.order_lost!).text).toContain('₹1,108 is being refunded');
+    expect(render('order_lost', { orderNumber: 'AQ1', resolution: 'RESHIP' }).text).toContain('We’re sending you a replacement');
+    expect(render('order_lost', { orderNumber: 'AQ1', resolution: 'REFUND', refundAmount: null }).text).toContain('You don’t need to pay anything.');
+    expect(render('admin_cod_overdue', DATA.admin_cod_overdue!).subject).toBe('[ArtQ] COD cash overdue: 3 order(s), ₹3,312');
   });
   it('refund notice explains why (paid twice / arrived late)', () => {
     expect(render('payment_refund_notice', DATA.payment_refund_notice!).text).toMatch(/two payments for order AQ1\. The extra payment of ₹499/);

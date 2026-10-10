@@ -68,4 +68,12 @@ test('delivery areas: coverage, rules from the list, the default policy, rules o
   await page.getByRole('dialog', { name: 'Default delivery' }).getByLabel('Cash on delivery wherever we deliver').check();
   await page.getByRole('dialog', { name: 'Default delivery' }).getByRole('button', { name: 'Save' }).click();
   await expect(def).toContainText('Delivered, with cash on delivery');
+
+  // Leave the shared e2e database as we found it: 682020 follows the default again.
+  await page.getByLabel('Show', { exact: true }).selectOption('');
+  await page.getByLabel('Pincode or place').fill('682020');
+  await page.getByLabel('Pincode or place').press('Enter');
+  await table.getByRole('button', { name: 'Remove the rule for 682020' }).click();
+  await page.getByRole('dialog', { name: 'Remove the rule for 682020?' }).getByRole('button', { name: 'Remove' }).click();
+  await expect(table.getByRole('button', { name: 'Add a rule for 682020' })).toBeVisible();
 });

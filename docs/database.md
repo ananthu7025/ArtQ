@@ -307,7 +307,8 @@ Every transaction acquires row locks in this order and only in this order. Expli
 | `PLACED` | `CONFIRMED` | admin confirms | |
 | `PLACED`, `CONFIRMED` | `CANCELLED` | customer (only while `fulfilment_status = UNFULFILLED`) or admin (while `UNFULFILLED`/`PACKED`) | one transaction, lock order §4.1: `UPDATE orders … WHERE status IN ('PLACED','CONFIRMED') AND fulfilment_status IN (…)` must affect 1 row, then release ACTIVE reservations, then prepaid ⇒ `aq_request_refund(kind CANCELLATION, all items + shipping)`, then coupon `aq_reverse_coupon(order)` (migration `0006`): `UPDATE coupon_redemptions SET status='REVERSED' WHERE order_id=… AND status='REDEEMED'` and only if that affected 1 row (and not over-limit) `redeemed_count − 1` (D-14) |
 | `CONFIRMED` | `COMPLETED` | system, `completeAfterDays` after `DELIVERED` with no open return | |
-| `CONFIRMED` | `CANCELLED` | RTO received (fulfilment `RTO_RECEIVED`) | prepaid ⇒ refund per policy; COD ⇒ `NOT_COLLECTED` |
+| `CONFIRMED` | `CANCELLED` | RTO received (fulfilment `RTO_RECEIVED`) | prepaid ⇒ refund of the items, shipping kept (D-9); COD ⇒ `NOT_COLLECTED` (`aq_receive_rto`, §8.4a) |
+| `CONFIRMED` | `CANCELLED` | parcel lost (fulfilment `LOST`) and resolved by refund | prepaid ⇒ full refund incl. shipping; COD ⇒ `NOT_COLLECTED` (`aq_mark_lost`, §8.4a); resolved by reshipping, the order stays `CONFIRMED` |
 | `CANCELLED`, `EXPIRED`*, `COMPLETED` | — | terminal (*except the late-capture path above) | |
 
 ### 4.3 Fulfilment (`fulfilment_status`), single shipment
@@ -3623,6 +3624,11 @@ END $$ LANGUAGE plpgsql;
 | `0005_refresh_products_lock_first` | 2.8 | Replaces `aq_refresh_products`: locks each product (`FOR NO KEY UPDATE`) in one statement and computes its aggregates in the next. The `0003` version computed inside the `UPDATE` that waited for the lock, so under READ COMMITTED two transactions changing **different variants of the same product** (a stock count and a checkout, which lock only their own variants) could write aggregates missing the other's committed change (`product_aggregate_drift`). Found by the task 2.8 concurrency test; regression test in `inventory.test.ts` |
 | `0006_coupon_reverse` | 4.3 | `aq_reverse_coupon(p_order)`: locks the order (must be `CANCELLED`), moves its `REDEEMED` redemption to `REVERSED` and, unless over-limit, locks the coupon and decrements `redeemed_count` (D-14). Gated by the row transition, so a retry changes nothing. Wrapper `reverseCoupon` |
 | `0007_place_cod_order` | 4.7 | `aq_place_cod_order(p_order, p_actor)`: the COD placement step (§5 COD row) as one gated function mirroring the APPLIED branch of `aq_apply_provider_payment` without a payment; refuses an order with an authorized/captured payment or an item without an active reservation. Wrapper `placeCodOrder` |
+| `0008_dispatch_order` | 5.2 | `aq_dispatch_order(p_order, p_courier, p_awb, p_tracking_url, p_weight_g, p_invoice, p_notify, p_actor)`: §8.4 as a function, **generated from the validated block in §8.4** (`db-from-docs`, like 0001–0003). CONFIRMED + PACKED (paid or COD) only; AWB unique per courier (`AWB_IN_USE`); the invoice must add up to the order total (`INVOICE_INVALID`); consumes every ACTIVE reservation (`CONSUME` movements), numbers the invoice `AQ/<fy>/<6 digits>` from `invoice_counters` (upsert, gap-free), inserts invoice + shipment, PACKED → SHIPPED with history, emits `order.status_changed` (to `SHIPPED`, when notifying) and `invoice.render`. Wrapper `dispatchOrder` |
+| `0009_cancel_order` | 5.3 | `aq_cancel_order(p_order, p_by, p_actor, p_reason, p_notify)`: §8.3a, generated from the validated block like 0008. PLACED/CONFIRMED and not packed (customers) or packed (staff) → CANCELLED; prepaid → one `CANCELLATION` refund of everything still refundable on the applied payment (`aq_request_refund`, key `cancel-<order id>`); COD → `NOT_COLLECTED`; reservations released (`RELEASE` movements, back-in-stock events); sold counts reduced; coupon reversed (`aq_reverse_coupon`); `order.cancelled` email when notifying. Wrapper `cancelOrder` |
+| `0010_credit_note` | 5.4 | `aq_issue_credit_note(p_refund, p_content, p_actor)` + unique index `invoices_one_credit_note_per_refund_uq`: §8.5a, generated from the validated block. Only for a `PROCESSED` refund with an order part on an order that has a tax invoice (else `SKIPPED`); one per refund (`DUPLICATE` returns the existing one); place of supply must match the original; totals must equal the refunded order part; numbered `CN/<fy>/<6 digits>` gap-free; emits `invoice.render`. Wrapper `issueCreditNote` |
+| `0011_returns` | 5.5 | Returns, §8.5b, generated from the validated block. `aq_request_return` (delivered, within the return window, quantities bounded by `return_requested_qty`, photos claimed), `aq_decide_return`, `aq_receive_return`, `aq_inspect_return` (sellable units restocked `RETURN_RESTOCK`, damaged recorded `RETURN_DAMAGED`), `aq_request_return_refund` (kind `RETURN` through `aq_request_refund`, bounded by the units received), `aq_set_return_status` (in transit / closed / cancelled), helpers `aq_return_lock`, `aq_return_sync_order` (order `return_status`). Wrappers in `functions.ts` |
+| `0012_rto_lost_cod` | 5.6 | §8.4a, generated from the validated block. `aq_receive_rto` (every unit inspected; sellable restocked `RTO_RESTOCK`; order `CANCELLED`; prepaid items refunded, shipping not (D-9); COD `NOT_COLLECTED`), `aq_mark_lost` (`LOST_WRITE_OFF` movements; `REFUND` cancels with a full refund, `RESHIP` keeps the order), `aq_record_cod_remittance` (lines add up to the payout; delivered COD orders once each; `COD_COLLECTED → COD_REMITTED`; differing amounts raise `COD_REMITTANCE_MISMATCH`), helpers `aq_cancel_shipped_order`, `aq_shipped_order_released`. Wrappers in `functions.ts` |
 
 ---
 
@@ -3698,23 +3704,374 @@ TX   aq_release_unpaid_order(order, 'EXPIRED'|'CANCELLED', reason, actor)     --
 ```
 `redeemed_count` is never touched here: an unpaid order never redeemed.
 
-### 8.4 Dispatch: consume reservations + issue invoice (service SQL, lock order §4.1)
+### 8.3a Cancel a placed order (`aq_cancel_order`, migration `0009`, lock order §4.1)
+The §4.2 cancellation row as one function. The service calls it inside the idempotent request (`order.cancel`);
+unpaid orders go through `aq_release_unpaid_order` (§8.3) instead. Checked by tools/doc-validation C18 (one
+cancellation and one refund under concurrent cancels, cancel racing dispatch, stock and coupon restored once).
+
+<!-- validate:0009.sql -->
 ```sql
-BEGIN;
-SELECT id FROM orders WHERE id = $order AND status = 'CONFIRMED' AND fulfilment_status = 'PACKED' FOR NO KEY UPDATE;   -- 0 rows ⇒ 422
-UPDATE inventory_reservations SET status = 'CONSUMED', consumed_at = now()
- WHERE order_id = $order AND status = 'ACTIVE' RETURNING variant_id, quantity;                                         -- then, ascending variant_id:
-UPDATE product_variants SET on_hand = on_hand - $qty, reserved = reserved - $qty WHERE id = $variant_id;
-INSERT INTO inventory_movements (…, reason) VALUES (…, 'CONSUME');
-SELECT aq_refresh_products($product_ids);
-UPDATE invoice_counters SET last_no = last_no + 1 WHERE kind = 'TAX_INVOICE' AND fy = $fy RETURNING last_no;
-INSERT INTO invoices (…);                                                                                              -- immutable snapshot
-INSERT INTO shipments (…);
-UPDATE orders SET fulfilment_status = 'SHIPPED' WHERE id = $order AND fulfilment_status = 'PACKED';                     -- must affect 1 row
-SELECT aq_emit('order', $number, 'order.shipped', …, ARRAY['email.customer']), aq_emit('invoice', …, 'invoice.render', …, ARRAY['invoice.render']);
-COMMIT;
+-- 0009 (task 5.3): aq_cancel_order, a placed or confirmed order cancelled before it ships (database.md §4.2,
+-- §8.3a). Customers may cancel while the order is not packed; staff also while it is packed. One transaction in the
+-- global lock order (§4.1): order → payment and order items (refund request) → reservations → variants ↑ →
+-- products ↑ (sold counts) → coupon. A prepaid order gets one CANCELLATION refund of everything still refundable on
+-- its applied payment (items, shipping, COD fee; capacity reserved by aq_request_refund, sent by refund.send); a COD
+-- order's payment becomes NOT_COLLECTED. The coupon use is reversed (D-14, aq_reverse_coupon). A second call finds
+-- the order CANCELLED and raises INVALID_TRANSITION, so nothing happens twice. Unpaid orders (PENDING_PAYMENT) use
+-- aq_release_unpaid_order instead. Additive (a new function).
+CREATE OR REPLACE FUNCTION aq_cancel_order(p_order INT, p_by TEXT, p_actor INT, p_reason TEXT, p_notify BOOLEAN)
+RETURNS JSONB AS $$
+DECLARE o RECORD; pay RECORD; r RECORD; v RECORD; it RECORD; n INT; v_items JSONB; v_ship INT; v_cod INT; rid INT; v_new_pay TEXT;
+BEGIN
+  IF p_by NOT IN ('CUSTOMER', 'ADMIN') THEN RAISE EXCEPTION 'bad actor %', p_by; END IF;
+  SELECT id, order_number, status, payment_status, fulfilment_status, payment_method, shipping_fee, cod_fee,
+         refund_reserved_shipping, refund_reserved_cod_fee INTO o
+    FROM orders WHERE id = p_order FOR NO KEY UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'NOT_FOUND:order %', p_order USING ERRCODE = 'P0001'; END IF;
+  IF o.status NOT IN ('PLACED', 'CONFIRMED')
+     OR NOT (o.fulfilment_status = 'UNFULFILLED' OR (p_by = 'ADMIN' AND o.fulfilment_status = 'PACKED')) THEN
+    RAISE EXCEPTION 'INVALID_TRANSITION:order % is %/%/%', p_order, o.status, o.fulfilment_status, o.payment_status USING ERRCODE = 'P0001';
+  END IF;
+
+  v_new_pay := CASE WHEN o.payment_status = 'COD_PENDING' THEN 'NOT_COLLECTED' ELSE o.payment_status::TEXT END;
+  UPDATE orders SET status = 'CANCELLED', payment_status = v_new_pay::"OrderPaymentStatus", cancelled_at = now(), cancel_reason = p_reason,
+         cancelled_by = p_by::"ActorType", version = version + 1, updated_at = now()
+   WHERE id = p_order AND status IN ('PLACED', 'CONFIRMED');
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 1 THEN RAISE EXCEPTION 'INVARIANT: order % could not transition to CANCELLED', p_order; END IF;
+  INSERT INTO order_status_history (order_id, dimension, from_value, to_value, actor_type, actor_id, note)
+  VALUES (p_order, 'ORDER', o.status, 'CANCELLED', p_by::"ActorType", p_actor, p_reason);
+  IF v_new_pay <> o.payment_status::TEXT THEN
+    INSERT INTO order_status_history (order_id, dimension, from_value, to_value, actor_type, actor_id)
+    VALUES (p_order, 'PAYMENT', o.payment_status, v_new_pay, p_by::"ActorType", p_actor);
+  END IF;
+
+  -- Prepaid: refund whatever is still refundable on the applied payment (nothing twice: capacity is reserved).
+  IF o.payment_method = 'RAZORPAY' AND o.payment_status IN ('PAID', 'PARTIALLY_REFUNDED') THEN
+    SELECT id INTO pay FROM payments WHERE order_id = p_order AND allocation = 'APPLIED' ORDER BY id LIMIT 1;
+    IF NOT FOUND THEN RAISE EXCEPTION 'INVARIANT: paid order % has no applied payment', p_order; END IF;
+    SELECT coalesce(jsonb_agg(jsonb_build_object('order_item_id', id, 'quantity', quantity - refund_reserved_qty,
+             'amount', net_amount - refund_reserved_amount,
+             'tax_amount', CASE WHEN net_amount = 0 THEN 0 ELSE round(tax_amount::NUMERIC * (net_amount - refund_reserved_amount) / net_amount)::INT END)
+             ORDER BY id), '[]'::JSONB)
+      INTO v_items FROM order_items WHERE order_id = p_order AND net_amount - refund_reserved_amount > 0;
+    v_ship := o.shipping_fee - o.refund_reserved_shipping;
+    v_cod := o.cod_fee - o.refund_reserved_cod_fee;
+    IF jsonb_array_length(v_items) > 0 OR v_ship > 0 OR v_cod > 0 THEN
+      rid := aq_request_refund(p_order, pay.id, 'CANCELLATION', v_items, v_ship, v_cod, 0, coalesce(p_reason, 'Order cancelled'),
+                               'cancel-' || p_order, p_actor);
+    END IF;
+  END IF;
+
+  FOR r IN SELECT id, variant_id, quantity FROM inventory_reservations
+            WHERE order_id = p_order AND status = 'ACTIVE' ORDER BY variant_id, id LOOP
+    UPDATE product_variants SET reserved = reserved - r.quantity, version = version + 1 WHERE id = r.variant_id
+    RETURNING on_hand, reserved INTO v;
+    UPDATE inventory_reservations SET status = 'RELEASED', released_at = now(), release_reason = 'cancelled' WHERE id = r.id;
+    INSERT INTO inventory_movements (variant_id, reason, on_hand_delta, reserved_delta, on_hand_after, reserved_after, order_id, reservation_id, actor_id)
+    VALUES (r.variant_id, 'RELEASE', 0, -r.quantity, v.on_hand, v.reserved, p_order, r.id, p_actor);
+    IF v.on_hand - v.reserved > 0 AND v.on_hand - v.reserved - r.quantity <= 0 THEN
+      PERFORM aq_emit('variant', r.variant_id::TEXT, 'variant.back_in_stock', jsonb_build_object('variant_id', r.variant_id), ARRAY['restock.notify']);
+    END IF;
+  END LOOP;
+  FOR it IN SELECT product_id, sum(quantity)::INT AS q FROM order_items WHERE order_id = p_order GROUP BY product_id ORDER BY product_id LOOP
+    UPDATE products SET sold_count = greatest(sold_count - it.q, 0) WHERE id = it.product_id;
+  END LOOP;
+  PERFORM aq_refresh_products(ARRAY(SELECT DISTINCT product_id FROM order_items WHERE order_id = p_order));
+  PERFORM aq_reverse_coupon(p_order);
+
+  IF p_notify THEN
+    PERFORM aq_emit('order', o.order_number, 'order.cancelled', jsonb_build_object('order_id', p_order, 'refund_id', rid), ARRAY['email.customer']);
+  END IF;
+  RETURN jsonb_build_object('refund_id', rid, 'payment_status', v_new_pay);
+END $$ LANGUAGE plpgsql;
 ```
-Not yet an `aq_*` function and not covered by the executable checks (task 5.2 converts it and adds a check).
+
+### 8.4 Dispatch: consume reservations + issue invoice (`aq_dispatch_order`, migration `0008`, lock order §4.1)
+The API computes the invoice content with the shared tax rules (`@artq/shared` `lineTax`: per line taxable value and
+CGST+SGST or IGST by place of supply; shipping and COD fee as their own lines per decision D-3) and calls one function,
+which locks, checks, numbers and stores everything in one transaction. Checked by tools/doc-validation C17 (gap-free
+numbers under concurrent dispatches, stock consumed once, refusals leave no trace).
+
+<!-- validate:0008.sql -->
+```sql
+-- 0008 (task 5.2): aq_dispatch_order, database.md §8.4 as one function. Ships a packed order: consumes its stock
+-- reservations, issues the tax invoice with the next consecutive number of its financial year, records the shipment,
+-- moves fulfilment PACKED → SHIPPED and emits the customer email and the invoice PDF job, all in one transaction.
+-- The invoice content (seller/buyer snapshots, lines with HSN and CGST/SGST or IGST, totals) is computed by the API
+-- with the shared tax rules and passed in; this function checks it adds up to the order total and stores it once
+-- (invoices are immutable, trigger 0002). Lock order (§4.1): order → reservations → variants ↑ → products ↑ →
+-- invoice counter. The counter row is incremented inside this transaction, so a failure anywhere rolls the number
+-- back too: numbers are gap-free per (kind, fy). Additive (a new function).
+CREATE OR REPLACE FUNCTION aq_dispatch_order(p_order INT, p_courier TEXT, p_awb TEXT, p_tracking_url TEXT, p_weight_g INT,
+                                             p_invoice JSONB, p_notify BOOLEAN, p_actor INT)
+RETURNS JSONB AS $$
+DECLARE o RECORD; r RECORD; v RECORD; n INT; seq INT; inv_id INT; ship_id INT; inv_no TEXT; v_fy TEXT; lines_total BIGINT;
+BEGIN
+  SELECT id, order_number, status, payment_status, fulfilment_status, total INTO o FROM orders WHERE id = p_order FOR NO KEY UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'NOT_FOUND:order %', p_order USING ERRCODE = 'P0001'; END IF;
+  IF o.status <> 'CONFIRMED' OR o.fulfilment_status <> 'PACKED' OR o.payment_status NOT IN ('PAID', 'COD_PENDING') THEN
+    RAISE EXCEPTION 'INVALID_TRANSITION:order % is %/%/%', p_order, o.status, o.fulfilment_status, o.payment_status USING ERRCODE = 'P0001';
+  END IF;
+  IF EXISTS (SELECT 1 FROM shipments WHERE courier_name = p_courier AND awb_number = p_awb) THEN
+    RAISE EXCEPTION 'AWB_IN_USE:% %', p_courier, p_awb USING ERRCODE = 'P0001';
+  END IF;
+
+  -- The invoice must account for the whole order, and its lines for its totals.
+  v_fy := p_invoice->>'fy';
+  IF v_fy IS NULL OR v_fy !~ '^\d{2}-\d{2}$' THEN RAISE EXCEPTION 'INVOICE_INVALID:fy %', v_fy USING ERRCODE = 'P0001'; END IF;
+  IF (p_invoice->>'grand_total')::BIGINT <> o.total THEN
+    RAISE EXCEPTION 'INVOICE_INVALID:grand total % <> order total %', p_invoice->>'grand_total', o.total USING ERRCODE = 'P0001';
+  END IF;
+  SELECT coalesce(sum((l->>'taxable')::BIGINT + (l->>'cgst')::BIGINT + (l->>'sgst')::BIGINT + (l->>'igst')::BIGINT), 0) INTO lines_total
+    FROM jsonb_array_elements(p_invoice->'lines') l;
+  IF lines_total + (p_invoice->>'rounding_adjustment')::BIGINT <> o.total
+     OR (p_invoice->>'taxable_total')::BIGINT + (p_invoice->>'cgst_total')::BIGINT + (p_invoice->>'sgst_total')::BIGINT
+        + (p_invoice->>'igst_total')::BIGINT + (p_invoice->>'rounding_adjustment')::BIGINT <> o.total THEN
+    RAISE EXCEPTION 'INVOICE_INVALID:lines and totals do not add up to %', o.total USING ERRCODE = 'P0001';
+  END IF;
+
+  -- Every item must still hold its full reservation.
+  IF EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = p_order
+              AND oi.quantity <> coalesce((SELECT sum(quantity) FROM inventory_reservations x WHERE x.order_item_id = oi.id AND x.status = 'ACTIVE'), 0)) THEN
+    RAISE EXCEPTION 'INVARIANT: order % has an item without its full active reservation', p_order;
+  END IF;
+  FOR r IN SELECT id, variant_id, quantity FROM inventory_reservations
+            WHERE order_id = p_order AND status = 'ACTIVE' ORDER BY variant_id, id LOOP
+    UPDATE product_variants SET on_hand = on_hand - r.quantity, reserved = reserved - r.quantity, version = version + 1 WHERE id = r.variant_id
+    RETURNING on_hand, reserved INTO v;
+    UPDATE inventory_reservations SET status = 'CONSUMED', consumed_at = now() WHERE id = r.id;
+    INSERT INTO inventory_movements (variant_id, reason, on_hand_delta, reserved_delta, on_hand_after, reserved_after, order_id, reservation_id, actor_id)
+    VALUES (r.variant_id, 'CONSUME', -r.quantity, -r.quantity, v.on_hand, v.reserved, p_order, r.id, p_actor);
+  END LOOP;
+  PERFORM aq_refresh_products(ARRAY(SELECT DISTINCT product_id FROM order_items WHERE order_id = p_order));
+
+  INSERT INTO invoice_counters (kind, fy, last_no) VALUES ('TAX_INVOICE', v_fy, 1)
+  ON CONFLICT (kind, fy) DO UPDATE SET last_no = invoice_counters.last_no + 1
+  RETURNING last_no INTO seq;
+  inv_no := 'AQ/' || v_fy || '/' || lpad(seq::TEXT, 6, '0');
+  INSERT INTO invoices (order_id, kind, number, fy, seq, issued_at, seller_snapshot, buyer_snapshot, place_of_supply, lines,
+                        taxable_total, cgst_total, sgst_total, igst_total, rounding_adjustment, grand_total, created_by)
+  VALUES (p_order, 'TAX_INVOICE', inv_no, v_fy, seq, now(), p_invoice->'seller', p_invoice->'buyer', p_invoice->>'place_of_supply', p_invoice->'lines',
+          (p_invoice->>'taxable_total')::INT, (p_invoice->>'cgst_total')::INT, (p_invoice->>'sgst_total')::INT, (p_invoice->>'igst_total')::INT,
+          (p_invoice->>'rounding_adjustment')::INT, o.total, p_actor)
+  RETURNING id INTO inv_id;
+
+  INSERT INTO shipments (order_id, courier_name, awb_number, tracking_url, status, weight_g, shipped_at, updated_at)
+  VALUES (p_order, p_courier, p_awb, p_tracking_url, 'SHIPPED', p_weight_g, now(), now())
+  RETURNING id INTO ship_id;
+  UPDATE orders SET fulfilment_status = 'SHIPPED', version = version + 1, updated_at = now() WHERE id = p_order AND fulfilment_status = 'PACKED';
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 1 THEN RAISE EXCEPTION 'INVARIANT: order % could not transition to SHIPPED', p_order; END IF;
+  INSERT INTO order_status_history (order_id, dimension, from_value, to_value, actor_type, actor_id) VALUES (p_order, 'FULFILMENT', 'PACKED', 'SHIPPED', 'ADMIN', p_actor);
+
+  IF p_notify THEN
+    PERFORM aq_emit('order', o.order_number, 'order.status_changed', jsonb_build_object('order_id', p_order, 'to', 'SHIPPED'), ARRAY['email.customer']);
+  END IF;
+  PERFORM aq_emit('invoice', inv_id::TEXT, 'invoice.render', jsonb_build_object('invoice_id', inv_id, 'order_id', p_order), ARRAY['invoice.render']);
+  RETURN jsonb_build_object('invoice_id', inv_id, 'invoice_number', inv_no, 'shipment_id', ship_id);
+END $$ LANGUAGE plpgsql;
+```
+
+### 8.4a RTO, lost parcels and COD remittances (migration `0012`, lock order §4.1)
+architecture.md §10.1 and §10.5, §4.2–§4.4 above. Marking a shipped order "returning to us" (`SHIPPED`/`OUT_FOR_DELIVERY →
+RTO_IN_TRANSIT`) changes no money or stock and is a plain conditional transition in the API. These three functions do the rest:
+
+- `aq_receive_rto`: the parcel is back. Every unit is inspected (`sellable + damaged = quantity` per line); sellable units go
+  back on the shelf (`RTO_RESTOCK`), damaged ones are recorded on the history note. The order is `CANCELLED` (sold counts
+  reduced, coupon use reversed, D-14); prepaid → one `CANCELLATION` refund of the items still refundable (decision D-9: the
+  shipping charge is not refunded); COD → `NOT_COLLECTED`. A credit note follows the processed refund as for any refund.
+- `aq_mark_lost`: the courier lost the parcel (`SHIPPED`/`OUT_FOR_DELIVERY`/`RTO_IN_TRANSIT → LOST`, a `LOST_WRITE_OFF`
+  movement per variant with no stock change: the stock left at dispatch). Resolution `REFUND`: the order is `CANCELLED`
+  with a full refund of everything still refundable (items and shipping) for prepaid, `NOT_COLLECTED` for COD, sold
+  counts reduced and the coupon use reversed. Resolution `RESHIP`: the order stays `CONFIRMED` + `LOST` and staff send a
+  replacement as a new order; a COD order's cash was never collected (`NOT_COLLECTED`).
+- `aq_record_cod_remittance`: one courier payout (unique per courier and reference) for delivered COD orders not yet
+  remitted (`cod_remittance_items.order_id` unique). The lines must add up to the payout. Each order is locked in id
+  order; `COD_COLLECTED → COD_REMITTED` (a COD order already refunded keeps its refund status); a line whose amount
+  differs from the order total is recorded as given and raises `COD_REMITTANCE_MISMATCH` for that order.
+
+Checked by tools/doc-validation C21.
+
+<!-- validate:0012.sql -->
+```sql
+-- 0012 (task 5.6): RTO received, lost parcels and COD remittances, database.md §8.4a. Additive (new functions).
+
+-- Shared by RTO-received and lost-with-refund: the order is cancelled after it shipped. Prepaid → one CANCELLATION refund
+-- of what is still refundable on the applied payment (items, and shipping when p_shipping); COD → NOT_COLLECTED. The
+-- caller holds the order lock and has checked the state; it then locks variants, and calls aq_shipped_order_released
+-- (products, coupon), keeping the global lock order. Returns the refund id.
+CREATE OR REPLACE FUNCTION aq_cancel_shipped_order(p_order INT, p_reason TEXT, p_key TEXT, p_shipping BOOLEAN, p_actor INT) RETURNS INT AS $$
+DECLARE o RECORD; pay RECORD; it RECORD; v_items JSONB; v_ship INT; rid INT; v_pay TEXT;
+BEGIN
+  SELECT id, status, payment_status, payment_method, shipping_fee, refund_reserved_shipping INTO o FROM orders WHERE id = p_order;
+  v_pay := CASE WHEN o.payment_status = 'COD_PENDING' THEN 'NOT_COLLECTED' ELSE o.payment_status::TEXT END;
+  UPDATE orders SET status = 'CANCELLED', payment_status = v_pay::"OrderPaymentStatus", cancelled_at = now(), cancel_reason = p_reason,
+         cancelled_by = 'ADMIN', version = version + 1, updated_at = now()
+   WHERE id = p_order;
+  INSERT INTO order_status_history (order_id, dimension, from_value, to_value, actor_type, actor_id, note)
+  VALUES (p_order, 'ORDER', o.status, 'CANCELLED', 'ADMIN', p_actor, p_reason);
+  IF v_pay <> o.payment_status::TEXT THEN
+    INSERT INTO order_status_history (order_id, dimension, from_value, to_value, actor_type, actor_id)
+    VALUES (p_order, 'PAYMENT', o.payment_status, v_pay, 'ADMIN', p_actor);
+  END IF;
+  IF o.payment_method = 'RAZORPAY' AND o.payment_status IN ('PAID', 'PARTIALLY_REFUNDED') THEN
+    SELECT id INTO pay FROM payments WHERE order_id = p_order AND allocation = 'APPLIED' ORDER BY id LIMIT 1;
+    IF NOT FOUND THEN RAISE EXCEPTION 'INVARIANT: paid order % has no applied payment', p_order; END IF;
+    SELECT coalesce(jsonb_agg(jsonb_build_object('order_item_id', id, 'quantity', quantity - refund_reserved_qty,
+             'amount', net_amount - refund_reserved_amount,
+             'tax_amount', CASE WHEN net_amount = 0 THEN 0 ELSE round(tax_amount::NUMERIC * (net_amount - refund_reserved_amount) / net_amount)::INT END)
+             ORDER BY id), '[]'::JSONB)
+      INTO v_items FROM order_items WHERE order_id = p_order AND net_amount - refund_reserved_amount > 0;
+    v_ship := CASE WHEN p_shipping THEN o.shipping_fee - o.refund_reserved_shipping ELSE 0 END;
+    IF jsonb_array_length(v_items) > 0 OR v_ship > 0 THEN
+      rid := aq_request_refund(p_order, pay.id, 'CANCELLATION', v_items, v_ship, 0, 0, p_reason, p_key, p_actor);
+    END IF;
+  END IF;
+  RETURN rid;
+END $$ LANGUAGE plpgsql;
+
+-- After the variants: sold counts down and aggregates refreshed (products ascending), then the coupon use reversed (D-14).
+CREATE OR REPLACE FUNCTION aq_shipped_order_released(p_order INT) RETURNS void AS $$
+DECLARE it RECORD;
+BEGIN
+  FOR it IN SELECT product_id, sum(quantity)::INT AS q FROM order_items WHERE order_id = p_order AND product_id IS NOT NULL
+             GROUP BY product_id ORDER BY product_id LOOP
+    UPDATE products SET sold_count = greatest(sold_count - it.q, 0) WHERE id = it.product_id;
+  END LOOP;
+  PERFORM aq_refresh_products(ARRAY(SELECT DISTINCT product_id FROM order_items WHERE order_id = p_order));
+  PERFORM aq_reverse_coupon(p_order);
+END $$ LANGUAGE plpgsql;
+
+-- The RTO parcel is back. p_items = [{"order_item_id":1,"sellable_qty":1,"damaged_qty":1}], every line, adding up to its quantity.
+CREATE OR REPLACE FUNCTION aq_receive_rto(p_order INT, p_items JSONB, p_notify BOOLEAN, p_actor INT) RETURNS JSONB AS $$
+DECLARE o RECORD; it RECORD; v RECORD; was_available INT; n INT; rid INT; v_damaged INT;
+BEGIN
+  SELECT id, order_number, status, payment_status, fulfilment_status INTO o FROM orders WHERE id = p_order FOR NO KEY UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'NOT_FOUND:order %', p_order USING ERRCODE = 'P0001'; END IF;
+  IF o.status <> 'CONFIRMED' OR o.fulfilment_status <> 'RTO_IN_TRANSIT' THEN
+    RAISE EXCEPTION 'INVALID_TRANSITION:order % is %/%', p_order, o.status, o.fulfilment_status USING ERRCODE = 'P0001';
+  END IF;
+  IF jsonb_typeof(p_items) IS DISTINCT FROM 'array'
+     OR (SELECT count(DISTINCT x->>'order_item_id') FROM jsonb_array_elements(p_items) x) <> jsonb_array_length(p_items) THEN
+    RAISE EXCEPTION 'RTO_INSPECTION_INVALID:items' USING ERRCODE = 'P0001';
+  END IF;
+  FOR it IN SELECT oi.id, oi.quantity, (x->>'sellable_qty')::INT AS s, (x->>'damaged_qty')::INT AS d
+              FROM order_items oi LEFT JOIN jsonb_array_elements(p_items) x ON (x->>'order_item_id')::INT = oi.id
+             WHERE oi.order_id = p_order ORDER BY oi.id LOOP
+    IF it.s IS NULL OR it.d IS NULL OR it.s < 0 OR it.d < 0 OR it.s + it.d <> it.quantity THEN
+      RAISE EXCEPTION 'RTO_INSPECTION_INVALID:%', it.id USING ERRCODE = 'P0001';
+    END IF;
+  END LOOP;
+  SELECT count(*) INTO n FROM jsonb_array_elements(p_items) x WHERE NOT EXISTS (SELECT 1 FROM order_items WHERE id = (x->>'order_item_id')::INT AND order_id = p_order);
+  IF n > 0 THEN RAISE EXCEPTION 'RTO_INSPECTION_INVALID:items' USING ERRCODE = 'P0001'; END IF;
+
+  UPDATE orders SET fulfilment_status = 'RTO_RECEIVED', version = version + 1, updated_at = now() WHERE id = p_order;
+  UPDATE shipments SET status = 'RTO_RECEIVED', rto_received_at = now(), updated_at = now() WHERE order_id = p_order;
+  SELECT coalesce(sum((x->>'damaged_qty')::INT), 0) INTO v_damaged FROM jsonb_array_elements(p_items) x;
+  INSERT INTO order_status_history (order_id, dimension, from_value, to_value, actor_type, actor_id, note)
+  VALUES (p_order, 'FULFILMENT', 'RTO_IN_TRANSIT', 'RTO_RECEIVED', 'ADMIN', p_actor,
+          CASE WHEN v_damaged > 0 THEN v_damaged || ' damaged unit(s) not restocked' END);
+  rid := aq_cancel_shipped_order(p_order, 'Returned to us undelivered (RTO)', 'rto-' || p_order, FALSE, p_actor);
+
+  -- Stock (after the payment): variants ascending, then products and coupon.
+  FOR it IN SELECT oi.variant_id, sum((x->>'sellable_qty')::INT)::INT AS s
+              FROM jsonb_array_elements(p_items) x JOIN order_items oi ON oi.id = (x->>'order_item_id')::INT
+             WHERE oi.variant_id IS NOT NULL GROUP BY oi.variant_id HAVING sum((x->>'sellable_qty')::INT) > 0 ORDER BY oi.variant_id LOOP
+    SELECT on_hand, reserved INTO v FROM product_variants WHERE id = it.variant_id FOR NO KEY UPDATE;
+    was_available := v.on_hand - v.reserved;
+    UPDATE product_variants SET on_hand = on_hand + it.s, version = version + 1 WHERE id = it.variant_id RETURNING on_hand, reserved INTO v;
+    INSERT INTO inventory_movements (variant_id, reason, on_hand_delta, reserved_delta, on_hand_after, reserved_after, order_id, actor_id)
+    VALUES (it.variant_id, 'RTO_RESTOCK', it.s, 0, v.on_hand, v.reserved, p_order, p_actor);
+    IF was_available <= 0 AND v.on_hand - v.reserved > 0 THEN
+      PERFORM aq_emit('variant', it.variant_id::TEXT, 'variant.back_in_stock', jsonb_build_object('variant_id', it.variant_id), ARRAY['restock.notify']);
+    END IF;
+  END LOOP;
+  PERFORM aq_shipped_order_released(p_order);
+  IF p_notify THEN
+    PERFORM aq_emit('order', o.order_number, 'order.cancelled', jsonb_build_object('order_id', p_order, 'refund_id', rid, 'reason', 'RTO'), ARRAY['email.customer']);
+  END IF;
+  RETURN jsonb_build_object('refund_id', rid);
+END $$ LANGUAGE plpgsql;
+
+-- The courier lost the parcel. p_resolution REFUND (cancel + full refund) or RESHIP (a replacement as a new order).
+CREATE OR REPLACE FUNCTION aq_mark_lost(p_order INT, p_resolution TEXT, p_note TEXT, p_notify BOOLEAN, p_actor INT) RETURNS JSONB AS $$
+DECLARE o RECORD; it RECORD; v RECORD; rid INT;
+BEGIN
+  IF p_resolution NOT IN ('REFUND', 'RESHIP') THEN RAISE EXCEPTION 'bad resolution %', p_resolution; END IF;
+  SELECT id, order_number, status, payment_status, fulfilment_status INTO o FROM orders WHERE id = p_order FOR NO KEY UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'NOT_FOUND:order %', p_order USING ERRCODE = 'P0001'; END IF;
+  IF o.status <> 'CONFIRMED' OR o.fulfilment_status NOT IN ('SHIPPED', 'OUT_FOR_DELIVERY', 'RTO_IN_TRANSIT') THEN
+    RAISE EXCEPTION 'INVALID_TRANSITION:order % is %/%', p_order, o.status, o.fulfilment_status USING ERRCODE = 'P0001';
+  END IF;
+  UPDATE orders SET fulfilment_status = 'LOST', version = version + 1, updated_at = now() WHERE id = p_order;
+  UPDATE shipments SET status = 'LOST', lost_at = now(), updated_at = now() WHERE order_id = p_order;
+  INSERT INTO order_status_history (order_id, dimension, from_value, to_value, actor_type, actor_id, note)
+  VALUES (p_order, 'FULFILMENT', o.fulfilment_status, 'LOST', 'ADMIN', p_actor, p_note);
+  IF p_resolution = 'REFUND' THEN
+    rid := aq_cancel_shipped_order(p_order, coalesce(p_note, 'Lost in transit'), 'lost-' || p_order, TRUE, p_actor);
+  ELSIF o.payment_status = 'COD_PENDING' THEN
+    UPDATE orders SET payment_status = 'NOT_COLLECTED', version = version + 1, updated_at = now() WHERE id = p_order;
+    INSERT INTO order_status_history (order_id, dimension, from_value, to_value, actor_type, actor_id)
+    VALUES (p_order, 'PAYMENT', 'COD_PENDING', 'NOT_COLLECTED', 'ADMIN', p_actor);
+  END IF;
+  -- Variants ascending (after the payment): an audit movement each, no stock change (the stock left at dispatch).
+  FOR it IN SELECT variant_id, sum(quantity)::INT AS q FROM order_items WHERE order_id = p_order AND variant_id IS NOT NULL
+             GROUP BY variant_id ORDER BY variant_id LOOP
+    SELECT on_hand, reserved INTO v FROM product_variants WHERE id = it.variant_id FOR NO KEY UPDATE;
+    INSERT INTO inventory_movements (variant_id, reason, on_hand_delta, reserved_delta, on_hand_after, reserved_after, order_id, note, actor_id)
+    VALUES (it.variant_id, 'LOST_WRITE_OFF', 0, 0, v.on_hand, v.reserved, p_order, it.q || ' unit(s) lost in transit', p_actor);
+  END LOOP;
+  IF p_resolution = 'REFUND' THEN PERFORM aq_shipped_order_released(p_order); END IF;
+  IF p_notify THEN
+    PERFORM aq_emit('order', o.order_number, 'order.lost', jsonb_build_object('order_id', p_order, 'refund_id', rid, 'resolution', p_resolution), ARRAY['email.customer']);
+  END IF;
+  RETURN jsonb_build_object('refund_id', rid);
+END $$ LANGUAGE plpgsql;
+
+-- One courier COD payout. p_items = [{"order_id":1,"amount":110800}] (amounts as the courier paid them).
+-- Returns {"remittance_id", "mismatches":[{"order_id","expected","remitted"}]}.
+CREATE OR REPLACE FUNCTION aq_record_cod_remittance(p_courier TEXT, p_reference TEXT, p_remitted_at TIMESTAMPTZ, p_amount INT, p_note TEXT,
+  p_items JSONB, p_actor INT) RETURNS JSONB AS $$
+DECLARE it RECORD; o RECORD; rid INT; v_mis JSONB := '[]'::JSONB; v_sum BIGINT;
+BEGIN
+  IF jsonb_typeof(p_items) IS DISTINCT FROM 'array' OR jsonb_array_length(p_items) = 0
+     OR (SELECT count(DISTINCT x->>'order_id') FROM jsonb_array_elements(p_items) x) <> jsonb_array_length(p_items) THEN
+    RAISE EXCEPTION 'COD_REMITTANCE_INVALID:orders' USING ERRCODE = 'P0001';
+  END IF;
+  SELECT sum((x->>'amount')::BIGINT) INTO v_sum FROM jsonb_array_elements(p_items) x;
+  IF p_amount IS NULL OR p_amount <= 0 OR v_sum IS DISTINCT FROM p_amount::BIGINT
+     OR EXISTS (SELECT 1 FROM jsonb_array_elements(p_items) x WHERE (x->>'amount')::INT IS NULL OR (x->>'amount')::INT <= 0) THEN
+    RAISE EXCEPTION 'COD_REMITTANCE_INVALID:total' USING ERRCODE = 'P0001';
+  END IF;
+  IF EXISTS (SELECT 1 FROM cod_remittances WHERE courier_name = p_courier AND reference = p_reference) THEN
+    RAISE EXCEPTION 'COD_REMITTANCE_INVALID:reference' USING ERRCODE = 'P0001';
+  END IF;
+  INSERT INTO cod_remittances (courier_name, reference, amount, remitted_at, note, recorded_by)
+  VALUES (p_courier, p_reference, p_amount, p_remitted_at, p_note, p_actor) RETURNING id INTO rid;
+  FOR it IN SELECT (x->>'order_id')::INT AS order_id, (x->>'amount')::INT AS amount FROM jsonb_array_elements(p_items) x ORDER BY 1 LOOP
+    SELECT id, total, payment_method, payment_status, fulfilment_status INTO o FROM orders WHERE id = it.order_id FOR NO KEY UPDATE;
+    IF NOT FOUND THEN RAISE EXCEPTION 'NOT_FOUND:order %', it.order_id USING ERRCODE = 'P0001'; END IF;
+    IF o.payment_method <> 'COD' OR o.fulfilment_status <> 'DELIVERED'
+       OR o.payment_status NOT IN ('COD_COLLECTED', 'PARTIALLY_REFUNDED', 'REFUNDED')
+       OR EXISTS (SELECT 1 FROM cod_remittance_items WHERE order_id = it.order_id) THEN
+      RAISE EXCEPTION 'COD_REMITTANCE_INVALID:order:%', it.order_id USING ERRCODE = 'P0001';
+    END IF;
+    INSERT INTO cod_remittance_items (remittance_id, order_id, amount) VALUES (rid, it.order_id, it.amount);
+    IF o.payment_status = 'COD_COLLECTED' THEN
+      UPDATE orders SET payment_status = 'COD_REMITTED', version = version + 1, updated_at = now() WHERE id = it.order_id;
+      INSERT INTO order_status_history (order_id, dimension, from_value, to_value, actor_type, actor_id, note)
+      VALUES (it.order_id, 'PAYMENT', 'COD_COLLECTED', 'COD_REMITTED', 'ADMIN', p_actor, p_courier || ' ' || p_reference);
+    END IF;
+    IF it.amount <> o.total THEN
+      v_mis := v_mis || jsonb_build_object('order_id', it.order_id, 'expected', o.total, 'remitted', it.amount);
+      PERFORM aq_raise_exception('COD_REMITTANCE_MISMATCH', 'COD_REMITTANCE_MISMATCH:' || it.order_id, it.order_id, NULL, NULL, it.amount - o.total,
+                                 jsonb_build_object('remittance_id', rid, 'expected', o.total, 'remitted', it.amount, 'reference', p_reference));
+    END IF;
+  END LOOP;
+  RETURN jsonb_build_object('remittance_id', rid, 'mismatches', v_mis);
+END $$ LANGUAGE plpgsql;
+```
 
 ### 8.5 Refunds
 ```
@@ -3736,6 +4093,352 @@ TX   [admin retry of FAILED] aq_retry_refund(refund)   -- reacquire capacity, at
 NET  [reconciler, when provider_amount_refunded > refund_reserved, and daily] GET /v1/payments/{id}/refunds
 TX   aq_reconcile_provider_refunds(payment, refunds)   -- own refunds matched + processed once; outside refunds recorded once;
                                                      -- RECONCILED clears the gate · STILL_UNEXPLAINED keeps it · INCONSISTENT ⇒ exception
+```
+
+### 8.5a Credit notes (`aq_issue_credit_note`, migration `0010`)
+A processed refund of an invoiced order gets one credit note (architecture.md §10.4). The `invoice.credit_note`
+consumer computes the content from the original invoice with the shared tax rules (`buildCreditNoteContent`) and calls
+the function, which numbers it gap-free and stores it once. Checked by tools/doc-validation C19.
+
+<!-- validate:0010.sql -->
+```sql
+-- 0010 (task 5.4): aq_issue_credit_note, the credit note for a processed refund of an invoiced order (architecture.md
+-- §10.4, database.md §8.5a). Called by the invoice.credit_note consumer on refund.processed with the content computed
+-- by the API from the original invoice (same parties, place of supply, rates and HSN; the refunded item, shipping and
+-- COD-fee amounts with their tax split). One credit note per refund (unique index below); numbered CN/<fy>/<6 digits>
+-- from invoice_counters inside this transaction, so numbers are gap-free. A refund with nothing allocated to the
+-- order (excess / late captures, unallocated provider refunds) or an order never invoiced gets none ('SKIPPED').
+-- Lock order (§4.1): order → refund and invoices (order-owned) → invoice counter. Additive (index + function).
+CREATE UNIQUE INDEX IF NOT EXISTS invoices_one_credit_note_per_refund_uq ON invoices (refund_id) WHERE kind = 'CREDIT_NOTE';
+
+CREATE OR REPLACE FUNCTION aq_issue_credit_note(p_refund INT, p_content JSONB, p_actor INT) RETURNS JSONB AS $$
+DECLARE rf RECORD; orig RECORD; cn RECORD; v_part INT; v_fy TEXT; seq INT; v_no TEXT; v_id INT; lines_total BIGINT;
+BEGIN
+  SELECT order_id INTO rf FROM refunds WHERE id = p_refund;
+  IF NOT FOUND THEN RAISE EXCEPTION 'NOT_FOUND:refund %', p_refund USING ERRCODE = 'P0001'; END IF;
+  PERFORM 1 FROM orders WHERE id = rf.order_id FOR NO KEY UPDATE;
+  SELECT id, order_id, status, items_amount, shipping_amount, cod_fee_amount INTO rf FROM refunds WHERE id = p_refund FOR NO KEY UPDATE;
+  IF rf.status <> 'PROCESSED' THEN RAISE EXCEPTION 'INVALID_TRANSITION:refund % is %', p_refund, rf.status USING ERRCODE = 'P0001'; END IF;
+  SELECT id, number INTO cn FROM invoices WHERE refund_id = p_refund AND kind = 'CREDIT_NOTE';
+  IF FOUND THEN RETURN jsonb_build_object('status', 'DUPLICATE', 'invoice_id', cn.id, 'number', cn.number); END IF;
+  v_part := rf.items_amount + rf.shipping_amount + rf.cod_fee_amount;
+  SELECT id, place_of_supply INTO orig FROM invoices WHERE order_id = rf.order_id AND kind = 'TAX_INVOICE';
+  IF v_part = 0 OR NOT FOUND THEN RETURN jsonb_build_object('status', 'SKIPPED'); END IF;
+
+  v_fy := p_content->>'fy';
+  IF v_fy IS NULL OR v_fy !~ '^\d{2}-\d{2}$' THEN RAISE EXCEPTION 'INVOICE_INVALID:fy %', v_fy USING ERRCODE = 'P0001'; END IF;
+  IF (p_content->>'place_of_supply') IS DISTINCT FROM orig.place_of_supply THEN
+    RAISE EXCEPTION 'INVOICE_INVALID:place of supply differs from invoice %', orig.id USING ERRCODE = 'P0001';
+  END IF;
+  SELECT coalesce(sum((l->>'taxable')::BIGINT + (l->>'cgst')::BIGINT + (l->>'sgst')::BIGINT + (l->>'igst')::BIGINT), 0) INTO lines_total
+    FROM jsonb_array_elements(p_content->'lines') l;
+  IF (p_content->>'grand_total')::BIGINT <> v_part OR lines_total + (p_content->>'rounding_adjustment')::BIGINT <> v_part
+     OR (p_content->>'taxable_total')::BIGINT + (p_content->>'cgst_total')::BIGINT + (p_content->>'sgst_total')::BIGINT
+        + (p_content->>'igst_total')::BIGINT + (p_content->>'rounding_adjustment')::BIGINT <> v_part THEN
+    RAISE EXCEPTION 'INVOICE_INVALID:credit note does not add up to the refunded % for the order', v_part USING ERRCODE = 'P0001';
+  END IF;
+
+  INSERT INTO invoice_counters (kind, fy, last_no) VALUES ('CREDIT_NOTE', v_fy, 1)
+  ON CONFLICT (kind, fy) DO UPDATE SET last_no = invoice_counters.last_no + 1
+  RETURNING last_no INTO seq;
+  v_no := 'CN/' || v_fy || '/' || lpad(seq::TEXT, 6, '0');
+  INSERT INTO invoices (order_id, kind, number, fy, seq, issued_at, original_invoice_id, refund_id, seller_snapshot, buyer_snapshot, place_of_supply,
+                        lines, taxable_total, cgst_total, sgst_total, igst_total, rounding_adjustment, grand_total, created_by)
+  VALUES (rf.order_id, 'CREDIT_NOTE', v_no, v_fy, seq, now(), orig.id, p_refund, p_content->'seller', p_content->'buyer', orig.place_of_supply,
+          p_content->'lines', (p_content->>'taxable_total')::INT, (p_content->>'cgst_total')::INT, (p_content->>'sgst_total')::INT,
+          (p_content->>'igst_total')::INT, (p_content->>'rounding_adjustment')::INT, v_part, p_actor)
+  RETURNING id INTO v_id;
+  PERFORM aq_emit('invoice', v_id::TEXT, 'invoice.render', jsonb_build_object('invoice_id', v_id, 'order_id', rf.order_id), ARRAY['invoice.render']);
+  RETURN jsonb_build_object('status', 'ISSUED', 'invoice_id', v_id, 'number', v_no);
+END $$ LANGUAGE plpgsql;
+```
+
+### 8.5b Returns (`aq_*_return`, migration `0011`, lock order §4.1)
+Product.md §8.8, §4.5 above. A return moves `REQUESTED → APPROVED | REJECTED → (IN_TRANSIT) → RECEIVED → INSPECTED →
+REFUNDED → CLOSED`, or `CANCELLED` before receipt. A **missing item** is approved and refunded without coming back
+(`APPROVED → REFUNDED → CLOSED`). Every step is one function under the order lock; a second press of the same step
+finds the return moved on and raises `INVALID_TRANSITION`. Quantity bounds: `order_items.return_requested_qty` counts
+every unit in a request that is not rejected or cancelled (requested until decided, approved until received, received
+after inspection) and never exceeds the units bought, so concurrent or repeated requests cannot return more than was
+delivered. A return refund (`kind RETURN`) goes through `aq_request_refund` like any other (capacity at item, order and
+payment level) and is further bounded by this return: per item, units back ≤ received (approved for a missing item)
+minus units already in this return's live refunds, and the amount ≤ the units' share of the line. The order's
+`return_status` (`NONE`/`OPEN`/`CLOSED`) follows its returns (`aq_return_sync_order`). Checked by tools/doc-validation
+C20.
+
+<!-- validate:0011.sql -->
+```sql
+-- 0011 (task 5.5): returns, database.md §8.5b. Lock order (§4.1): order → order-owned rows (return request + items,
+-- order items, refunds) → payment (inside aq_request_refund) → variants ↑ → products ↑. Additive (new functions).
+
+-- The order's return dimension from its returns: OPEN while any is in progress, CLOSED when all are finished.
+CREATE OR REPLACE FUNCTION aq_return_sync_order(p_order INT, p_by TEXT, p_actor INT) RETURNS TEXT AS $$
+DECLARE cur TEXT; nxt TEXT;
+BEGIN
+  SELECT return_status::TEXT INTO cur FROM orders WHERE id = p_order;
+  nxt := CASE WHEN EXISTS (SELECT 1 FROM return_requests WHERE order_id = p_order AND status NOT IN ('REJECTED', 'CLOSED', 'CANCELLED')) THEN 'OPEN'
+              WHEN EXISTS (SELECT 1 FROM return_requests WHERE order_id = p_order) THEN 'CLOSED' ELSE 'NONE' END;
+  IF nxt IS DISTINCT FROM cur THEN
+    UPDATE orders SET return_status = nxt::"OrderReturnStatus", version = version + 1, updated_at = now() WHERE id = p_order;
+    INSERT INTO order_status_history (order_id, dimension, from_value, to_value, actor_type, actor_id)
+    VALUES (p_order, 'RETURN', cur, nxt, p_by::"ActorType", p_actor);
+  END IF;
+  RETURN nxt;
+END $$ LANGUAGE plpgsql;
+
+-- A customer's return request (p_user NULL = guest with the order access cookie). Delivered orders only, within the
+-- return window after delivery. p_items = [{"order_item_id":1,"quantity":1}]; p_media = READY private images uploaded
+-- for this order (owner scope return:<order id>) by the same user, not attached yet; they are claimed here.
+CREATE OR REPLACE FUNCTION aq_request_return(p_order INT, p_user INT, p_reason TEXT, p_description TEXT, p_items JSONB,
+  p_media INT[], p_window_hours INT) RETURNS INT AS $$
+DECLARE o RECORD; it RECORD; v_delivered TIMESTAMPTZ; rid INT; n INT; v_media INT[];
+BEGIN
+  SELECT id, order_number, status, fulfilment_status INTO o FROM orders WHERE id = p_order FOR NO KEY UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'NOT_FOUND:order %', p_order USING ERRCODE = 'P0001'; END IF;
+  IF o.fulfilment_status <> 'DELIVERED' OR o.status NOT IN ('CONFIRMED', 'COMPLETED') THEN
+    RAISE EXCEPTION 'RETURN_NOT_ALLOWED:state' USING ERRCODE = 'P0001';
+  END IF;
+  SELECT delivered_at INTO v_delivered FROM shipments WHERE order_id = p_order;
+  IF v_delivered IS NULL OR now() > v_delivered + make_interval(hours => p_window_hours) THEN
+    RAISE EXCEPTION 'RETURN_NOT_ALLOWED:window' USING ERRCODE = 'P0001';
+  END IF;
+  IF jsonb_typeof(p_items) IS DISTINCT FROM 'array' OR jsonb_array_length(p_items) = 0
+     OR (SELECT count(DISTINCT x->>'order_item_id') FROM jsonb_array_elements(p_items) x) <> jsonb_array_length(p_items) THEN
+    RAISE EXCEPTION 'RETURN_NOT_ALLOWED:items' USING ERRCODE = 'P0001';
+  END IF;
+
+  INSERT INTO return_requests (order_id, user_id, reason, description, status, updated_at)
+  VALUES (p_order, p_user, p_reason::"ReturnReason", p_description, 'REQUESTED', now())
+  RETURNING id INTO rid;
+  FOR it IN SELECT (x->>'order_item_id')::INT AS item, (x->>'quantity')::INT AS q FROM jsonb_array_elements(p_items) x ORDER BY 1 LOOP
+    IF it.q IS NULL OR it.q < 1 THEN RAISE EXCEPTION 'RETURN_NOT_ALLOWED:quantity:%', it.item USING ERRCODE = 'P0001'; END IF;
+    UPDATE order_items SET return_requested_qty = return_requested_qty + it.q
+     WHERE id = it.item AND order_id = p_order AND return_requested_qty + it.q <= quantity;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    IF n = 0 THEN
+      IF NOT EXISTS (SELECT 1 FROM order_items WHERE id = it.item AND order_id = p_order) THEN
+        RAISE EXCEPTION 'NOT_FOUND:order item %', it.item USING ERRCODE = 'P0001';
+      END IF;
+      RAISE EXCEPTION 'RETURN_NOT_ALLOWED:quantity:%', it.item USING ERRCODE = 'P0001';   -- more than is left to return
+    END IF;
+    INSERT INTO return_request_items (return_request_id, order_item_id, requested_qty) VALUES (rid, it.item, it.q);
+  END LOOP;
+
+  v_media := ARRAY(SELECT DISTINCT m FROM unnest(coalesce(p_media, '{}'::INT[])) m ORDER BY m);
+  IF cardinality(v_media) > 0 THEN
+    UPDATE media SET claimed_at = now()
+     WHERE id = ANY(v_media) AND owner_scope = 'return:' || p_order AND uploaded_by IS NOT DISTINCT FROM p_user
+       AND visibility = 'PRIVATE' AND kind = 'IMAGE' AND status = 'READY' AND deleted_at IS NULL AND claimed_at IS NULL;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    IF n <> cardinality(v_media) THEN RAISE EXCEPTION 'RETURN_NOT_ALLOWED:media' USING ERRCODE = 'P0001'; END IF;
+    INSERT INTO return_request_media (return_request_id, media_id) SELECT rid, m FROM unnest(v_media) m;
+  END IF;
+
+  PERFORM aq_return_sync_order(p_order, 'CUSTOMER', p_user);
+  PERFORM aq_emit('order', o.order_number, 'return.status_changed', jsonb_build_object('order_id', p_order, 'return_id', rid, 'to', 'REQUESTED'), ARRAY['email.customer']);
+  RETURN rid;
+END $$ LANGUAGE plpgsql;
+
+-- Locks the return's order, then the return; raises NOT_FOUND / INVALID_TRANSITION unless it is in one of p_from.
+CREATE OR REPLACE FUNCTION aq_return_lock(p_return INT, p_from TEXT[]) RETURNS return_requests AS $$
+DECLARE r return_requests;
+BEGIN
+  SELECT * INTO r FROM return_requests WHERE id = p_return;
+  IF NOT FOUND THEN RAISE EXCEPTION 'NOT_FOUND:return %', p_return USING ERRCODE = 'P0001'; END IF;
+  PERFORM 1 FROM orders WHERE id = r.order_id FOR NO KEY UPDATE;
+  SELECT * INTO r FROM return_requests WHERE id = p_return FOR NO KEY UPDATE;
+  IF NOT (r.status::TEXT = ANY(p_from)) THEN
+    RAISE EXCEPTION 'INVALID_TRANSITION:return % is %', p_return, r.status USING ERRCODE = 'P0001';
+  END IF;
+  RETURN r;
+END $$ LANGUAGE plpgsql;
+
+-- Staff decision. Approve: p_items = [{"order_item_id":1,"approved_qty":1}] (items not named approve 0; at least one
+-- unit overall); the units not approved are released. Reject: every unit is released.
+CREATE OR REPLACE FUNCTION aq_decide_return(p_return INT, p_approve BOOLEAN, p_items JSONB, p_note TEXT, p_actor INT) RETURNS TEXT AS $$
+DECLARE r return_requests; it RECORD; v_to TEXT;
+BEGIN
+  r := aq_return_lock(p_return, ARRAY['REQUESTED']);
+  IF p_approve THEN
+    IF jsonb_typeof(p_items) IS DISTINCT FROM 'array'
+       OR (SELECT count(DISTINCT x->>'order_item_id') FROM jsonb_array_elements(p_items) x) <> jsonb_array_length(p_items) THEN
+      RAISE EXCEPTION 'RETURN_NOT_ALLOWED:items' USING ERRCODE = 'P0001';
+    END IF;
+    FOR it IN SELECT (x->>'order_item_id')::INT AS item, (x->>'approved_qty')::INT AS q, i.requested_qty
+                FROM jsonb_array_elements(p_items) x
+                LEFT JOIN return_request_items i ON i.return_request_id = p_return AND i.order_item_id = (x->>'order_item_id')::INT LOOP
+      IF it.requested_qty IS NULL THEN RAISE EXCEPTION 'RETURN_NOT_ALLOWED:item:%', it.item USING ERRCODE = 'P0001'; END IF;
+      IF it.q IS NULL OR it.q < 0 OR it.q > it.requested_qty THEN RAISE EXCEPTION 'RETURN_NOT_ALLOWED:approved:%', it.item USING ERRCODE = 'P0001'; END IF;
+    END LOOP;
+    UPDATE return_request_items i
+       SET approved_qty = coalesce((SELECT (x->>'approved_qty')::INT FROM jsonb_array_elements(p_items) x WHERE (x->>'order_item_id')::INT = i.order_item_id), 0)
+     WHERE return_request_id = p_return;
+    IF (SELECT sum(approved_qty) FROM return_request_items WHERE return_request_id = p_return) = 0 THEN
+      RAISE EXCEPTION 'RETURN_NOT_ALLOWED:nothing_approved' USING ERRCODE = 'P0001';
+    END IF;
+    v_to := 'APPROVED';
+  ELSE
+    v_to := 'REJECTED';
+  END IF;
+  FOR it IN SELECT order_item_id, requested_qty - CASE WHEN p_approve THEN approved_qty ELSE 0 END AS q
+              FROM return_request_items WHERE return_request_id = p_return ORDER BY order_item_id LOOP
+    IF it.q > 0 THEN UPDATE order_items SET return_requested_qty = return_requested_qty - it.q WHERE id = it.order_item_id; END IF;
+  END LOOP;
+  UPDATE return_requests SET status = v_to::"ReturnStatus", admin_note = p_note, decided_by = p_actor, decided_at = now(), updated_at = now()
+   WHERE id = p_return;
+  PERFORM aq_return_sync_order(r.order_id, 'ADMIN', p_actor);
+  PERFORM aq_emit('order', (SELECT order_number FROM orders WHERE id = r.order_id), 'return.status_changed',
+                  jsonb_build_object('order_id', r.order_id, 'return_id', p_return, 'to', v_to), ARRAY['email.customer']);
+  RETURN v_to;
+END $$ LANGUAGE plpgsql;
+
+-- The parcel arrived: p_items = [{"order_item_id":1,"received_qty":1}] for approved items (not named = 0 received).
+-- Not for a missing item, which never comes back.
+CREATE OR REPLACE FUNCTION aq_receive_return(p_return INT, p_items JSONB, p_actor INT) RETURNS void AS $$
+DECLARE r return_requests; it RECORD;
+BEGIN
+  r := aq_return_lock(p_return, ARRAY['APPROVED', 'IN_TRANSIT']);
+  IF r.reason = 'MISSING_ITEM' THEN RAISE EXCEPTION 'RETURN_NOT_ALLOWED:missing_item' USING ERRCODE = 'P0001'; END IF;
+  IF jsonb_typeof(p_items) IS DISTINCT FROM 'array'
+     OR (SELECT count(DISTINCT x->>'order_item_id') FROM jsonb_array_elements(p_items) x) <> jsonb_array_length(p_items) THEN
+    RAISE EXCEPTION 'RETURN_NOT_ALLOWED:items' USING ERRCODE = 'P0001';
+  END IF;
+  FOR it IN SELECT (x->>'order_item_id')::INT AS item, (x->>'received_qty')::INT AS q, i.approved_qty
+              FROM jsonb_array_elements(p_items) x
+              LEFT JOIN return_request_items i ON i.return_request_id = p_return AND i.order_item_id = (x->>'order_item_id')::INT LOOP
+    IF coalesce(it.approved_qty, 0) = 0 THEN RAISE EXCEPTION 'RETURN_NOT_ALLOWED:item:%', it.item USING ERRCODE = 'P0001'; END IF;
+    IF it.q IS NULL OR it.q < 0 OR it.q > it.approved_qty THEN RAISE EXCEPTION 'RETURN_NOT_ALLOWED:received:%', it.item USING ERRCODE = 'P0001'; END IF;
+  END LOOP;
+  UPDATE return_request_items i
+     SET received_qty = coalesce((SELECT (x->>'received_qty')::INT FROM jsonb_array_elements(p_items) x WHERE (x->>'order_item_id')::INT = i.order_item_id), 0)
+   WHERE return_request_id = p_return AND approved_qty > 0;
+  UPDATE return_requests SET status = 'RECEIVED', received_at = now(), updated_at = now() WHERE id = p_return;
+  PERFORM aq_emit('order', (SELECT order_number FROM orders WHERE id = r.order_id), 'return.status_changed',
+                  jsonb_build_object('order_id', r.order_id, 'return_id', p_return, 'to', 'RECEIVED'), ARRAY['email.customer']);
+END $$ LANGUAGE plpgsql;
+
+-- Inspection: p_items = [{"order_item_id":1,"sellable_qty":1,"damaged_qty":0}] for every item received (sellable +
+-- damaged = received; items received 0 need not be named). Sellable units go back on the shelf (RETURN_RESTOCK),
+-- damaged ones are recorded (RETURN_DAMAGED, no stock change). Received units count as returned; approved units that
+-- never arrived are released.
+CREATE OR REPLACE FUNCTION aq_inspect_return(p_return INT, p_items JSONB, p_actor INT) RETURNS void AS $$
+DECLARE r return_requests; it RECORD; v RECORD; was_available INT;
+BEGIN
+  r := aq_return_lock(p_return, ARRAY['RECEIVED']);
+  IF jsonb_typeof(p_items) IS DISTINCT FROM 'array'
+     OR (SELECT count(DISTINCT x->>'order_item_id') FROM jsonb_array_elements(p_items) x) <> jsonb_array_length(p_items) THEN
+    RAISE EXCEPTION 'RETURN_NOT_ALLOWED:items' USING ERRCODE = 'P0001';
+  END IF;
+  FOR it IN SELECT (x->>'order_item_id')::INT AS item, i.received_qty FROM jsonb_array_elements(p_items) x
+              LEFT JOIN return_request_items i ON i.return_request_id = p_return AND i.order_item_id = (x->>'order_item_id')::INT LOOP
+    IF it.received_qty IS NULL THEN RAISE EXCEPTION 'RETURN_NOT_ALLOWED:item:%', it.item USING ERRCODE = 'P0001'; END IF;
+  END LOOP;
+  FOR it IN SELECT i.order_item_id, i.received_qty, (x->>'sellable_qty')::INT AS s, (x->>'damaged_qty')::INT AS d
+              FROM return_request_items i
+              LEFT JOIN jsonb_array_elements(p_items) x ON (x->>'order_item_id')::INT = i.order_item_id
+             WHERE i.return_request_id = p_return AND i.received_qty IS NOT NULL ORDER BY i.order_item_id LOOP
+    IF it.received_qty = 0 AND it.s IS NULL AND it.d IS NULL THEN it.s := 0; it.d := 0; END IF;
+    IF it.s IS NULL OR it.d IS NULL OR it.s < 0 OR it.d < 0 OR it.s + it.d <> it.received_qty THEN
+      RAISE EXCEPTION 'RETURN_NOT_ALLOWED:inspection:%', it.order_item_id USING ERRCODE = 'P0001';
+    END IF;
+    UPDATE return_request_items SET sellable_qty = it.s, damaged_qty = it.d WHERE return_request_id = p_return AND order_item_id = it.order_item_id;
+  END LOOP;
+  -- Received units are returned; approved units that never arrived no longer count against the item.
+  UPDATE order_items oi SET returned_qty = oi.returned_qty + i.received_qty,
+                            return_requested_qty = oi.return_requested_qty - (i.approved_qty - i.received_qty)
+    FROM return_request_items i
+   WHERE i.return_request_id = p_return AND i.order_item_id = oi.id AND i.received_qty IS NOT NULL;
+  -- Stock: variants ascending, then products.
+  FOR it IN SELECT oi.variant_id, sum(i.sellable_qty)::INT AS s, sum(i.damaged_qty)::INT AS d
+              FROM return_request_items i JOIN order_items oi ON oi.id = i.order_item_id
+             WHERE i.return_request_id = p_return AND oi.variant_id IS NOT NULL AND i.sellable_qty + i.damaged_qty > 0
+             GROUP BY oi.variant_id ORDER BY oi.variant_id LOOP
+    SELECT on_hand, reserved INTO v FROM product_variants WHERE id = it.variant_id FOR NO KEY UPDATE;
+    was_available := v.on_hand - v.reserved;
+    IF it.s > 0 THEN
+      UPDATE product_variants SET on_hand = on_hand + it.s, version = version + 1 WHERE id = it.variant_id RETURNING on_hand, reserved INTO v;
+      INSERT INTO inventory_movements (variant_id, reason, on_hand_delta, reserved_delta, on_hand_after, reserved_after, order_id, return_request_id, actor_id)
+      VALUES (it.variant_id, 'RETURN_RESTOCK', it.s, 0, v.on_hand, v.reserved, r.order_id, p_return, p_actor);
+      IF was_available <= 0 AND v.on_hand - v.reserved > 0 THEN
+        PERFORM aq_emit('variant', it.variant_id::TEXT, 'variant.back_in_stock', jsonb_build_object('variant_id', it.variant_id), ARRAY['restock.notify']);
+      END IF;
+    END IF;
+    IF it.d > 0 THEN
+      INSERT INTO inventory_movements (variant_id, reason, on_hand_delta, reserved_delta, on_hand_after, reserved_after, order_id, return_request_id, note, actor_id)
+      VALUES (it.variant_id, 'RETURN_DAMAGED', 0, 0, v.on_hand, v.reserved, r.order_id, p_return, it.d || ' damaged unit(s), not restocked', p_actor);
+    END IF;
+  END LOOP;
+  PERFORM aq_refresh_products(ARRAY(SELECT DISTINCT oi.product_id FROM return_request_items i JOIN order_items oi ON oi.id = i.order_item_id
+                                     WHERE i.return_request_id = p_return AND oi.product_id IS NOT NULL AND i.sellable_qty > 0));
+  UPDATE return_requests SET status = 'INSPECTED', inspected_at = now(), updated_at = now() WHERE id = p_return;   -- trigger: inspection complete
+END $$ LANGUAGE plpgsql;
+
+-- The refund for an inspected return (or an approved missing item). p_items = [{"order_item_id":1,"quantity":1,"amount":45000}];
+-- p_payment as for aq_request_refund (the applied payment; NULL = COD bank transfer). Shipping at staff discretion
+-- (merchant fault); never the COD fee. Several refunds per return are allowed while the bounds hold.
+CREATE OR REPLACE FUNCTION aq_request_return_refund(p_return INT, p_payment INT, p_items JSONB, p_shipping INT, p_reason TEXT,
+  p_idem_key TEXT, p_actor INT) RETURNS INT AS $$
+DECLARE r return_requests; it RECORD; v_items JSONB; rid INT;
+BEGIN
+  r := aq_return_lock(p_return, ARRAY['INSPECTED', 'APPROVED', 'REFUNDED']);
+  IF r.status = 'APPROVED' AND r.reason <> 'MISSING_ITEM' THEN
+    RAISE EXCEPTION 'INVALID_TRANSITION:return % is APPROVED (inspect it first)', p_return USING ERRCODE = 'P0001';
+  END IF;
+  IF r.status = 'REFUNDED' AND r.reason <> 'MISSING_ITEM' AND r.inspected_at IS NULL THEN
+    RAISE EXCEPTION 'INVARIANT: return % refunded before inspection', p_return;
+  END IF;
+  IF jsonb_typeof(p_items) IS DISTINCT FROM 'array'
+     OR (SELECT count(DISTINCT x->>'order_item_id') FROM jsonb_array_elements(p_items) x) <> jsonb_array_length(p_items) THEN
+    RAISE EXCEPTION 'RETURN_NOT_ALLOWED:items' USING ERRCODE = 'P0001';
+  END IF;
+  FOR it IN SELECT (x->>'order_item_id')::INT AS item, (x->>'quantity')::INT AS q, (x->>'amount')::INT AS a,
+                   CASE WHEN r.reason = 'MISSING_ITEM' THEN i.approved_qty ELSE i.received_qty END AS base,
+                   oi.quantity AS bought, oi.net_amount,
+                   (SELECT coalesce(sum(ri.quantity), 0) FROM refund_items ri JOIN refunds f ON f.id = ri.refund_id
+                     WHERE f.return_request_id = p_return AND f.status NOT IN ('FAILED', 'CANCELLED') AND ri.order_item_id = i.order_item_id) AS used
+              FROM jsonb_array_elements(p_items) x
+              LEFT JOIN return_request_items i ON i.return_request_id = p_return AND i.order_item_id = (x->>'order_item_id')::INT
+              LEFT JOIN order_items oi ON oi.id = i.order_item_id LOOP
+    IF it.base IS NULL OR it.base = 0 THEN RAISE EXCEPTION 'RETURN_NOT_ALLOWED:item:%', it.item USING ERRCODE = 'P0001'; END IF;
+    IF it.q IS NULL OR it.a IS NULL OR it.q < 1 OR it.a < 1 THEN RAISE EXCEPTION 'REFUND_AMOUNT_INVALID:%', it.item USING ERRCODE = 'P0001'; END IF;
+    IF it.used + it.q > it.base OR it.a > ceil(it.net_amount::NUMERIC * it.q / it.bought) THEN
+      RAISE EXCEPTION 'REFUND_EXCEEDS_CAPACITY:return:%', it.item USING ERRCODE = 'P0001';
+    END IF;
+  END LOOP;
+  SELECT coalesce(jsonb_agg(jsonb_build_object('order_item_id', oi.id, 'quantity', (x->>'quantity')::INT, 'amount', (x->>'amount')::INT,
+           'tax_amount', CASE WHEN oi.net_amount = 0 THEN 0 ELSE round(oi.tax_amount::NUMERIC * (x->>'amount')::INT / oi.net_amount)::INT END)
+           ORDER BY oi.id), '[]'::JSONB)
+    INTO v_items FROM jsonb_array_elements(p_items) x JOIN order_items oi ON oi.id = (x->>'order_item_id')::INT;
+  rid := aq_request_refund(r.order_id, p_payment, 'RETURN', v_items, coalesce(p_shipping, 0), 0, 0, p_reason, p_idem_key, p_actor);
+  UPDATE refunds SET return_request_id = p_return WHERE id = rid;
+  UPDATE return_requests SET status = 'REFUNDED', updated_at = now() WHERE id = p_return AND status <> 'REFUNDED';
+  RETURN rid;
+END $$ LANGUAGE plpgsql;
+
+-- The simple steps. IN_TRANSIT: an approved return is on its way back (not for a missing item). CLOSED: done, after
+-- inspection or refund (a missing item also straight from APPROVED). CANCELLED: before receipt; every unit still
+-- counted against the items is released. p_note is kept on the return when given.
+CREATE OR REPLACE FUNCTION aq_set_return_status(p_return INT, p_to TEXT, p_note TEXT, p_actor INT) RETURNS void AS $$
+DECLARE r return_requests; it RECORD;
+BEGIN
+  r := aq_return_lock(p_return, CASE p_to WHEN 'IN_TRANSIT' THEN ARRAY['APPROVED']
+                                          WHEN 'CLOSED' THEN ARRAY['INSPECTED', 'REFUNDED', 'APPROVED']
+                                          WHEN 'CANCELLED' THEN ARRAY['REQUESTED', 'APPROVED', 'IN_TRANSIT']
+                                          ELSE ARRAY[]::TEXT[] END);
+  IF (p_to = 'IN_TRANSIT' AND r.reason = 'MISSING_ITEM') OR (p_to = 'CLOSED' AND r.status = 'APPROVED' AND r.reason <> 'MISSING_ITEM') THEN
+    RAISE EXCEPTION 'INVALID_TRANSITION:return % is % (%)', p_return, r.status, r.reason USING ERRCODE = 'P0001';
+  END IF;
+  IF p_to = 'CANCELLED' THEN
+    FOR it IN SELECT order_item_id, coalesce(approved_qty, requested_qty) AS q FROM return_request_items
+               WHERE return_request_id = p_return ORDER BY order_item_id LOOP
+      IF it.q > 0 THEN UPDATE order_items SET return_requested_qty = return_requested_qty - it.q WHERE id = it.order_item_id; END IF;
+    END LOOP;
+  END IF;
+  UPDATE return_requests SET status = p_to::"ReturnStatus", admin_note = coalesce(p_note, admin_note),
+         closed_at = CASE WHEN p_to IN ('CLOSED', 'CANCELLED') THEN now() ELSE closed_at END, updated_at = now()
+   WHERE id = p_return;
+  PERFORM aq_return_sync_order(r.order_id, 'ADMIN', p_actor);
+END $$ LANGUAGE plpgsql;
 ```
 
 ### 8.6 Webhook inbox

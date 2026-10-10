@@ -58,8 +58,8 @@ export class AdminApi {
   }
   private emit(e: SessionEvent) { for (const l of this.listeners) l(e); }
 
-  private async raw(method: string, path: string, body?: unknown, auth = true): Promise<Response> {
-    const headers: Record<string, string> = {};
+  private async raw(method: string, path: string, body?: unknown, auth = true, extra: Record<string, string> = {}): Promise<Response> {
+    const headers: Record<string, string> = { ...extra };
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     if (auth && this.token) headers.Authorization = `Bearer ${this.token}`;
     try {
@@ -96,9 +96,10 @@ export class AdminApi {
     return this.refreshing;
   }
 
-  async request<T>(method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', path: string, o: { body?: unknown; query?: Record<string, string | number | undefined | null> } = {}, retried = { auth: false, stepUp: false }): Promise<T> {
+  /** `headers` (e.g. Idempotency-Key) are sent again unchanged when the request is retried after a refresh or step-up. */
+  async request<T>(method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', path: string, o: { body?: unknown; query?: Record<string, string | number | undefined | null>; headers?: Record<string, string> } = {}, retried = { auth: false, stepUp: false }): Promise<T> {
     const qs = o.query ? Object.entries(o.query).filter(([, v]) => v !== undefined && v !== null && v !== '').map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`).join('&') : '';
-    const res = await this.raw(method, qs ? `${path}?${qs}` : path, o.body);
+    const res = await this.raw(method, qs ? `${path}?${qs}` : path, o.body, true, o.headers);
     if (res.ok) return (res.status === 204 ? undefined : await res.json()) as T;
     const err = await AdminApi.error(res);
     if (res.status === 401 && err.code === 'STEP_UP_REQUIRED' && this.stepUpHandler && !retried.stepUp) {

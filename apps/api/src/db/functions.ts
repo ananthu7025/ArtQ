@@ -171,6 +171,95 @@ export function reverseCoupon(db: Db, orderId: number) {
 }
 
 /** Migration 0007: a pending COD order → PLACED + COD_PENDING (coupon redeemed, cart converted, order.placed); 'DUPLICATE' if already. Raises INVALID_TRANSITION. */
+/** The invoice content the API computes for dispatch (database.md §8.4); amounts in paise. */
+export type DispatchInvoice = {
+  fy: string; seller: unknown; buyer: unknown; place_of_supply: string;
+  lines: { kind: 'ITEM' | 'SHIPPING' | 'COD_FEE'; taxable: number; cgst: number; sgst: number; igst: number; [k: string]: unknown }[];
+  taxable_total: number; cgst_total: number; sgst_total: number; igst_total: number; rounding_adjustment: number; grand_total: number;
+};
+export function dispatchOrder(db: Db, a: { orderId: number; courier: string; awb: string; trackingUrl: string | null; weightG: number | null; invoice: DispatchInvoice; notify: boolean; actorId: number }) {
+  return scalar<{ invoice_id: number; invoice_number: string; shipment_id: number }>(db, Prisma.sql`SELECT aq_dispatch_order(${a.orderId}::int, ${a.courier}, ${a.awb}, ${a.trackingUrl},
+    ${a.weightG}::int, ${json(a.invoice)}, ${a.notify}, ${a.actorId}::int) AS r`);
+}
+
+/** database.md §8.3a: cancel a placed/confirmed order (refund for prepaid, stock and coupon restored). */
+export function cancelOrder(db: Db, a: { orderId: number; by: 'CUSTOMER' | 'ADMIN'; actorId: number | null; reason: string | null; notify: boolean }) {
+  return scalar<{ refund_id: number | null; payment_status: string }>(db, Prisma.sql`SELECT aq_cancel_order(${a.orderId}::int, ${a.by}, ${a.actorId}::int, ${a.reason}, ${a.notify}) AS r`);
+}
+
+/** database.md §8.5a: the credit note for a processed refund of an invoiced order (once; SKIPPED when none is due). */
+export function issueCreditNote(db: Db, a: { refundId: number; content: unknown; actorId: number | null }) {
+  return scalar<{ status: 'ISSUED' | 'DUPLICATE' | 'SKIPPED'; invoice_id?: number; number?: string }>(db, Prisma.sql`SELECT aq_issue_credit_note(${a.refundId}::int, ${json(a.content)}, ${a.actorId}::int) AS r`);
+}
+
+// ── RTO, lost parcels and COD remittances (database.md §8.4a, migration 0012) ──
+
+/** Cancels a shipped order (prepaid refund, COD not collected); the caller holds the order lock. Returns the refund id. */
+export function cancelShippedOrder(db: Db, a: { orderId: number; reason: string; key: string; refundShipping: boolean; actorId: number | null }) {
+  return scalar<number | null>(db, Prisma.sql`SELECT aq_cancel_shipped_order(${a.orderId}::int, ${a.reason}, ${a.key}, ${a.refundShipping}, ${a.actorId}::int) AS r`);
+}
+
+/** After a shipped order is cancelled and its variants handled: sold counts, product aggregates, coupon use. */
+export function shippedOrderReleased(db: Db, orderId: number) {
+  return exec(db, Prisma.sql`SELECT aq_shipped_order_released(${orderId}::int)`);
+}
+
+export function receiveRto(db: Db, a: { orderId: number; items: { orderItemId: number; sellableQty: number; damagedQty: number }[]; notify: boolean; actorId: number }) {
+  return scalar<{ refund_id: number | null }>(db, Prisma.sql`SELECT aq_receive_rto(${a.orderId}::int,
+    ${json(a.items.map((i) => ({ order_item_id: i.orderItemId, sellable_qty: i.sellableQty, damaged_qty: i.damagedQty })))}, ${a.notify}, ${a.actorId}::int) AS r`);
+}
+
+export function markLost(db: Db, a: { orderId: number; resolution: 'REFUND' | 'RESHIP'; note: string | null; notify: boolean; actorId: number }) {
+  return scalar<{ refund_id: number | null }>(db, Prisma.sql`SELECT aq_mark_lost(${a.orderId}::int, ${a.resolution}, ${a.note}::text, ${a.notify}, ${a.actorId}::int) AS r`);
+}
+
+export function recordCodRemittance(db: Db, a: { courierName: string; reference: string; remittedAt: Date; amount: number; note: string | null; items: { orderId: number; amount: number }[]; actorId: number }) {
+  return scalar<{ remittance_id: number; mismatches: { order_id: number; expected: number; remitted: number }[] }>(db, Prisma.sql`SELECT aq_record_cod_remittance(${a.courierName}, ${a.reference},
+    ${a.remittedAt}::timestamptz, ${a.amount}::int, ${a.note}::text, ${json(a.items.map((i) => ({ order_id: i.orderId, amount: i.amount })))}, ${a.actorId}::int) AS r`);
+}
+
+// ── Returns (database.md §8.5b, migration 0011) ──────────────────────────
+
+export type ReturnReasonValue = 'DAMAGED' | 'WRONG_ITEM' | 'DEFECTIVE' | 'MISSING_ITEM' | 'OTHER';
+type ItemQty<K extends string> = ({ orderItemId: number } & Record<K, number>)[];
+const snake = <K extends string>(items: ItemQty<K>, key: K, as: string) => items.map((i) => ({ order_item_id: i.orderItemId, [as]: i[key] }));
+
+/** The order's return_status from its returns (also run by every return step). */
+export function returnSyncOrder(db: Db, orderId: number, actor: ActorType, actorId: number | null) {
+  return scalar<'NONE' | 'OPEN' | 'CLOSED'>(db, Prisma.sql`SELECT aq_return_sync_order(${orderId}::int, ${actor}, ${actorId}::int) AS r`);
+}
+
+/** Locks the return's order and the return; raises unless the return is in one of `from`. */
+export function returnLock(db: Db, returnId: number, from: string[]) {
+  return exec(db, Prisma.sql`SELECT 1 FROM aq_return_lock(${returnId}::int, ${from}::text[])`);
+}
+
+export function requestReturn(db: Db, a: { orderId: number; userId: number | null; reason: ReturnReasonValue; description: string | null; items: ItemQty<'quantity'>; mediaIds: number[]; windowHours: number }) {
+  return scalar<number>(db, Prisma.sql`SELECT aq_request_return(${a.orderId}::int, ${a.userId}::int, ${a.reason}, ${a.description}::text,
+    ${json(snake(a.items, 'quantity', 'quantity'))}, ${a.mediaIds}::int[], ${a.windowHours}::int) AS r`);
+}
+
+export function decideReturn(db: Db, a: { returnId: number; approve: boolean; items: ItemQty<'approvedQty'>; note: string | null; actorId: number }) {
+  return scalar<'APPROVED' | 'REJECTED'>(db, Prisma.sql`SELECT aq_decide_return(${a.returnId}::int, ${a.approve}, ${json(snake(a.items, 'approvedQty', 'approved_qty'))}, ${a.note}::text, ${a.actorId}::int) AS r`);
+}
+
+export function receiveReturn(db: Db, a: { returnId: number; items: ItemQty<'receivedQty'>; actorId: number }) {
+  return exec(db, Prisma.sql`SELECT aq_receive_return(${a.returnId}::int, ${json(snake(a.items, 'receivedQty', 'received_qty'))}, ${a.actorId}::int)`);
+}
+
+export function inspectReturn(db: Db, a: { returnId: number; items: { orderItemId: number; sellableQty: number; damagedQty: number }[]; actorId: number }) {
+  return exec(db, Prisma.sql`SELECT aq_inspect_return(${a.returnId}::int, ${json(a.items.map((i) => ({ order_item_id: i.orderItemId, sellable_qty: i.sellableQty, damaged_qty: i.damagedQty })))}, ${a.actorId}::int)`);
+}
+
+export function requestReturnRefund(db: Db, a: { returnId: number; paymentId: number | null; items: { orderItemId: number; quantity: number; amount: number }[]; shipping: number; reason: string; idempotencyKey: string; actorId: number }) {
+  return scalar<number>(db, Prisma.sql`SELECT aq_request_return_refund(${a.returnId}::int, ${a.paymentId}::int,
+    ${json(a.items.map((i) => ({ order_item_id: i.orderItemId, quantity: i.quantity, amount: i.amount })))}, ${a.shipping}::int, ${a.reason}, ${a.idempotencyKey}, ${a.actorId}::int) AS r`);
+}
+
+export function setReturnStatus(db: Db, a: { returnId: number; to: 'IN_TRANSIT' | 'CLOSED' | 'CANCELLED'; note: string | null; actorId: number }) {
+  return exec(db, Prisma.sql`SELECT aq_set_return_status(${a.returnId}::int, ${a.to}, ${a.note}::text, ${a.actorId}::int)`);
+}
+
 export function placeCodOrder(db: Db, orderId: number, actor: ActorType) {
   return scalar<'PLACED' | 'DUPLICATE'>(db, Prisma.sql`SELECT aq_place_cod_order(${orderId}::int, ${actor}) AS r`);
 }

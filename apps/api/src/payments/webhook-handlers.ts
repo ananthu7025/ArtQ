@@ -31,7 +31,7 @@ function paymentHandler(provider: PaymentProvider): WebhookHandler<ProviderPayme
 
 /**
  * refund.created / processed / failed: our own refund (matched by its provider id, or `notes.aq_refund_id`) is marked
- * processed when Razorpay says so. Refunds ArtQ did not make are left to the refund reconciliation (task 5.4), which
+ * processed, or its attempt failed (capacity released, task 5.4), when Razorpay says so. Refunds ArtQ did not make are left to the refund reconciliation (task 5.4), which
  * records them once and raises RECON_MISMATCH.
  */
 function refundHandler(provider: PaymentProvider): WebhookHandler<ProviderRefund | null> {
@@ -45,14 +45,18 @@ function refundHandler(provider: PaymentProvider): WebhookHandler<ProviderRefund
       }
     },
     async apply(tx, r) {
-      if (!r || r.status !== 'processed') return 'IGNORED';
+      if (!r || r.status === 'pending') return 'IGNORED';
       const ours = await (tx as Prisma.TransactionClient).refund.findFirst({
         where: { OR: [{ providerRefundId: r.id }, ...(r.notes.aq_refund_id && /^\d+$/.test(r.notes.aq_refund_id) ? [{ id: Number(r.notes.aq_refund_id) }] : [])] },
-        select: { id: true },
+        select: { id: true, attemptNo: true, attempts: { select: { id: true, attemptNo: true, receipt: true } } },
       });
       if (!ours) return 'IGNORED';
-      await fn.markRefundProcessed(tx as fn.Db, ours.id, r.id);
-      return 'PROCESSED';
+      if (r.status === 'processed') { await fn.markRefundProcessed(tx as fn.Db, ours.id, r.id); return 'PROCESSED'; }
+      // refund.failed: only the attempt Razorpay refused (by receipt, else the current one) is recorded FAILED; a stale one is ignored.
+      const attempt = ours.attempts.find((a) => a.receipt === r.receipt) ?? ours.attempts.find((a) => a.attemptNo === ours.attemptNo);
+      if (!attempt) return 'IGNORED';
+      const out = await fn.refundAttemptResult(tx as fn.Db, { attemptId: attempt.id, outcome: 'FAILED', httpStatus: null, response: { description: 'Razorpay reports the refund as failed', refund: r.id }, providerRefundId: r.id });
+      return out === 'STALE' ? 'IGNORED' : 'PROCESSED';
     },
   };
 }

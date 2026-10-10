@@ -68,7 +68,8 @@ export function createAdminRouter(d: AdminRouterDeps) {
   const auditTrail: RequestHandler = (req, res, next) => {
     if (!SAFE.has(req.method)) {
       res.on('finish', () => {
-        if (res.statusCode < 400 && !res.locals.audited) {
+        // A replayed idempotent request repeats a stored answer and changes nothing: there is nothing new to audit.
+        if (res.statusCode < 400 && !res.locals.audited && res.get('Idempotent-Replayed') !== 'true') {
           if (d.onMissingAudit) d.onMissingAudit(req);
           else d.log.error({ method: req.method, path: req.originalUrl, actorId: req.auth?.userId }, 'admin mutation without an audit entry');
         }

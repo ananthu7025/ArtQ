@@ -1,5 +1,4 @@
 import { Link } from 'react-router';
-import { useAuth } from '../auth/AuthProvider';
 import type { NavItem } from '../nav';
 
 export function PageHeader({ title, children }: { title: string; children?: React.ReactNode }) {
@@ -8,19 +7,6 @@ export function PageHeader({ title, children }: { title: string; children?: Reac
       <h1 className="font-display text-2xl text-ink-900">{title}</h1>
       {children}
     </div>
-  );
-}
-
-export function DashboardPage() {
-  const { state } = useAuth();
-  const name = state.status === 'authenticated' ? (state.user.name ?? state.user.email) : '';
-  return (
-    <>
-      <PageHeader title="Dashboard" />
-      <div className="rounded-lg border border-surface-200 bg-white p-6 text-ink-700">
-        <p>Welcome, {name}. The dashboard figures arrive with task 5.9.</p>
-      </div>
-    </>
   );
 }
 

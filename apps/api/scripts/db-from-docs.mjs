@@ -4,11 +4,17 @@
 //   migrations/0001_init/migration.sql               ← `prisma migrate diff --from-empty` of that schema
 //   migrations/0002_constraints_search_integrity/…   ← <!-- validate:0002.sql --> (verbatim)
 //   migrations/0003_money_stock_functions/…          ← <!-- validate:0003.sql --> (verbatim)
+//   migrations/0008_dispatch_order/…                 ← <!-- validate:0008.sql --> (verbatim; task 5.2, §8.4)
+//   migrations/0009_cancel_order/…                   ← <!-- validate:0009.sql --> (verbatim; task 5.3, §8.3a)
+//   migrations/0010_credit_note/…                    ← <!-- validate:0010.sql --> (verbatim; task 5.4, §8.5a)
+//   migrations/0011_returns/…                        ← <!-- validate:0011.sql --> (verbatim; task 5.5, §8.5b)
+//   migrations/0012_rto_lost_cod/…                   ← <!-- validate:0012.sql --> (verbatim; task 5.6, §8.4a)
 //
 //   node scripts/db-from-docs.mjs          write the files
 //   node scripts/db-from-docs.mjs --check  exit 1 if any file differs (CI drift guard)
 //
-// Later schema changes are new migrations (0004+), never edits to these three.
+// Later schema changes are new migrations (0004+), never edits to these. A later migration whose SQL the doc owns
+// (so tools/doc-validation proves it) is listed in DOC_MIGRATIONS and generated the same way.
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -20,6 +26,8 @@ const API = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DOC = join(API, '..', '..', 'docs', 'database.md');
 
 export const MIGRATIONS = ['0001_init', '0002_constraints_search_integrity', '0003_money_stock_functions'];
+/** Later migrations generated from a validated doc block: block → [directory, doc section]. */
+export const DOC_MIGRATIONS = { '0008.sql': ['0008_dispatch_order', '§8.4'], '0009.sql': ['0009_cancel_order', '§8.3a'], '0010.sql': ['0010_credit_note', '§8.5a'], '0011.sql': ['0011_returns', '§8.5b'], '0012.sql': ['0012_rto_lost_cod', '§8.4a'] };
 const SCHEMA_HEADER = '// GENERATED from docs/database.md §5 by scripts/db-from-docs.mjs. Edit the doc, then regenerate.\n';
 const SQL_HEADER = (section) => `-- GENERATED from docs/database.md ${section} by scripts/db-from-docs.mjs. Do not edit.\n`;
 
@@ -64,6 +72,10 @@ export function expectedFiles(md = readFileSync(DOC, 'utf8')) {
     [`prisma/migrations/${MIGRATIONS[0]}/migration.sql`]: SQL_HEADER('§5') + initSql(schema),
     [`prisma/migrations/${MIGRATIONS[1]}/migration.sql`]: SQL_HEADER('§6') + b['0002.sql'],
     [`prisma/migrations/${MIGRATIONS[2]}/migration.sql`]: SQL_HEADER('§6b') + b['0003.sql'],
+    ...Object.fromEntries(Object.entries(DOC_MIGRATIONS).map(([key, [dir, section]]) => {
+      if (b[key] === undefined) throw new Error(`docs/database.md: missing <!-- validate:${key} --> block`);
+      return [`prisma/migrations/${dir}/migration.sql`, SQL_HEADER(section) + b[key]];
+    })),
   };
 }
 

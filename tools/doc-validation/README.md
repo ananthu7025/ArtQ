@@ -4,8 +4,11 @@ Executable checks for the **schema, integrity SQL and money/stock database funct
 `docs/database.md`**. This is not the application test suite (no application code exists yet).
 
 ## What it does
-1. Extracts the blocks marked `<!-- validate:schema.prisma -->`, `<!-- validate:0002.sql -->` and
-   `<!-- validate:0003.sql -->` from `docs/database.md` into `.fixtures/` (git-ignored).
+1. Extracts the blocks marked `<!-- validate:schema.prisma -->`, `<!-- validate:0002.sql -->`,
+   `<!-- validate:0003.sql -->` and any later doc-owned migration (`<!-- validate:0008.sql -->`, task 5.2) from
+   `docs/database.md` into `.fixtures/` (git-ignored). After 0003 every later migration is applied in number
+   order: the doc block when the doc owns it (0008, 0009), otherwise the committed file in
+   `apps/api/prisma/migrations/` (0004–0007), so the checked chain is the deployed one.
 2. `prisma validate`, then `prisma migrate diff --from-empty` → `0001.sql`.
 3. Starts a throwaway PostgreSQL (default: the pinned **16.14** binaries from `embedded-postgres`;
    override with `PG_BIN_DIR`) and applies 0001 + 0002 + 0003 to a template database.
@@ -43,6 +46,11 @@ Requirements: Node 24, `redis-server` on PATH (or `REDIS_SERVER`), and a platfor
 | C14 | UNLINKED payment recovery: capture before mapping, concurrent recovery once, identity conflicts rejected |
 | C15 | Payments first observed refunded/partially refunded; CAPTURED→REFUNDED; out-of-order and concurrent observations |
 | C16 | AUTHORIZED→REFUNDED returns the order to UNPAID and expiry releases once; later provider refunds gate refund capacity until reconciled (no double counting) |
+| C18 | `aq_cancel_order` (0009): 6 concurrent cancels → one cancellation and one refund; cancel racing dispatch ×10 → exactly one wins; stock, sold counts and coupon restored once; an earlier partial refund is not refunded again; COD → NOT_COLLECTED |
+| C19 | `aq_issue_credit_note` (0010): 11 concurrent credit notes → CN 1..11, each against its invoice; same refund ×5 → one; refusals (unprocessed, bad total, other place of supply) use no number; not invoiced → skipped |
+| C20 | Returns (0011): 8 concurrent requests for a 2-unit line → 2; excess, duplicate and zero quantities refused; reject / cancel / partial approval release units; decision ×4 → 1; inspection ×4 → 1 (restocked once); return refunds ×5 for one received unit → 1 (over the unit's share refused; a failed refund frees it); missing item refunded without receipt or restock; window, delivery and photo ownership enforced |
+| C21 | RTO, lost, COD remittance (0012): RTO receipt ×5 concurrent → 1 (sellable restocked once, damaged kept out, items refunded without shipping per D-9, sold count and coupon once); COD RTO → not collected; lost ×4 → 1 (refund incl. shipping, no stock change, write-off recorded); reship keeps the order; remittance totals checked, ×5 concurrent → 1, duplicate reference refused, short amount → `COD_REMITTANCE_MISMATCH` |
+| C17 | `aq_dispatch_order` (0008): gap-free invoice numbers under 20 concurrent dispatches with refusals racing among them; one order ships and consumes stock once; not-packed / reused-AWB / bad-total refusals leave no trace; a new financial year starts its own series |
 
 ## What a PASS does and does not prove
 - **Proves:** the embedded schema compiles; the SQL applies on the tested PostgreSQL versions; the database

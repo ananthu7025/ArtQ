@@ -21,5 +21,8 @@ export function extract() {
   writeFileSync(join(FIX, 'prisma', 'schema.prisma'), out['schema.prisma']);
   writeFileSync(join(FIX, '0002.sql'), out['0002.sql']);
   writeFileSync(join(FIX, '0003.sql'), out['0003.sql']);
+  // Later migrations whose SQL the doc owns (e.g. 0008, task 5.2), applied after 0003 in number order.
+  out.later = Object.keys(out).filter((k) => /^\d{4}\.sql$/.test(k) && k > '0003.sql').sort();
+  for (const k of out.later) writeFileSync(join(FIX, k), out[k]);
   return out;
 }
