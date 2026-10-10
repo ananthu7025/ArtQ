@@ -52,6 +52,29 @@ export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = {
  */
 export const STEP_UP_PERMISSIONS: readonly Permission[] = ['refunds:create', 'settings:write', 'staff:manage'];
 
+/** What each permission lets someone do, in the owner's words (the Staff & Permissions page). Every permission has one. */
+export const PERMISSION_LABEL: Readonly<Record<Permission, string>> = {
+  'dashboard:read': 'See the dashboard',
+  'orders:read': 'See orders', 'orders:fulfil': 'Confirm, pack and ship orders', 'orders:cancel': 'Cancel orders',
+  'refunds:create': 'Refund money (asks for the password)',
+  'returns:receive': 'Receive returned parcels', 'returns:decide': 'Approve or reject returns',
+  'cod:remit': 'Record COD remittances',
+  'inventory:read': 'See stock', 'inventory:adjust': 'Count and adjust stock',
+  'catalog:read': 'See products', 'catalog:write': 'Edit products', 'pricing:write': 'Change prices', 'catalog:publish': 'Publish products and approve tax',
+  'imports:catalog': 'Import the catalogue',
+  'customers:read': 'See customers (contact details masked)', 'customers:write': 'See full contact details, block customers',
+  'coupons:write': 'Manage coupons',
+  'shipping:write': 'Manage shipping rates and delivery areas',
+  'restock:read': 'See back-in-stock requests', 'restock:notify': 'Send back-in-stock emails',
+  'content:write': 'Edit the home page, pages, FAQs, newsletter and SEO',
+  'media:write': 'Upload images and videos',
+  'payments:exceptions': 'Resolve payment problems',
+  'jobs:read': 'See jobs and webhooks', 'jobs:retry': 'Retry failed jobs and webhooks',
+  'settings:write': 'Change store, payment and tax settings (asks for the password)',
+  'staff:manage': 'Add staff and change their access (asks for the password)',
+  'audit:read': 'See and export the audit log',
+};
+
 /** STAFF see customers with masked contact details (§5.9 "masked contact"). */
 export const MASKED_CONTACT_ROLES: readonly Role[] = ['STAFF'];
 

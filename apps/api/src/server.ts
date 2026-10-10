@@ -32,11 +32,17 @@ import { customerOrderRouter, registerCancelRoutes } from './orders/cancel.js';
 import { registerCodRoutes } from './orders/cod.js';
 import { registerCustomerRoutes } from './customers/admin.js';
 import { registerDashboardRoutes } from './dashboard/routes.js';
+import { registerCmsRoutes } from './cms/routes.js';
+import { CmsService } from './cms/service.js';
 import { registerRestockRoutes } from './restock/service.js';
 import { registerOpsRoutes } from './ops/routes.js';
 import { lastRunKey, OpsService } from './ops/service.js';
 import { OUTBOX_CONSUMERS } from './outbox/dispatcher.js';
 import { customerOrdersRouter } from './orders/customer-routes.js';
+import { contentRouter } from './content/routes.js';
+import { registerNewsletterRoutes } from './content/newsletter-admin.js';
+import { registerSeoAdminRoutes, seoRouter } from './seo/routes.js';
+import { registerSettingsRoutes } from './settings/routes.js';
 import { registerRefundRoutes } from './payments/refund-admin.js';
 import { customerReturnRouter, registerReturnRoutes } from './returns/routes.js';
 import { registerShippingRoutes } from './shipping/admin-routes.js';
@@ -105,6 +111,10 @@ registerCodRoutes(admin, prisma);
 registerCustomerRoutes(admin, prisma, service);
 registerRestockRoutes(admin, prisma);
 registerDashboardRoutes(admin, prisma);
+registerNewsletterRoutes(admin, prisma, env.WEB_URL);
+registerSeoAdminRoutes(admin, prisma);
+registerSettingsRoutes(admin, prisma, appCache);
+registerCmsRoutes(admin, new CmsService(prisma, (m) => media.view(m), appCache, mediaUrl), media);
 // Jobs & Webhooks reads every queue (depths, failed jobs) on the API's Redis connection; the worker owns processing.
 const opsQueues = new Map<string, Queue>([[webhookQueue.name, webhookQueue], [mediaQueue.name, mediaQueue], [importValidateQueue.name, importValidateQueue], [importApplyQueue.name, importApplyQueue]]);
 for (const name of [QUEUE.maintenance, QUEUE.outboxDispatch, QUEUE.searchReindex, ...new Set(Object.values(OUTBOX_CONSUMERS))]) {
@@ -136,7 +146,9 @@ const app = createApp({
     accountRouter({ prisma, cache, jwt, service, env: env.NODE_ENV, mediaUrl, limiter, onRateLimitError }),
     customerOrderRouter({ prisma, cache, jwt, log }),
     customerReturnRouter({ prisma, cache, jwt, log, media }),
+    contentRouter({ prisma, cache, jwt, env: env.NODE_ENV, log, media, mediaUrl, limiter, onRateLimitError }),
     customerOrdersRouter({ prisma, cache, jwt, log, env: env.NODE_ENV, linkSecret: env.AUTH_LINK_SECRET, auth: service, media, dispatch: new DispatchService(prisma, mediaStorageFromEnv(env)), limiter, onRateLimitError }),
+    seoRouter({ prisma, mediaUrl }),
     storefrontRouter({ prisma, cache: appCache, mediaUrl, limiter, onRateLimitError, onInvalidSetting: (key) => log.warn({ key }, 'stored setting is invalid; serving the default'), onSearchLogError: (err) => log.warn({ err: String(err) }, 'search log not written') }),
     webhookRouter({ prisma, queue: webhookQueue, providers: [razorpayProvider(env.RAZORPAY_WEBHOOK_SECRET || undefined)], log }),
     admin.router,

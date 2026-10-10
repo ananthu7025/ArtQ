@@ -107,9 +107,18 @@ export async function expirePending(d: Omit<ReconcileDeps, 'provider'> & { provi
   return out;
 }
 
+/**
+ * The India calendar day that contains `day`, as Unix seconds [from, to]. (Taking the UTC date instead picked the
+ * previous day for runs between midnight and 05:30 in India.)
+ */
+export function istDayWindow(day: Date): { from: number; to: number } {
+  const ist = new Date(day.getTime() + 5.5 * 3_600_000).toISOString().slice(0, 10);
+  const from = Math.floor(new Date(`${ist}T00:00:00+05:30`).getTime() / 1000);
+  return { from, to: from + 86_400 - 1 };
+}
+
 export async function reconcileDaily(d: ReconcileDeps, day: Date = new Date(Date.now() - 86_400_000)) {
-  const from = Math.floor(new Date(day.toISOString().slice(0, 10) + 'T00:00:00+05:30').getTime() / 1000);
-  const to = from + 86_400 - 1;
+  const { from, to } = istDayWindow(day);
   const out = { payments: 0, unknownRefunds: 0 };
   for (const p of await d.provider.listPayments(from, to)) {
     if (!p.orderId || !MONEY.has(p.status)) continue;

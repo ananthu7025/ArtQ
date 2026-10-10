@@ -113,11 +113,16 @@ export class AdminApi {
   }
 
   /** A file from an authenticated endpoint (e.g. an import result workbook), with the same refresh-and-retry as request(). */
-  async download(path: string, retried = false): Promise<Blob> {
+  async download(path: string, retried = { auth: false, stepUp: false }): Promise<Blob> {
     const res = await this.raw('GET', path);
     if (res.ok) return res.blob();
     const err = await AdminApi.error(res);
-    if (res.status === 401 && !retried && (err.code === 'UNAUTHENTICATED' || err.code === 'SESSION_INVALID') && (await this.refresh())) return this.download(path, true);
+    // Personal-data exports (e.g. the newsletter CSV) need a recent password re-check, like request().
+    if (res.status === 401 && err.code === 'STEP_UP_REQUIRED' && this.stepUpHandler && !retried.stepUp) {
+      if (await this.stepUpHandler()) return this.download(path, { ...retried, stepUp: true });
+      throw err;
+    }
+    if (res.status === 401 && !retried.auth && (err.code === 'UNAUTHENTICATED' || err.code === 'SESSION_INVALID') && (await this.refresh())) return this.download(path, { ...retried, auth: true });
     throw err;
   }
 

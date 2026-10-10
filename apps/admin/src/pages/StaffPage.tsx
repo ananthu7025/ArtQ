@@ -1,6 +1,6 @@
 // Staff & Permissions (product.md §7 "Staff & Permissions", api.md §4.10) [staff:manage, SUPER_ADMIN only].
 // Changes ask for the password again (the API answers 401 STEP_UP_REQUIRED and the client opens the step-up dialog).
-import { staffCreateBody, type StaffCreate, type StaffRole } from '@artq/shared';
+import { PERMISSION_LABEL, PERMISSIONS, ROLE_PERMISSIONS, staffCreateBody, type StaffCreate, type StaffRole } from '@artq/shared';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useQuery } from '@tanstack/react-query';
 import type { ColumnDef } from '@tanstack/react-table';
@@ -184,6 +184,35 @@ export function StaffPage() {
       <DataTable caption="Staff members" columns={columns} query={query} params={params} getRowId={(r) => String(r.id)} emptyMessage="No staff match." skeletonRows={4} />
       <AddStaffDialog open={adding} onOpenChange={setAdding} />
       {managing && <ManageStaffDialog key={managing.id} row={managing} onClose={() => setManaging(null)} />}
+      <RoleMatrix />
     </>
+  );
+}
+
+/** What each role can do (task 6.5), straight from the permissions the API enforces. */
+function RoleMatrix() {
+  return (
+    <details className="mt-8 rounded-lg border border-surface-200 bg-white">
+      <summary className="cursor-pointer px-5 py-4 font-semibold text-ink-900">What each role can do</summary>
+      <div className="overflow-x-auto px-5 pb-5">
+        <table className="w-full min-w-[560px] text-left text-sm">
+          <caption className="sr-only">Permissions by role</caption>
+          <thead className="bg-surface-100">
+            <tr><th scope="col" className="px-3 py-2">Can</th>{ROLES.map((r) => <th key={r.value} scope="col" className="px-3 py-2 text-center">{r.label}</th>)}</tr>
+          </thead>
+          <tbody>
+            {PERMISSIONS.map((p) => (
+              <tr key={p} className="border-t border-surface-200">
+                <th scope="row" className="px-3 py-2 font-normal text-ink-900">{PERMISSION_LABEL[p]}</th>
+                {ROLES.map((r) => {
+                  const yes = ROLE_PERMISSIONS[r.value].includes(p);
+                  return <td key={r.value} className="px-3 py-2 text-center">{yes ? <span aria-label="Yes" className="font-semibold text-success-700">✓</span> : <span aria-label="No" className="text-ink-700">–</span>}</td>;
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </details>
   );
 }

@@ -224,7 +224,7 @@ describe('Footer', () => {
     const { container } = render(<Footer navigation={NAV} settings={SETTINGS} year={2026} />);
     const col = (t: string) => screen.getByRole('heading', { name: t }).parentElement!;
     expect(within(col('Type')).getAllByRole('link').map((a) => [a.textContent, a.getAttribute('href')])).toEqual([['Resins', '/type/resins'], ['Pigments', '/type/pigments'], ['UV Resin', '/category/uv-resin']]);
-    expect(within(col('Connect')).getAllByRole('link').map((a) => a.textContent)).toEqual(['About Our Craft', 'Contact Us', 'FAQs', 'Instagram (opens in a new tab)', 'WhatsApp (opens in a new tab)']);
+    expect(within(col('Connect')).getAllByRole('link').map((a) => a.textContent)).toEqual(['About Our Craft', 'Contact Us', 'FAQs', 'Custom Work', 'Instagram (opens in a new tab)', 'WhatsApp (opens in a new tab)']);
     expect(within(col('Connect')).getByRole('link', { name: /WhatsApp/ }).getAttribute('href')).toBe('https://wa.me/919847012345');
     expect(within(col('Policies')).getAllByRole('link').map((a) => a.getAttribute('href'))).toEqual(['/terms', '/privacy-policy', '/shipping-policy', '/return-policy', '/cancellation-policy']);
     expect(screen.getByText('© 2026 ART Q. ALL RIGHTS RESERVED.')).toBeTruthy();

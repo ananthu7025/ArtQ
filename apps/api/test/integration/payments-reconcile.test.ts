@@ -17,7 +17,7 @@ import { checkoutPaymentRouter } from '../../src/checkout/payment-routes.js';
 import * as fn from '../../src/db/functions.js';
 import { applySnapshot } from '../../src/payments/apply.js';
 import { FakeRazorpay, type PaymentProvider } from '../../src/payments/razorpay.js';
-import { expirePending, reconcileAttempts, reconcileDaily } from '../../src/payments/reconcile.js';
+import { expirePending, istDayWindow, reconcileAttempts, reconcileDaily } from '../../src/payments/reconcile.js';
 import { razorpayHandlers } from '../../src/payments/webhook-handlers.js';
 import { seedGeo, seedSettings, seedShipping } from '../../src/seed/steps.js';
 import { processWebhook, sweepWebhooks, webhookRouter } from '../../src/webhooks/inbox.js';
@@ -295,6 +295,13 @@ describe('orders.expire-pending', () => {
 });
 
 describe('payments.reconcile-daily', () => {
+  it('the window is the India calendar day, also just after midnight in India (still the previous day in UTC)', () => {
+    const at = (iso: string) => Math.floor(new Date(iso).getTime() / 1000);
+    expect(istDayWindow(new Date('2026-10-10T01:00:00+05:30'))).toEqual({ from: at('2026-10-10T00:00:00+05:30'), to: at('2026-10-10T23:59:59+05:30') });
+    expect(istDayWindow(new Date('2026-10-10T23:59:59+05:30'))).toEqual({ from: at('2026-10-10T00:00:00+05:30'), to: at('2026-10-10T23:59:59+05:30') });
+    expect(istDayWindow(new Date('2026-10-09T18:29:59Z')).from).toBe(at('2026-10-09T00:00:00+05:30'));     // 23:59:59 on 9 Oct in India
+  });
+
   it('a payment nobody reported is applied; a refund ArtQ never made → RECON_MISMATCH (once)', async () => {
     const g = await pending();
     const pay = fake.pay(g.providerOrderId);

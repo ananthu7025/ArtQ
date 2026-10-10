@@ -27,6 +27,7 @@ export function DashboardPage() {
     { key: 'openExceptions', label: 'Payment exceptions', to: '/payment-exceptions', show: can('payments:exceptions') },
     { key: 'restockRequests', label: 'Customers waiting for stock', to: '/restock-requests', show: can('restock:read') },
     { key: 'codOverdue', label: 'COD cash overdue', to: '/cod-remittances?overdue=1', show: can('cod:remit') },
+    { key: 'messages', label: 'New messages', to: '/cms?tab=messages', show: can('content:write') },
   ];
   return (
     <div className="space-y-5">

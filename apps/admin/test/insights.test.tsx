@@ -16,7 +16,7 @@ const dash = (o: Partial<Dashboard> = {}): Dashboard => ({
   range: '7d', revenue: 1_250_000, orders: 14, aov: 89_286, newCustomers: 5,
   salesSeries: Array.from({ length: 7 }, (_, i) => ({ label: `2026-10-0${i + 3}`, revenue: i === 6 ? 300_000 : 150_000, orders: 2 })),
   ordersByStatus: { PLACED: 3, CONFIRMED: 10, CANCELLED: 1 },
-  pendingActions: { toConfirm: 3, toPack: 4, toShip: 2, returnsToDecide: 1, openExceptions: 2, restockRequests: 6, codOverdue: 0, messages: null },
+  pendingActions: { toConfirm: 3, toPack: 4, toShip: 2, returnsToDecide: 1, openExceptions: 2, restockRequests: 6, codOverdue: 0, messages: 2 },
   lowStock: [{ variantId: 101, productId: 11, productName: 'Epoxy Resin', label: '500 ml', sku: 'RES-500', available: 0, threshold: 5 }],
   topProducts: [{ productId: 11, name: 'Epoxy Resin', units: 9, revenue: 449_100 }], ...o,
 });

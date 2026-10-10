@@ -34,8 +34,11 @@ describe('findViolations', () => {
   it('ignores the words inside strings or comments that are not directives', () => {
     expect(findViolations(fixture({ 'app/c.ts': "const s = 'we never use server actions';" }))).toEqual([]);
   });
-  it('skips node_modules and .next', () => {
-    expect(findViolations(fixture({ 'node_modules/x/app/api/route.ts': '1', '.next/server/app/api/route.js': '1' }))).toEqual([]);
+  it('skips node_modules and build output (.next, and other distDirs such as .next-e2e)', () => {
+    expect(findViolations(fixture({ 'node_modules/x/app/api/route.ts': '1', '.next/server/app/api/route.js': '1', '.next-e2e/server/app/robots.txt/route.js': '1' }))).toEqual([]);
+  });
+  it('still checks source folders whose names merely contain "next"', () => {
+    expect(findViolations(fixture({ 'nextgen/app/api/x.ts': '1' }))).toHaveLength(1);
   });
   it('ignores non-code files', () => {
     expect(findViolations(fixture({ 'app/api/readme.md': '# no' }))).toEqual([]);

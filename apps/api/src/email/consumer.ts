@@ -68,6 +68,23 @@ async function orderMessage(tx: Prisma.TransactionClient, ev: OutboxEventRow, te
 
 async function messagesFor(tx: Prisma.TransactionClient, consumer: EmailConsumer, ev: OutboxEventRow, links?: EmailLinks): Promise<Message[]> {
   const p = (ev.payload ?? {}) as Record<string, unknown>;
+  if (ev.eventType === 'newsletter.subscribed' && consumer === 'email.customer') {
+    // Newsletter welcome (task 6.3): the unsubscribe link is built at send time from the subscriber's token.
+    const sub = await tx.newsletterSubscriber.findUnique({ where: { id: Number(p.subscriber_id) } });
+    if (!sub) throw new TypeError(`newsletter.subscribed event ${ev.eventId}: subscriber not found`);
+    if (sub.status !== 'SUBSCRIBED') return [];                       // unsubscribed before the email went out
+    const unsubscribeLink = links ? `${links.webUrl.replace(/\/$/, '')}/newsletter/unsubscribe?token=${sub.unsubscribeToken}` : null;
+    return [{ to: sub.email, template: 'newsletter_welcome', rendered: render('newsletter_welcome', { unsubscribeLink }), userId: null, orderId: null, dedupeKey: dedupeKey(ev.deliveryId, sub.email) }];
+  }
+  if (ev.eventType === 'message.received') {
+    // Contact / custom work (task 6.2): an acknowledgement to the visitor, a notification to staff.
+    const m = await tx.contactMessage.findUnique({ where: { id: Number(p.message_id) } });
+    if (!m) throw new TypeError(`message.received event ${ev.eventId}: message not found`);
+    const data = { kind: m.kind, name: m.name, email: m.email, phone: m.phone, subject: m.subject, message: m.message, orderNumber: m.orderNumber, id: m.id };
+    if (consumer === 'email.customer') return [{ to: m.email, template: 'message_received', rendered: render('message_received', data), userId: null, orderId: null, dedupeKey: dedupeKey(ev.deliveryId, m.email) }];
+    const rendered = render('admin_message', data);
+    return (await adminRecipients(tx)).map((to) => ({ to, template: 'admin_message', rendered, userId: null, orderId: null, dedupeKey: dedupeKey(ev.deliveryId, to) }));
+  }
   const orderTpl = consumer === 'email.customer' ? orderTemplate(ev) : null;
   if (orderTpl) return orderMessage(tx, ev, orderTpl, links);
   if (consumer === 'email.admin' && ev.eventType === 'order.placed') {

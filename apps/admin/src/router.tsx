@@ -19,12 +19,14 @@ import { OrdersPage } from './pages/orders/OrdersPage';
 import { RefundsPage } from './pages/orders/RefundsPage';
 import { CodRemittancesPage } from './pages/cod/CodRemittancesPage';
 import { JobsPage } from './pages/ops/JobsPage';
+import { CmsPage } from './pages/cms/CmsPage';
 import { CustomerDetailPage, CustomersPage } from './pages/customers/CustomersPage';
 import { DashboardPage } from './pages/dashboard/DashboardPage';
 import { RestockRequestsPage } from './pages/restock/RestockRequestsPage';
 import { PaymentExceptionsPage } from './pages/ops/PaymentExceptionsPage';
 import { ReturnDetailPage } from './pages/returns/ReturnDetailPage';
 import { ProductEditorPage } from './pages/products/editor/ProductEditorPage';
+import { SettingsPage } from './pages/settings/SettingsPage';
 import { ForbiddenPage, FullPageSpinner, ModulePlaceholder, NotFoundPage } from './pages/simple';
 
 function RequireSession() {
@@ -41,9 +43,10 @@ function Guard({ item, children }: { item: NavItem; children: React.ReactNode })
 }
 
 /** Modules built so far; everything else renders its placeholder. */
-const BUILT: Record<string, () => React.ReactNode> = {
+export const BUILT: Record<string, () => React.ReactNode> = {
   '/dashboard': () => <DashboardPage />,
   '/audit-logs': () => <AuditLogsPage />,
+  '/settings': () => <SettingsPage />,
   '/staff': () => <StaffPage />,
   '/products': () => <ProductsPage />,
   '/product-types': () => <TaxonomyPage key="type" kind="type" />,
@@ -58,6 +61,7 @@ const BUILT: Record<string, () => React.ReactNode> = {
   '/cod-remittances': () => <CodRemittancesPage />,
   '/payment-exceptions': () => <PaymentExceptionsPage />,
   '/jobs': () => <JobsPage />,
+  '/cms': () => <CmsPage />,
   '/customers': () => <CustomersPage />,
   '/restock-requests': () => <RestockRequestsPage />,
 };

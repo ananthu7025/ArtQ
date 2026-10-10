@@ -102,7 +102,7 @@ describe('dashboard', () => {
     const low = await liveProduct(prisma, { variants: [{ price: 20_000, onHand: 2, lowStock: 5 }] });
     const api = await get('/dashboard?range=30d', STAFF);
     expect(api.status).toBe(200);
-    expect(api.body).toMatchObject({ range: '30d', pendingActions: { toConfirm: expect.any(Number), messages: null } });
+    expect(api.body).toMatchObject({ range: '30d', pendingActions: { toConfirm: expect.any(Number), messages: expect.any(Number) } });
     expect(api.body.lowStock).toContainEqual(expect.objectContaining({ variantId: low.variantIds[0], available: 2, threshold: 5 }));
     expect((await get('/dashboard?range=1y')).status).toBe(400);
   });

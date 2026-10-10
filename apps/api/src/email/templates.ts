@@ -212,6 +212,26 @@ const TEMPLATES: Record<string, (d: Record<string, unknown>) => Rendered> = {
     const lines = [`We’re sorry: the courier has lost the parcel for your order ${n}.`, next];
     return { subject: `About your order ${n}`, text: lines.join(' '), html: layout(`About your order ${n}`, lines) };
   },
+  newsletter_welcome: (d) => {
+    const link = typeof d.unsubscribeLink === 'string' ? d.unsubscribeLink : null;
+    const lines = ['Thank you for subscribing to ArtQ. We’ll write when new moulds, resins and colours arrive, and about offers now and then.', 'We never share your email.'];
+    const out = link ? `Changed your mind? Unsubscribe: ${link}` : 'Changed your mind? Reply to this email to unsubscribe.';
+    return { subject: 'You’re subscribed to ArtQ', text: [...lines, out].join(' '), html: layout('You’re subscribed', [...lines, ...(link ? [] : [out])], link ? { label: 'Unsubscribe', href: link } : undefined) };
+  },
+  message_received: (d) => {
+    const first = str(d.name, 'name').trim().split(/\s+/)[0];
+    const custom = d.kind === 'CUSTOM_WORK';
+    const lines = [`Hi ${first}, thank you for ${custom ? 'your custom work request' : 'your message'}.`, custom ? 'We’ll look at your idea and photos and reply with options and a price, usually within 2 working days.' : 'We usually reply within 1 working day.', 'You can simply reply to this email if you want to add anything.'];
+    return { subject: custom ? 'We’ve received your custom work request' : 'We’ve received your message', text: lines.join(' '), html: layout(custom ? 'Request received' : 'Message received', lines) };
+  },
+  admin_message: (d) => {
+    const custom = d.kind === 'CUSTOM_WORK';
+    const from = `${str(d.name, 'name')} <${str(d.email, 'email')}>${typeof d.phone === 'string' ? `, ${d.phone}` : ''}`;
+    const subject = custom ? 'Custom work request' : str(d.subject ?? 'Message', 'subject');
+    const body = str(d.message, 'message');
+    return { subject: `[ArtQ] ${custom ? 'Custom work' : 'Contact'}: ${subject}`.slice(0, 200), text: `From ${from}${typeof d.orderNumber === 'string' ? ` (order ${d.orderNumber})` : ''}:\n\n${body}\n\nReply from CMS & Messages in the admin panel.`,
+      html: layout(custom ? 'New custom work request' : 'New message', [`From ${from}${typeof d.orderNumber === 'string' ? ` (order ${d.orderNumber})` : ''}`, subject, body, 'Open CMS & Messages in the admin panel to reply.']) };
+  },
   admin_ops_alert: (d) => {
     const sev = str(d.severity, 'severity');
     const title = str(d.title, 'title');

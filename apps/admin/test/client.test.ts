@@ -92,6 +92,25 @@ describe('AdminApi', () => {
     await expect(a.request('POST', '/admin/refunds', { body: {} })).rejects.toMatchObject({ code: 'STEP_UP_REQUIRED' });
   });
 
+  it('download: STEP_UP_REQUIRED asks once and retries; cancelled rethrows; a second refusal is not retried again', async () => {
+    let stepped = false;
+    const s = fakeServer({ 'GET /admin/newsletter/export.csv': () => (stepped ? [200, 'csv'] : err(401, 'STEP_UP_REQUIRED')) });
+    const a = api(s.fetchImpl);
+    const handler = vi.fn(async () => { stepped = true; return true; });
+    a.setStepUpHandler(handler);
+    expect(await (await a.download('/admin/newsletter/export.csv')).text()).toBe('"csv"');
+    expect(handler).toHaveBeenCalledTimes(1);
+    stepped = false;
+    a.setStepUpHandler(async () => false);
+    await expect(a.download('/admin/newsletter/export.csv')).rejects.toMatchObject({ code: 'STEP_UP_REQUIRED' });
+    const stubborn = vi.fn(async () => true);   // the password was accepted but the server still refuses: no loop
+    a.setStepUpHandler(stubborn);
+    const before = s.calls.length;
+    await expect(a.download('/admin/newsletter/export.csv')).rejects.toMatchObject({ code: 'STEP_UP_REQUIRED' });
+    expect(stubborn).toHaveBeenCalledTimes(1);
+    expect(s.calls.length - before).toBe(2);
+  });
+
   it('network failures become ApiError NETWORK; error bodies keep code, message and details', async () => {
     const down = api((async () => { throw new TypeError('Failed to fetch'); }) as typeof fetch);
     await expect(down.request('GET', '/x')).rejects.toMatchObject({ status: 0, code: 'NETWORK' });
