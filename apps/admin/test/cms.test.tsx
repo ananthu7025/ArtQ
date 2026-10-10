@@ -2,11 +2,11 @@
 // move up / down saved at once, delete confirmed), FAQs by group, a page (rich text required, the footer's page keeps
 // its address), home settings (announcement needs a message while on, hero seconds at the boundary, section order
 // saved), and the messages inbox (not-closed by default, a message with its photo, status and note saved).
-import { permissionsFor, type AdminMessageDetail, type AdminMessageRow, type CmsFaq, type CmsPageDetail, type CmsSlide, type Role } from '@artq/shared';
+import { permissionsFor, type AdminMessageDetail, type AdminMessageRow, type CmsFaq, type CmsPageDetail, type CmsSlide, type NewsletterRow, type Role } from '@artq/shared';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import axe from 'axe-core';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AdminApi } from '../src/api/client';
 import { App } from '../src/App';
 import { expectFieldError } from './field';
@@ -170,5 +170,62 @@ describe('messages', () => {
   it('staff without content:write cannot open the page', async () => {
     setup('/cms', {}, 'STAFF');
     expect(await screen.findByRole('heading', { name: /not allowed|no access|permission/i })).toBeTruthy();
+  });
+});
+
+describe('newsletter', () => {
+  const sub = (o: Partial<NewsletterRow> = {}): NewsletterRow => ({ id: 5, email: 'asha@example.com', status: 'SUBSCRIBED', source: 'footer', createdAt: '2026-10-01T06:00:00Z', unsubscribedAt: null, ...o });
+  const list = (data: NewsletterRow[]) => [200, { data, summary: { subscribed: 1240, unsubscribed: 31 }, meta: { page: 1, limit: 50, total: data.length, totalPages: 1 } }] as [number, unknown];
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('counts, search and status filter sent to the API; unsubscribe on request is confirmed; accessible', async () => {
+    const u = userEvent.setup();
+    let unsubscribed = false;
+    const { server, container } = setup('/cms?tab=newsletter', {
+      'GET /admin/newsletter': () => list([unsubscribed ? sub({ status: 'UNSUBSCRIBED', unsubscribedAt: '2026-10-09T06:00:00Z' }) : sub(), sub({ id: 6, email: 'gone@example.com', status: 'UNSUBSCRIBED', unsubscribedAt: '2026-10-05T06:00:00Z' })]),
+      'POST /admin/newsletter/5/unsubscribe': () => { unsubscribed = true; return [200, { id: 5, status: 'UNSUBSCRIBED' }]; },
+    });
+    expect(await screen.findByText('asha@example.com')).toBeTruthy();
+    expect(screen.getByText(/1,240 subscribed · 31 unsubscribed\./)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Unsubscribe gone@example.com' })).toBeNull();
+    await axe.run(container).then((r) => expect(r.violations.filter((v) => v.id !== 'color-contrast').map((v) => v.id)).toEqual([]));
+    await u.type(screen.getByLabelText('Search email'), ' asha ');
+    await u.click(screen.getByRole('button', { name: 'Search' }));
+    await waitFor(() => expect(sent(server, 'GET', '/admin/newsletter').at(-1)!.query.get('q')).toBe('asha'));
+    await u.selectOptions(screen.getByLabelText('Status'), 'SUBSCRIBED');
+    await waitFor(() => expect(sent(server, 'GET', '/admin/newsletter').at(-1)!.query.get('status')).toBe('SUBSCRIBED'));
+    await u.click(screen.getByRole('button', { name: 'Unsubscribe asha@example.com' }));
+    const dialog = within(await screen.findByRole('dialog', { name: 'Unsubscribe this address?' }));
+    await u.click(dialog.getByRole('button', { name: 'Unsubscribe' }));
+    await waitFor(() => expect(sent(server, 'POST', '/admin/newsletter/5/unsubscribe')).toHaveLength(1));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Unsubscribe asha@example.com' })).toBeNull());
+  });
+
+  it('a refused unsubscribe is reported; the export asks for the password first, then saves the CSV', async () => {
+    const u = userEvent.setup();
+    let stepped = false;
+    const created = vi.fn(() => 'blob:csv');
+    vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: created, revokeObjectURL: vi.fn() }));
+    const { server } = setup('/cms?tab=newsletter', {
+      'GET /admin/newsletter': () => list([sub()]),
+      'POST /admin/newsletter/5/unsubscribe': () => err(422, 'INVALID_TRANSITION', 'Already unsubscribed'),
+      'POST /admin/auth/step-up': () => { stepped = true; return [200, { stepUpUntil: 'x' }]; },
+      'GET /admin/newsletter/export.csv': () => (stepped ? [200, 'email'] : err(401, 'STEP_UP_REQUIRED')),
+    });
+    await u.click(await screen.findByRole('button', { name: 'Unsubscribe asha@example.com' }));
+    await u.click(within(await screen.findByRole('dialog', { name: 'Unsubscribe this address?' })).getByRole('button', { name: 'Unsubscribe' }));
+    expect(await screen.findByText('Already unsubscribed')).toBeTruthy();
+    await u.click(screen.getByRole('button', { name: 'Export subscribers (CSV)' }));
+    await u.type(await screen.findByLabelText('Password'), 'my-password');
+    await u.click(screen.getByRole('button', { name: 'Confirm' }));
+    await waitFor(() => expect(created).toHaveBeenCalledTimes(1));
+    expect(sent(server, 'GET', '/admin/newsletter/export.csv')).toHaveLength(2);
+    expect(await screen.findByText('Export downloaded')).toBeTruthy();
+  });
+
+  it('STAFF has no CMS: the tab is not reachable', async () => {
+    setup('/cms?tab=newsletter', {}, 'STAFF');
+    expect(await screen.findByRole('heading', { name: 'No access' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Newsletter' })).toBeNull();
   });
 });

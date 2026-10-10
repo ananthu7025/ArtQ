@@ -68,6 +68,14 @@ async function orderMessage(tx: Prisma.TransactionClient, ev: OutboxEventRow, te
 
 async function messagesFor(tx: Prisma.TransactionClient, consumer: EmailConsumer, ev: OutboxEventRow, links?: EmailLinks): Promise<Message[]> {
   const p = (ev.payload ?? {}) as Record<string, unknown>;
+  if (ev.eventType === 'newsletter.subscribed' && consumer === 'email.customer') {
+    // Newsletter welcome (task 6.3): the unsubscribe link is built at send time from the subscriber's token.
+    const sub = await tx.newsletterSubscriber.findUnique({ where: { id: Number(p.subscriber_id) } });
+    if (!sub) throw new TypeError(`newsletter.subscribed event ${ev.eventId}: subscriber not found`);
+    if (sub.status !== 'SUBSCRIBED') return [];                       // unsubscribed before the email went out
+    const unsubscribeLink = links ? `${links.webUrl.replace(/\/$/, '')}/newsletter/unsubscribe?token=${sub.unsubscribeToken}` : null;
+    return [{ to: sub.email, template: 'newsletter_welcome', rendered: render('newsletter_welcome', { unsubscribeLink }), userId: null, orderId: null, dedupeKey: dedupeKey(ev.deliveryId, sub.email) }];
+  }
   if (ev.eventType === 'message.received') {
     // Contact / custom work (task 6.2): an acknowledgement to the visitor, a notification to staff.
     const m = await tx.contactMessage.findUnique({ where: { id: Number(p.message_id) } });

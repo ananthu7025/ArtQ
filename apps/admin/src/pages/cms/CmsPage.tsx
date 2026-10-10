@@ -1,9 +1,10 @@
 // CMS & Messages (task 6.1; product.md §7.5) [content:write]. One page, one tab per kind of content (the tab is in the
-// URL, `?tab=`): hero slides, reels, testimonials, FAQs, pages, home settings and the messages inbox.
+// URL, `?tab=`): hero slides, reels, testimonials, FAQs, pages, home settings, the messages inbox and newsletter subscribers.
 import { useSearchParams } from 'react-router';
 import { PageHeader } from '../simple';
 import { FaqsTab, ReelsTab, SlidesTab, TestimonialsTab } from './content';
 import { MessagesTab } from './messages';
+import { NewsletterTab } from './newsletter';
 import { HomeSettingsTab, PagesTab } from './pages-settings';
 
 const TABS = [
@@ -14,6 +15,7 @@ const TABS = [
   { key: 'pages', label: 'Pages', view: () => <PagesTab /> },
   { key: 'home', label: 'Home & announcement', view: () => <HomeSettingsTab /> },
   { key: 'messages', label: 'Messages', view: () => <MessagesTab /> },
+  { key: 'newsletter', label: 'Newsletter', view: () => <NewsletterTab /> },
 ] as const;
 
 export function CmsPage() {

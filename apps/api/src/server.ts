@@ -40,6 +40,7 @@ import { lastRunKey, OpsService } from './ops/service.js';
 import { OUTBOX_CONSUMERS } from './outbox/dispatcher.js';
 import { customerOrdersRouter } from './orders/customer-routes.js';
 import { contentRouter } from './content/routes.js';
+import { registerNewsletterRoutes } from './content/newsletter-admin.js';
 import { registerRefundRoutes } from './payments/refund-admin.js';
 import { customerReturnRouter, registerReturnRoutes } from './returns/routes.js';
 import { registerShippingRoutes } from './shipping/admin-routes.js';
@@ -108,6 +109,7 @@ registerCodRoutes(admin, prisma);
 registerCustomerRoutes(admin, prisma, service);
 registerRestockRoutes(admin, prisma);
 registerDashboardRoutes(admin, prisma);
+registerNewsletterRoutes(admin, prisma, env.WEB_URL);
 registerCmsRoutes(admin, new CmsService(prisma, (m) => media.view(m), appCache, mediaUrl), media);
 // Jobs & Webhooks reads every queue (depths, failed jobs) on the API's Redis connection; the worker owns processing.
 const opsQueues = new Map<string, Queue>([[webhookQueue.name, webhookQueue], [mediaQueue.name, mediaQueue], [importValidateQueue.name, importValidateQueue], [importApplyQueue.name, importApplyQueue]]);

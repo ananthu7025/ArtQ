@@ -2,7 +2,7 @@
 // allow-list (architecture.md §6.1; headers set by middleware/cachePolicy.ts) and kept in the Redis app cache.
 import { randomBytes } from 'node:crypto';
 import type { PrismaClient } from '@prisma/client';
-import { DEFAULT_SETTINGS, newsletterSubscribeBody, notifyMeBody, pincodeField, searchSuggestQuery, storefrontListQuery, type StorefrontListQuery, PUBLIC_SETTING_KEYS, settingSchemas, toPublicSettings, type Navigation, type PublicSettings, type SettingKey, type SettingValue } from '@artq/shared';
+import { DEFAULT_SETTINGS, maskContact, newsletterSubscribeBody, newsletterTokenQuery, newsletterUnsubscribeBody, type NewsletterUnsubscribeView, notifyMeBody, pincodeField, searchSuggestQuery, storefrontListQuery, type StorefrontListQuery, PUBLIC_SETTING_KEYS, settingSchemas, toPublicSettings, type Navigation, type PublicSettings, type SettingKey, type SettingValue } from '@artq/shared';
 import { Router, type RequestHandler, type Response } from 'express';
 import { z } from 'zod';
 import { noAppCache, type AppCache } from '../lib/app-cache.js';
@@ -11,6 +11,7 @@ import { cardsByIds, findLiveProduct, loadAvailability, loadProductDetail, loadR
 import { checkPincode } from './pincodes.js';
 import { listProducts, loadTaxonomyPage } from './listing.js';
 import { search, suggest } from './search.js';
+import * as fn from '../db/functions.js';
 import { AppError } from '../lib/errors.js';
 import { RATE_LIMITS, rateLimit, type RateLimiter } from '../middleware/rateLimit.js';
 import { validate } from '../middleware/validate.js';
@@ -136,16 +137,35 @@ export function storefrontRouter(d: StorefrontDeps): Router {
     });
     res.status(created ? 201 : 200).json({ status: created ? 'SUBSCRIBED' : 'ALREADY_SUBSCRIBED' });
   });
+  // Unsubscribe (task 6.3): the GET only shows whose address the link is for; the change is a POST (GET never changes state).
+  const byToken = async (token: string) => {
+    const sub = await d.prisma.newsletterSubscriber.findUnique({ where: { unsubscribeToken: token }, select: { id: true, email: true, status: true } });
+    if (!sub) throw new AppError(404, 'NOT_FOUND', 'This unsubscribe link is not valid.');
+    return sub;
+  };
+  r.get('/newsletter/unsubscribe', validate({ query: newsletterTokenQuery }), async (req, res) => {
+    const sub = await byToken((req.query as { token: string }).token);
+    res.set('Cache-Control', 'private, no-store').json({ email: maskContact(sub.email), status: sub.status } satisfies NewsletterUnsubscribeView);
+  });
+  r.post('/newsletter/unsubscribe', formLimit, validate({ body: newsletterUnsubscribeBody }), async (req, res) => {
+    const sub = await byToken((req.body as { token: string }).token);
+    await d.prisma.newsletterSubscriber.updateMany({ where: { id: sub.id, status: 'SUBSCRIBED' }, data: { status: 'UNSUBSCRIBED', unsubscribedAt: new Date() } });
+    res.set('Cache-Control', 'private, no-store').json({ email: maskContact(sub.email), status: 'UNSUBSCRIBED' } satisfies NewsletterUnsubscribeView);
+  });
 
   // 201 SUBSCRIBED for a new (or returning, previously unsubscribed) address, 200 ALREADY_SUBSCRIBED otherwise (api.md §3.2).
   r.post('/newsletter/subscribe', formLimit, validate({ body: newsletterSubscribeBody }), async (req, res) => {
     const { email, source } = req.body as { email: string; source: string };
-    const rows = await d.prisma.$queryRaw<{ created: boolean }[]>`
-      INSERT INTO newsletter_subscribers (email, source, unsubscribe_token) VALUES (${email}, ${source}, ${randomBytes(16).toString('hex')})
-      ON CONFLICT (email) DO UPDATE SET status = 'SUBSCRIBED', unsubscribed_at = NULL
-        WHERE newsletter_subscribers.status <> 'SUBSCRIBED'
-      RETURNING true AS created`;
-    const created = rows.length > 0;
+    // A new (or returning) subscriber gets one welcome email with their unsubscribe link (task 6.3), in the same transaction.
+    const created = await d.prisma.$transaction(async (tx) => {
+      const rows = await tx.$queryRaw<{ id: number }[]>`
+        INSERT INTO newsletter_subscribers (email, source, unsubscribe_token) VALUES (${email}, ${source}, ${randomBytes(16).toString('hex')})
+        ON CONFLICT (email) DO UPDATE SET status = 'SUBSCRIBED', unsubscribed_at = NULL
+          WHERE newsletter_subscribers.status <> 'SUBSCRIBED'
+        RETURNING id`;
+      if (rows[0]) await fn.emit(tx, { aggregateType: 'newsletter', aggregateId: String(rows[0].id), type: 'newsletter.subscribed', payload: { subscriber_id: rows[0].id }, consumers: ['email.customer'] });
+      return rows.length > 0;
+    });
     res.status(created ? 201 : 200).json({ status: created ? 'SUBSCRIBED' : 'ALREADY_SUBSCRIBED' });
   });
   return r;

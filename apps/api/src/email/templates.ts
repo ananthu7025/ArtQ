@@ -212,6 +212,12 @@ const TEMPLATES: Record<string, (d: Record<string, unknown>) => Rendered> = {
     const lines = [`We’re sorry: the courier has lost the parcel for your order ${n}.`, next];
     return { subject: `About your order ${n}`, text: lines.join(' '), html: layout(`About your order ${n}`, lines) };
   },
+  newsletter_welcome: (d) => {
+    const link = typeof d.unsubscribeLink === 'string' ? d.unsubscribeLink : null;
+    const lines = ['Thank you for subscribing to ArtQ. We’ll write when new moulds, resins and colours arrive, and about offers now and then.', 'We never share your email.'];
+    const out = link ? `Changed your mind? Unsubscribe: ${link}` : 'Changed your mind? Reply to this email to unsubscribe.';
+    return { subject: 'You’re subscribed to ArtQ', text: [...lines, out].join(' '), html: layout('You’re subscribed', [...lines, ...(link ? [] : [out])], link ? { label: 'Unsubscribe', href: link } : undefined) };
+  },
   message_received: (d) => {
     const first = str(d.name, 'name').trim().split(/\s+/)[0];
     const custom = d.kind === 'CUSTOM_WORK';

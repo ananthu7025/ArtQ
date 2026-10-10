@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Page } from '@playwright/test';
 
+const MAILPIT = `http://localhost:${process.env.ARTQ_MAIL_UI_PORT ?? '8025'}/api/v1`;
 const E2E_REDIS_URL = `redis://localhost:${process.env.ARTQ_REDIS_PORT ?? '56379'}/5`;
 test.beforeAll(() => {
   // The newsletter limit (5/min per network) is real; every run starts with a fresh budget.
@@ -80,6 +81,19 @@ test.describe('desktop 1440×900', () => {
     await email.fill(address.toUpperCase());
     await page.getByRole('button', { name: 'Subscribe' }).click();
     await expect(page.getByText('You’re already on our list.')).toBeVisible();
+    // Task 6.3: one welcome email; its link opens the unsubscribe page, which changes nothing until the button.
+    const search = `${MAILPIT}/search?query=${encodeURIComponent(`to:"${address}"`)}`;
+    await expect.poll(async () => ((await (await fetch(search)).json()) as { messages: { Subject: string }[] }).messages.map((m) => m.Subject), { timeout: 20_000 }).toEqual(['You’re subscribed to ArtQ']);
+    const id = ((await (await fetch(search)).json()) as { messages: { ID: string }[] }).messages[0]!.ID;
+    const text = ((await (await fetch(`${MAILPIT}/message/${id}`)).json()) as { Text: string }).Text;
+    const link = new URL(/https?:\/\/\S+\/newsletter\/unsubscribe\?token=[0-9a-f]{32}/.exec(text)![0]);
+    await page.goto(`${link.pathname}${link.search}`);
+    await expect(page.getByText(/Stop sending the ArtQ newsletter to/)).toBeVisible();
+    await axeClean(page);
+    await page.getByRole('button', { name: 'Unsubscribe' }).click();
+    await expect(page.getByText(/is unsubscribed\. You won’t get our newsletter any more\./)).toBeVisible();
+    await page.goto('/newsletter/unsubscribe?token=nope');
+    await expect(page.getByText(/^This unsubscribe link isn’t valid\./)).toBeVisible();
   });
 
   test('the announcement pauses on request; with reduced motion it does not move at all', async ({ page }) => {

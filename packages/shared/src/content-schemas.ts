@@ -50,3 +50,26 @@ export type PublicPage = { slug: string; title: string; content: string; metaTit
 /** GET /faqs: active questions by group, in order; empty groups left out. */
 export type FaqView = { groups: { group: (typeof FAQ_GROUPS)[number]; label: string; items: { question: string; answer: string }[] }[] };
 export const faqGroupLabel = (g: (typeof FAQ_GROUPS)[number]) => FAQ_GROUP_LABEL[g];
+
+// ── Newsletter (task 6.3) ──
+export const NEWSLETTER_TOKEN = /^[0-9a-f]{32}$/;
+/** GET /newsletter/unsubscribe?token= and POST /newsletter/unsubscribe {token}: the link in every newsletter email. */
+export const newsletterTokenQuery = z.strictObject({ token: z.string().regex(NEWSLETTER_TOKEN, 'This unsubscribe link is not valid') });
+export const newsletterUnsubscribeBody = newsletterTokenQuery;
+export type NewsletterUnsubscribeView = { email: string; status: 'SUBSCRIBED' | 'UNSUBSCRIBED' };
+
+export const newsletterListQuery = z.strictObject({
+  status: z.enum(['SUBSCRIBED', 'UNSUBSCRIBED']).optional(),
+  q: z.string().trim().min(1).max(100).optional(),
+  page: z.coerce.number().int().min(1).max(10_000).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+});
+export type NewsletterRow = { id: number; email: string; status: 'SUBSCRIBED' | 'UNSUBSCRIBED'; source: string; createdAt: string; unsubscribedAt: string | null };
+export type NewsletterSummary = { subscribed: number; unsubscribed: number };
+
+/** A CSV cell: quoted, and a leading = + - @ (or tab / CR) neutralised so a spreadsheet never runs it as a formula. */
+export function csvCell(v: string | number | null | undefined): string {
+  const s = v === null || v === undefined ? '' : String(v);
+  const safe = /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
+  return `"${safe.replace(/"/g, '""')}"`;
+}

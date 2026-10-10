@@ -29,6 +29,7 @@ const DATA: Record<string, Record<string, unknown>> = {
   order_lost: { orderNumber: 'AQ1', resolution: 'REFUND', refundAmount: 110_800 },
   admin_cod_overdue: { count: 3, total: 331_200, days: 14 },
   back_in_stock: { product: 'Epoxy Resin', label: '500 ml', link: 'https://artq.in/product/epoxy?variant=RES-500' },
+  newsletter_welcome: { unsubscribeLink: 'https://artq.in/newsletter/unsubscribe?token=0123456789abcdef0123456789abcdef' },
   message_received: { kind: 'CONTACT', name: 'Asha Menon', email: 'asha@example.com' },
   admin_message: { kind: 'CUSTOM_WORK', name: 'Ravi', email: 'ravi@example.com', phone: '+919847012345', subject: null, message: 'A garland in a teak frame' },
   admin_ops_alert: { key: 'webhooks-failing', severity: 'P1', title: 'Razorpay notifications are failing', detail: '2 notification(s) failed.' },
