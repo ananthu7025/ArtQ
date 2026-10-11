@@ -69,13 +69,14 @@ jobs:
       - run: pnpm --filter @artq/shared --filter @artq/ui build
       - run: docker compose up -d --wait
       - run: pnpm --filter @artq/api test:compose
-      - run: pnpm --filter @artq/api test:compose:integration
+      - name: Integration + acceptance suites (AT-01…AT-24 except the AT-14 drill) on the compose services
+        run: pnpm --filter @artq/api test:compose:integration
       - name: Admin end-to-end (Playwright; real API + compose services)
         run: |
           pnpm --filter @artq/api build
           pnpm --filter @artq/admin exec playwright install --with-deps chromium
           pnpm --filter @artq/admin e2e
-      - name: Storefront end-to-end (Playwright; real API, storefront built from it)
+      - name: Storefront end-to-end (Playwright; real API, storefront built from it; AT-11, AT-12)
         run: pnpm --filter @artq/web e2e
       - name: Playwright traces on failure
         if: failure()
