@@ -29,7 +29,22 @@ import { registerCouponRoutes } from './coupons/admin-routes.js';
 import { registerOrderRoutes } from './orders/admin-routes.js';
 import { DispatchService } from './orders/dispatch.js';
 import { customerOrderRouter, registerCancelRoutes } from './orders/cancel.js';
+import { registerCodRoutes } from './orders/cod.js';
+import { registerCustomerRoutes } from './customers/admin.js';
+import { registerDashboardRoutes } from './dashboard/routes.js';
+import { registerCmsRoutes } from './cms/routes.js';
+import { CmsService } from './cms/service.js';
+import { registerRestockRoutes } from './restock/service.js';
+import { registerOpsRoutes } from './ops/routes.js';
+import { lastRunKey, OpsService } from './ops/service.js';
+import { OUTBOX_CONSUMERS } from './outbox/dispatcher.js';
+import { customerOrdersRouter } from './orders/customer-routes.js';
+import { contentRouter } from './content/routes.js';
+import { registerNewsletterRoutes } from './content/newsletter-admin.js';
+import { registerSeoAdminRoutes, seoRouter } from './seo/routes.js';
+import { registerSettingsRoutes } from './settings/routes.js';
 import { registerRefundRoutes } from './payments/refund-admin.js';
+import { customerReturnRouter, registerReturnRoutes } from './returns/routes.js';
 import { registerShippingRoutes } from './shipping/admin-routes.js';
 import { ImportService } from './imports/service.js';
 import { razorpayProvider } from './webhooks/provider.js';
@@ -40,7 +55,7 @@ import { CheckoutService } from './checkout/initiate.js';
 import { checkoutPaymentRouter } from './checkout/payment-routes.js';
 import { CartService } from './cart/service.js';
 import { accountRouter } from './account/routes.js';
-import { WEBHOOK_QUEUE, webhookRouter } from './webhooks/inbox.js';
+import { enqueueWebhook, WEBHOOK_QUEUE, webhookRouter } from './webhooks/inbox.js';
 
 let env;
 try { env = loadEnv(); }
@@ -91,6 +106,28 @@ registerShippingRoutes(admin, prisma, appCache);
 registerOrderRoutes(admin, prisma, new DispatchService(prisma, mediaStorageFromEnv(env)));
 registerCancelRoutes(admin, prisma, log);
 registerRefundRoutes(admin, prisma, log);
+registerReturnRoutes(admin, prisma, log, media);
+registerCodRoutes(admin, prisma);
+registerCustomerRoutes(admin, prisma, service);
+registerRestockRoutes(admin, prisma);
+registerDashboardRoutes(admin, prisma);
+registerNewsletterRoutes(admin, prisma, env.WEB_URL);
+registerSeoAdminRoutes(admin, prisma);
+registerSettingsRoutes(admin, prisma, appCache);
+registerCmsRoutes(admin, new CmsService(prisma, (m) => media.view(m), appCache, mediaUrl), media);
+// Jobs & Webhooks reads every queue (depths, failed jobs) on the API's Redis connection; the worker owns processing.
+const opsQueues = new Map<string, Queue>([[webhookQueue.name, webhookQueue], [mediaQueue.name, mediaQueue], [importValidateQueue.name, importValidateQueue], [importApplyQueue.name, importApplyQueue]]);
+for (const name of [QUEUE.maintenance, QUEUE.outboxDispatch, QUEUE.searchReindex, ...new Set(Object.values(OUTBOX_CONSUMERS))]) {
+  if (opsQueues.has(name)) continue;
+  const q = new Queue(name, { ...BULLMQ_BASE, connection: webhookQueue.opts.connection });
+  q.on('error', (err) => log.warn({ err: err.message, queue: name }, 'ops queue connection error'));
+  opsQueues.set(name, q);
+}
+registerOpsRoutes(admin, new OpsService({
+  prisma, queues: opsQueues, provider: razorpay,
+  readLastRuns: (names) => redis.mget(...names.map(lastRunKey)),
+  enqueueWebhook: (id) => enqueueWebhook(webhookQueue, id),
+}), log);
 registerImportRoutes(admin, prisma, new ImportService({ prisma, readFile: (m) => media.read(m), enqueue: importEnqueue(importValidateQueue, importApplyQueue) }));
 
 const app = createApp({
@@ -108,6 +145,10 @@ const app = createApp({
     checkoutPaymentRouter({ prisma, cache, jwt, env: env.NODE_ENV, provider: razorpay, log, limiter, onRateLimitError, links: { webUrl: env.WEB_URL, linkSecret: env.AUTH_LINK_SECRET, setPasswordTtlS: DEFAULT_AUTH_TIMINGS.setPasswordTtlS }, checkout: new CheckoutService({ prisma, carts: new CartService(prisma, mediaUrl), provider: razorpay, mediaUrl, storeName: 'ArtQ' }) }),
     accountRouter({ prisma, cache, jwt, service, env: env.NODE_ENV, mediaUrl, limiter, onRateLimitError }),
     customerOrderRouter({ prisma, cache, jwt, log }),
+    customerReturnRouter({ prisma, cache, jwt, log, media }),
+    contentRouter({ prisma, cache, jwt, env: env.NODE_ENV, log, media, mediaUrl, limiter, onRateLimitError }),
+    customerOrdersRouter({ prisma, cache, jwt, log, env: env.NODE_ENV, linkSecret: env.AUTH_LINK_SECRET, auth: service, media, dispatch: new DispatchService(prisma, mediaStorageFromEnv(env)), limiter, onRateLimitError }),
+    seoRouter({ prisma, mediaUrl }),
     storefrontRouter({ prisma, cache: appCache, mediaUrl, limiter, onRateLimitError, onInvalidSetting: (key) => log.warn({ key }, 'stored setting is invalid; serving the default'), onSearchLogError: (err) => log.warn({ err: String(err) }, 'search log not written') }),
     webhookRouter({ prisma, queue: webhookQueue, providers: [razorpayProvider(env.RAZORPAY_WEBHOOK_SECRET || undefined)], log }),
     admin.router,
@@ -118,6 +159,6 @@ const server = app.listen(env.PORT, () => log.info({ port: env.PORT }, 'api list
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {
   process.on(sig, () => {
     log.info({ sig }, 'shutting down');
-    server.close(async () => { await importValidateQueue.close(); await importApplyQueue.close(); await mediaQueue.close(); await webhookQueue.close(); await prisma.$disconnect(); redis.disconnect(); process.exit(0); });
+    server.close(async () => { for (const q of opsQueues.values()) await q.close(); await prisma.$disconnect(); redis.disconnect(); process.exit(0); });
   });
 }

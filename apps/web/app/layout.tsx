@@ -10,11 +10,17 @@ import { MiniCart } from '../components/cart/MiniCart';
 import { ShopProvider } from '../components/shop/ShopProvider';
 import { loadLayout } from '../lib/api';
 import { inter, playfair, tenor } from '../lib/fonts';
+import { SITE_DESCRIPTION, SITE_NOINDEX, SITE_TITLE, SITE_URL } from '../lib/seo';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: { default: 'ArtQ: Wood Moulds & Resins', template: '%s | ArtQ' },
-  description: 'Resin art supplies, wooden frames, moulds and pigments, shipped all over India.',
+  metadataBase: new URL(SITE_URL),
+  title: { default: SITE_TITLE, template: '%s | ArtQ' },
+  description: SITE_DESCRIPTION,
+  openGraph: { siteName: 'ArtQ', locale: 'en_IN', type: 'website', title: SITE_TITLE, description: SITE_DESCRIPTION },
+  twitter: { card: 'summary_large_image' },
+  // Staging and previews are never indexed (NEXT_PUBLIC_SEO_NOINDEX=1); robots.txt refuses crawlers there too.
+  ...(SITE_NOINDEX ? { robots: { index: false, follow: false } } : {}),
 };
 export const viewport: Viewport = { themeColor: '#ffffff', viewportFit: 'cover' };
 // Every page is regenerated at most once a minute (architecture.md §8 ISR); the layout's API calls use the same window.

@@ -3,7 +3,7 @@
 //   personal response can never be baked into a page that is cached and served to everyone.
 // - clientRequest: in the browser, with the customer's cookies (cart, session), never cached.
 // If the API cannot be reached, layout data falls back to the default settings and an empty menu.
-import { DEFAULT_PUBLIC_SETTINGS, isPublicCacheable, type HomeView, type Navigation, type ProductDetail, type ProductList, type PublicSettings, type RelatedProducts, type SearchResults, type TaxonomyPage } from '@artq/shared';
+import { DEFAULT_PUBLIC_SETTINGS, isPublicCacheable, type FaqView, type HomeView, type PublicPage, type Navigation, type ProductDetail, type ProductList, type PublicSettings, type RelatedProducts, type SearchResults, type TaxonomyPage } from '@artq/shared';
 
 export const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/v1').replace(/\/$/, '');
 
@@ -99,4 +99,16 @@ async function freshGet<T>(path: string, fetchImpl: Fetch, timeoutMs = 3000): Pr
 /** Search results (task 3.7); null when the API cannot be reached. */
 export async function loadSearch(path: string, fetchImpl: Fetch = fetch): Promise<SearchResults | null> {
   try { return await freshGet<SearchResults>(path, fetchImpl); } catch { return null; }
+}
+
+/** A content page (About, the policies, any page staff add; task 6.2): the page, 'missing' (404) or 'unavailable'. */
+export async function loadPage(slug: string, fetchImpl: Fetch = fetch): Promise<PublicPage | 'missing' | 'unavailable'> {
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug) || slug.length > 80) return 'missing';
+  try { return await publicGet<PublicPage>(`/pages/${slug}`, fetchImpl); }
+  catch (e) { return e instanceof ApiError && e.status === 404 ? 'missing' : 'unavailable'; }
+}
+
+/** The FAQ page; null when the API cannot be reached. */
+export async function loadFaqs(fetchImpl: Fetch = fetch): Promise<FaqView | null> {
+  try { return await publicGet<FaqView>('/faqs', fetchImpl); } catch { return null; }
 }

@@ -22,7 +22,7 @@ const order = (o: Partial<AdminOrderDetail> = {}): AdminOrderDetail => ({
   totals: { subtotal: 100_000, mrpTotal: 100_000, couponDiscount: 0, couponCode: null, shippingFee: 7000, codFee: 0, total: 107_000, taxTotal: 15_254, capturedAmount: 107_000, refundedAmount: 0 },
   weights: { actualG: 1150, chargeableG: 1150 }, notes: { customer: null, admin: null },
   times: { expiresAt: null, confirmedAt: null, completedAt: null, cancelledAt: null, expiredAt: null, cancelReason: null },
-  attempts: [], payments: [], refunds: [], exceptions: [], shipment: null, invoices: [], history: [], emails: [], actions: [], resendable: [], ...o,
+  attempts: [], payments: [], refunds: [], exceptions: [], shipment: null, invoices: [], returns: [], history: [], emails: [], actions: [], resendable: [], ...o,
 });
 const refundable = (o: Partial<RefundableView> = {}): RefundableView => ({
   orderId: 7, orderNumber: 'AQ10234', method: 'ORIGINAL_PAYMENT', blockedReason: null,
@@ -135,7 +135,7 @@ describe('an order’s refunds and the queue', () => {
 
   it('the queue: status filter sent to the server; attempts with receipt and HTTP status; links to the order', async () => {
     const u = userEvent.setup();
-    const { server } = setup('/returns', { 'GET /admin/refunds': () => page([refund(), refund({ id: 44, status: 'UNKNOWN', failureReason: null, attempts: [{ no: 1, key: 'k', receipt: 'AQR_44_A1', status: 'UNKNOWN', lastHttpStatus: 504, sendCount: 2 }], actions: [] })]) });
+    const { server } = setup('/returns?view=refunds', { 'GET /admin/refunds': () => page([refund(), refund({ id: 44, status: 'UNKNOWN', failureReason: null, attempts: [{ no: 1, key: 'k', receipt: 'AQR_44_A1', status: 'UNKNOWN', lastHttpStatus: 504, sendCount: 2 }], actions: [] })]) });
     const table = within(await screen.findByRole('table', { name: 'Refunds' }));
     expect((await table.findAllByRole('link', { name: 'AQ10234' }))[0]!.getAttribute('href')).toBe('/orders/7');
     expect(table.getByText(/AQR_44_A1/).parentElement!.textContent).toBe('AQR_44_A1 · unknown · HTTP 504 · sent 2×');

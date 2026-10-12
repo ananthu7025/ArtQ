@@ -24,7 +24,7 @@ const detail = (o: Partial<AdminOrderDetail> = {}): AdminOrderDetail => ({
   totals: { subtotal: 100_000, mrpTotal: 100_000, couponDiscount: 0, couponCode: null, shippingFee: 7000, codFee: 4000, total: 111_000, taxTotal: 15_254, capturedAmount: 0, refundedAmount: 0 },
   weights: { actualG: 1150, chargeableG: 1150 }, notes: { customer: 'Please call before delivery', admin: null },
   times: { expiresAt: null, confirmedAt: null, completedAt: null, cancelledAt: null, expiredAt: null, cancelReason: null },
-  attempts: [], payments: [], refunds: [], exceptions: [], shipment: null, invoices: [],
+  attempts: [], payments: [], refunds: [], exceptions: [], shipment: null, invoices: [], returns: [],
   history: [{ dimension: 'ORDER', from: 'PENDING_PAYMENT', to: 'PLACED', note: null, actor: 'CUSTOMER', actorName: null, at: '2026-10-05T06:31:00Z' }],
   emails: [{ id: 1, template: 'order_placed', subject: 'Order AQ10234 placed', to: 'hema@example.com', status: 'SENT', at: '2026-10-05T06:32:00Z' }],
   actions: ['confirm', 'edit-address'], resendable: ['order_placed'], ...o,

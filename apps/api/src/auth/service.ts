@@ -52,6 +52,7 @@ export type RefreshOutcome =
   | { ok: false; reason: 'UNKNOWN' | 'INVALID' | 'EXPIRED' | 'REUSE' | 'WRONG_AUDIENCE' };
 
 type Tx = Prisma.TransactionClient;
+type OtpKind = 'SIGNUP_VERIFY' | 'LOGIN' | 'EMAIL_CHANGE' | 'GUEST_ORDER_ACCESS';
 const TX = { maxWait: 10_000, timeout: 20_000 } as const;
 
 export const userView = (u: User): UserView => ({
@@ -516,26 +517,26 @@ export class AuthService {
     await this.cache.revoke(sids);
   }
 
-  private async issueOtp(tx: Tx, target: string, purpose: 'SIGNUP_VERIFY' | 'LOGIN' | 'EMAIL_CHANGE', userId: number) {
+  private async issueOtp(tx: Tx, target: string, purpose: OtpKind, userId: number | null, orderId: number | null = null, extra: Record<string, unknown> = {}) {
     const [w] = await tx.$queryRaw<{ last_hour: number; recent: number }[]>`
       SELECT count(*) FILTER (WHERE created_at > now() - interval '1 hour')::int AS last_hour,
              count(*) FILTER (WHERE created_at > now() - make_interval(secs => ${this.cfg.otpCooldownS}::int))::int AS recent
-        FROM otp_codes WHERE target = ${target} AND purpose = ${purpose}::"OtpPurpose"`;
+        FROM otp_codes WHERE target = ${target} AND purpose = ${purpose}::"OtpPurpose" AND order_id IS NOT DISTINCT FROM ${orderId}::int`;
     if (w!.recent > 0 || w!.last_hour >= this.cfg.otpPerTargetPerHour) return;      // silently: the response never reveals it
     const code = otpCode();
-    await tx.otpCode.create({ data: { target, channel: 'EMAIL', purpose, codeHash: otpHash(code, this.cfg.otpPepper), userId, expiresAt: new Date(Date.now() + this.cfg.otpTtlS * 1000) } });
-    await this.mail(tx, userId, target, 'otp', { code, purpose, expiresInMinutes: Math.round(this.cfg.otpTtlS / 60) });
+    await tx.otpCode.create({ data: { target, channel: 'EMAIL', purpose, codeHash: otpHash(code, this.cfg.otpPepper), userId, orderId, expiresAt: new Date(Date.now() + this.cfg.otpTtlS * 1000) } });
+    await this.mail(tx, userId, target, 'otp', { code, purpose, expiresInMinutes: Math.round(this.cfg.otpTtlS / 60), ...extra });
   }
 
   /**
    * Verifies the latest code for target/purpose (5 attempts, single use) and runs `then` in the same transaction.
    * A wrong code still commits its attempt count; the error is thrown after the commit.
    */
-  private async otpTransaction<T>(target: string, purpose: 'SIGNUP_VERIFY' | 'LOGIN' | 'EMAIL_CHANGE', code: string, then: (tx: Tx) => Promise<T>): Promise<T> {
+  private async otpTransaction<T>(target: string, purpose: OtpKind, code: string, then: (tx: Tx) => Promise<T>, orderId: number | null = null): Promise<T> {
     const r = await this.prisma.$transaction(async (tx): Promise<{ error: AppError } | { value: T }> => {
       const [otp] = await tx.$queryRaw<{ id: number; code_hash: string; attempts: number; expired: boolean; consumed: boolean }[]>`
         SELECT id, code_hash, attempts, expires_at <= now() AS expired, consumed_at IS NOT NULL AS consumed
-          FROM otp_codes WHERE target = ${target} AND purpose = ${purpose}::"OtpPurpose"
+          FROM otp_codes WHERE target = ${target} AND purpose = ${purpose}::"OtpPurpose" AND order_id IS NOT DISTINCT FROM ${orderId}::int
          ORDER BY created_at DESC, id DESC LIMIT 1 FOR NO KEY UPDATE`;
       if (!otp || otp.consumed) return { error: new AppError(422, 'OTP_INVALID', 'The code is not valid') };
       if (otp.expired) return { error: new AppError(422, 'OTP_EXPIRED', 'The code has expired. Request a new one.') };
@@ -549,6 +550,28 @@ export class AuthService {
     }, TX);
     if ('error' in r) throw r.error;
     return r.value;
+  }
+
+  // ── Guest order access (architecture.md §5.6, task 5.7) ──
+  /**
+   * A code to the order's contact email, only when `email` matches it (case-insensitive) and the order is not a pending
+   * checkout; the answer never says which. Codes are bound to the order: one for another order never opens this one.
+   */
+  async requestOrderAccess(orderId: number, emailIn: string): Promise<{ sent: true; resendAfter: number }> {
+    const email = emailIn.trim().toLowerCase();
+    await this.prisma.$transaction(async (tx) => {
+      const o = await tx.order.findUnique({ where: { id: orderId }, select: { contactEmail: true, orderNumber: true, status: true } });
+      if (o && o.status !== 'PENDING_PAYMENT' && o.contactEmail.toLowerCase() === email) await this.issueOtp(tx, email, 'GUEST_ORDER_ACCESS', null, orderId, { orderNumber: o.orderNumber });
+    }, TX);
+    return { sent: true, resendAfter: this.cfg.otpCooldownS };
+  }
+
+  /** Checks the code for this order; marks the contact email verified. The caller then issues the order cookie. */
+  async verifyOrderAccess(orderId: number, emailIn: string, code: string): Promise<void> {
+    const email = emailIn.trim().toLowerCase();
+    await this.otpTransaction(email, 'GUEST_ORDER_ACCESS', code, async (tx) => {
+      await tx.$executeRaw`UPDATE orders SET contact_email_verified_at = coalesce(contact_email_verified_at, now()) WHERE id = ${orderId}`;
+    }, orderId);
   }
 
   /** Verified-email linking (architecture.md §5.6): guest orders with this contact email join the account. */

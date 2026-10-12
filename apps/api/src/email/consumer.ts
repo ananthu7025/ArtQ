@@ -38,10 +38,12 @@ const dedupeKey = (deliveryId: number, to: string) => `outbox-${deliveryId}-${cr
 /** Order events (task 4.10) → the customer's email, built from the order as it is now. */
 const CUSTOMER_ORDER_EMAIL: Record<string, string> = {
   'order.placed': 'order_placed', 'order.expired': 'order_expired', 'order.cancelled': 'order_cancelled',
-  'payment.refund_notice': 'payment_refund_notice', 'refund.processed': 'refund_processed',
+  'payment.refund_notice': 'payment_refund_notice', 'refund.processed': 'refund_processed', 'order.lost': 'order_lost',
 };
 /** `order.status_changed` (task 5.1): the new value → the customer's email. */
 const STATUS_EMAIL: Record<string, string> = { CONFIRMED: 'order_confirmed', SHIPPED: 'order_shipped', DELIVERED: 'order_delivered' };
+/** `return.status_changed` (task 5.5): the return's new status → the customer's email. */
+const RETURN_EMAIL: Record<string, string> = { REQUESTED: 'return_requested', APPROVED: 'return_approved', REJECTED: 'return_rejected', RECEIVED: 'return_received' };
 /** `order.email_resend` (task 5.1): an admin sends one of these again; a new delivery, so a new dedupe key. */
 const RESEND_EMAIL = new Set(['order_placed', 'order_confirmed', 'order_shipped', 'order_delivered']);
 
@@ -50,6 +52,7 @@ function orderTemplate(ev: OutboxEventRow): string | null {
   const p = (ev.payload ?? {}) as Record<string, unknown>;
   if (CUSTOMER_ORDER_EMAIL[ev.eventType]) return CUSTOMER_ORDER_EMAIL[ev.eventType]!;
   if (ev.eventType === 'order.status_changed') return STATUS_EMAIL[String(p.to)] ?? null;
+  if (ev.eventType === 'return.status_changed') return RETURN_EMAIL[String(p.to)] ?? null;
   if (ev.eventType === 'order.email_resend') return RESEND_EMAIL.has(String(p.template)) ? String(p.template) : null;
   return null;
 }
@@ -65,6 +68,23 @@ async function orderMessage(tx: Prisma.TransactionClient, ev: OutboxEventRow, te
 
 async function messagesFor(tx: Prisma.TransactionClient, consumer: EmailConsumer, ev: OutboxEventRow, links?: EmailLinks): Promise<Message[]> {
   const p = (ev.payload ?? {}) as Record<string, unknown>;
+  if (ev.eventType === 'newsletter.subscribed' && consumer === 'email.customer') {
+    // Newsletter welcome (task 6.3): the unsubscribe link is built at send time from the subscriber's token.
+    const sub = await tx.newsletterSubscriber.findUnique({ where: { id: Number(p.subscriber_id) } });
+    if (!sub) throw new TypeError(`newsletter.subscribed event ${ev.eventId}: subscriber not found`);
+    if (sub.status !== 'SUBSCRIBED') return [];                       // unsubscribed before the email went out
+    const unsubscribeLink = links ? `${links.webUrl.replace(/\/$/, '')}/newsletter/unsubscribe?token=${sub.unsubscribeToken}` : null;
+    return [{ to: sub.email, template: 'newsletter_welcome', rendered: render('newsletter_welcome', { unsubscribeLink }), userId: null, orderId: null, dedupeKey: dedupeKey(ev.deliveryId, sub.email) }];
+  }
+  if (ev.eventType === 'message.received') {
+    // Contact / custom work (task 6.2): an acknowledgement to the visitor, a notification to staff.
+    const m = await tx.contactMessage.findUnique({ where: { id: Number(p.message_id) } });
+    if (!m) throw new TypeError(`message.received event ${ev.eventId}: message not found`);
+    const data = { kind: m.kind, name: m.name, email: m.email, phone: m.phone, subject: m.subject, message: m.message, orderNumber: m.orderNumber, id: m.id };
+    if (consumer === 'email.customer') return [{ to: m.email, template: 'message_received', rendered: render('message_received', data), userId: null, orderId: null, dedupeKey: dedupeKey(ev.deliveryId, m.email) }];
+    const rendered = render('admin_message', data);
+    return (await adminRecipients(tx)).map((to) => ({ to, template: 'admin_message', rendered, userId: null, orderId: null, dedupeKey: dedupeKey(ev.deliveryId, to) }));
+  }
   const orderTpl = consumer === 'email.customer' ? orderTemplate(ev) : null;
   if (orderTpl) return orderMessage(tx, ev, orderTpl, links);
   if (consumer === 'email.admin' && ev.eventType === 'order.placed') {
@@ -73,6 +93,14 @@ async function messagesFor(tx: Prisma.TransactionClient, consumer: EmailConsumer
     const rendered = render('admin_order_placed', { orderNumber: o.orderNumber, total: o.total, paymentMethod: o.paymentMethod, itemCount: o.items.reduce((n, i) => n + i.quantity, 0), customer: `${o.shipName}, ${o.shipCity}` });
     return (await adminRecipients(tx)).map((to) => ({ to, template: 'admin_order_placed', rendered, userId: null, orderId: o.id, dedupeKey: dedupeKey(ev.deliveryId, to) }));
   }
+  if (consumer === 'email.customer' && ev.eventType === 'restock.email') {
+    // Back in stock (task 5.9): the product link is built at send time from the storefront address.
+    const to = String(p.to ?? '');
+    if (!to.includes('@')) throw new TypeError(`restock.email event ${ev.eventId} has no recipient`);
+    const link = links ? `${links.webUrl.replace(/\/$/, '')}/product/${encodeURIComponent(String(p.slug))}?variant=${encodeURIComponent(String(p.sku))}` : null;
+    const userId = typeof p.user_id === 'number' ? p.user_id : null;
+    return [{ to, template: 'back_in_stock', rendered: render('back_in_stock', { product: p.product, label: p.label, link }), userId, orderId: null, dedupeKey: dedupeKey(ev.deliveryId, to) }];
+  }
   if (consumer === 'email.customer') {
     if (ev.eventType !== 'email.auth') throw new UnsupportedEmailEventError(consumer, ev.eventType);
     const to = String(p.to ?? '');
@@ -80,6 +108,14 @@ async function messagesFor(tx: Prisma.TransactionClient, consumer: EmailConsumer
     if (!to.includes('@')) throw new TypeError(`email.auth event ${ev.eventId} has no recipient`);
     const userId = /^\d+$/.test(ev.aggregateId) && ev.aggregateId !== '0' ? Number(ev.aggregateId) : null;
     return [{ to, template, rendered: render(template, (p.data ?? {}) as Record<string, unknown>), userId, orderId: null, dedupeKey: dedupeKey(ev.deliveryId, to) }];
+  }
+  if (ev.eventType === 'ops.alert') {
+    const rendered = render('admin_ops_alert', p);
+    return (await adminRecipients(tx)).map((to) => ({ to, template: 'admin_ops_alert', rendered, userId: null, orderId: null, dedupeKey: dedupeKey(ev.deliveryId, to) }));
+  }
+  if (ev.eventType === 'cod.remittance_overdue') {
+    const rendered = render('admin_cod_overdue', p);
+    return (await adminRecipients(tx)).map((to) => ({ to, template: 'admin_cod_overdue', rendered, userId: null, orderId: null, dedupeKey: dedupeKey(ev.deliveryId, to) }));
   }
   if (ev.eventType !== 'payment.exception_raised') throw new UnsupportedEmailEventError(consumer, ev.eventType);
   const rendered = render('admin_payment_exception', p);

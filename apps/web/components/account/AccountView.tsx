@@ -17,7 +17,7 @@ import { useApi } from '../shop/ShopProvider';
 import { failure, leaveAccount, Loading, useRequireSignIn } from './auth-shared';
 import { useAuth } from './AuthProvider';
 
-const SECTIONS = [{ href: '/account', label: 'Profile & security' }, { href: '/account/addresses', label: 'Addresses' }, { href: '/wishlist', label: 'Wishlist' }] as const;
+const SECTIONS = [{ href: '/account/orders', label: 'Orders' }, { href: '/account', label: 'Profile & security' }, { href: '/account/addresses', label: 'Addresses' }, { href: '/wishlist', label: 'Wishlist' }] as const;
 
 export function AccountShell({ title, children }: { title: string; children: ReactNode }) {
   const { session, user } = useAuth();

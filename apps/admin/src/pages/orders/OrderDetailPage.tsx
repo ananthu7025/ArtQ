@@ -3,9 +3,10 @@
 // and (once shipped) the tax invoice, items
 // and totals, payments and refunds, the timeline, customer and delivery address (correctable before packing), the
 // staff note, and the emails sent (any fitting one can be sent again); Cancel (orders:cancel, task 5.3) refunds a
-// prepaid order automatically. Refunds, RTO and returns arrive with tasks 5.4–5.6. A refused step (someone else moved the order) explains itself and reloads.
+// prepaid order automatically. Refunds (5.4) and returns (5.5, each linking to its return page) are listed. RTO and lost
+// (5.6): Returning to us → Received back (inspect every unit, restock, cancel); Lost in transit (refund or reship). A refused step (someone else moved the order) explains itself and reloads.
 import {
-  adminCancelOrderBody, adminNoteField, formatINR, orderAddressBody, shipOrderBody, type AdminOrderDetail, type OrderAction, type ResendableEmail,
+  adminCancelOrderBody, adminNoteField, formatINR, lostOrderBody, orderAddressBody, rtoReceivedBody, shipOrderBody, type AdminOrderDetail, type OrderAction, type ResendableEmail,
 } from '@artq/shared';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -25,6 +26,7 @@ import { convertedForm, optionalNumber, wholeProblems } from '../../components/f
 import { NotFoundPage } from '../simple';
 import { FULFILMENT_LABEL, ORDER_LABEL, PAYMENT_LABEL, Pill, RETURN_LABEL, when } from './labels';
 import { OrderRefunds, RefundDialog } from './refunds';
+import { reasonLabel, ReturnPill } from '../returns/labels';
 
 const card = 'rounded-lg border border-surface-200 bg-white p-5';
 const primary = `${btn} bg-brand-700 text-white disabled:opacity-80`;
@@ -32,15 +34,17 @@ const outline = `${btn} border border-border-input bg-white`;
 const quiet = `${btn} text-ink-900 hover:bg-surface-100`;
 const h2 = 'mb-3 font-semibold text-ink-900';
 
-type Step = { action: Exclude<OrderAction, 'edit-address' | 'ship' | 'cancel'>; label: string; title: string; description: string; notify: boolean };
+type Step = { action: Exclude<OrderAction, 'edit-address' | 'ship' | 'cancel' | 'rto-received' | 'lost'>; label: string; title: string; description: string; notify: boolean };
 const STEPS: Step[] = [
   { action: 'confirm', label: 'Confirm order', title: 'Confirm this order?', description: 'You’ve checked the order and will pack it. The customer is told it’s confirmed.', notify: true },
   { action: 'pack', label: 'Mark packed', title: 'Mark as packed?', description: 'Every item is in the box with the packing slip. The address can’t be changed after this.', notify: false },
   { action: 'out-for-delivery', label: 'Out for delivery', title: 'Mark out for delivery?', description: 'The courier says the parcel is out for delivery today.', notify: false },
   { action: 'deliver', label: 'Mark delivered', title: 'Mark as delivered?', description: 'The courier confirmed delivery. For cash on delivery, the cash is now recorded as collected by the courier.', notify: true },
+  { action: 'rto', label: 'Returning to us', title: 'Is the parcel coming back to us?', description: 'The courier couldn’t deliver it (refused or undeliverable) and is returning it (RTO). When it arrives, you inspect it and the order is cancelled.', notify: false },
 ];
 const EMAIL_LABEL: Record<ResendableEmail, string> = { order_placed: 'Order placed', order_confirmed: 'Order confirmed', order_shipped: 'Order shipped', order_delivered: 'Order delivered' };
-const TEMPLATE_LABEL: Record<string, string> = { ...EMAIL_LABEL, order_expired: 'Order not completed', order_cancelled: 'Order cancelled', payment_refund_notice: 'Refund notice', refund_processed: 'Refund processed', set_password_link: 'Set a password', admin_order_placed: 'New order (staff)' };
+const TEMPLATE_LABEL: Record<string, string> = { ...EMAIL_LABEL, order_expired: 'Order not completed', order_cancelled: 'Order cancelled', payment_refund_notice: 'Refund notice', refund_processed: 'Refund processed',
+  return_requested: 'Return requested', return_approved: 'Return approved', return_rejected: 'Return rejected', return_received: 'Return received', set_password_link: 'Set a password', admin_order_placed: 'New order (staff)' };
 const DIMENSION: Record<string, string> = { ORDER: 'Order', PAYMENT: 'Payment', FULFILMENT: 'Fulfilment', RETURN: 'Return' };
 const VALUE: Record<string, string> = Object.fromEntries([...Object.entries(ORDER_LABEL), ...Object.entries(PAYMENT_LABEL), ...Object.entries(FULFILMENT_LABEL), ...Object.entries(RETURN_LABEL)].map(([k, [v]]) => [k, v]));
 
@@ -56,6 +60,8 @@ export function OrderDetailPage() {
   const [shipping, setShipping] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [refunding, setRefunding] = useState(false);
+  const [rtoReceiving, setRtoReceiving] = useState(false);
+  const [losing, setLosing] = useState(false);
   if (!Number.isSafeInteger(id) || id <= 0 || (q.error instanceof ApiError && q.error.status === 404)) return <NotFoundPage />;
   if (q.isPending) return <p role="status" className="text-ink-700">Loading the order…</p>;
   if (q.isError) return <FormAlert>Couldn’t load this order. <button type="button" className="underline" onClick={() => void q.refetch()}>Retry</button></FormAlert>;
@@ -101,6 +107,8 @@ export function OrderDetailPage() {
           {fulfil && o.resendable.length > 0 && <button type="button" className={outline} onClick={() => setResending(true)}>Resend email</button>}
           {fulfil && next.map((s) => <button key={s.action} type="button" className={primary} onClick={() => setStep(s)}>{s.label}</button>)}
           {can('refunds:create') && ['PAID', 'PARTIALLY_REFUNDED', 'COD_COLLECTED', 'COD_REMITTED'].includes(o.paymentStatus) && <button type="button" className={outline} onClick={() => setRefunding(true)}>Refund</button>}
+          {fulfil && o.actions.includes('rto-received') && <button type="button" className={primary} onClick={() => setRtoReceiving(true)}>Received back</button>}
+          {fulfil && o.actions.includes('lost') && <button type="button" className={`${btn} border border-danger-700 bg-white text-danger-700 hover:bg-[#fee2e2]`} onClick={() => setLosing(true)}>Lost in transit</button>}
           {can('orders:cancel') && o.actions.includes('cancel') && <button type="button" className={`${btn} border border-danger-700 bg-white text-danger-700 hover:bg-[#fee2e2]`} onClick={() => setCancelling(true)}>Cancel order</button>}
         </div>
       </div>
@@ -115,6 +123,7 @@ export function OrderDetailPage() {
         <div className="space-y-5">
           <Items o={o} />
           <Payments o={o} />
+          <OrderReturns o={o} />
           <OrderRefunds orderId={o.id} onChanged={() => void q.refetch()} />
           <Timeline o={o} />
         </div>
@@ -163,6 +172,8 @@ export function OrderDetailPage() {
       {refunding && <RefundDialog orderId={o.id} onClose={() => setRefunding(false)} onDone={() => { void q.refetch(); void qc.invalidateQueries({ queryKey: ['order-refunds', o.id] }); }} />}
       {cancelling && <CancelDialog o={o} onClose={() => setCancelling(false)} onDone={set} onRefused={refused} />}
       {shipping && <ShipDialog o={o} onClose={() => setShipping(false)} onDone={set} onRefused={refused} />}
+      {rtoReceiving && <RtoReceivedDialog o={o} onClose={() => setRtoReceiving(false)} onDone={set} onRefused={refused} />}
+      {losing && <LostDialog o={o} onClose={() => setLosing(false)} onDone={set} onRefused={refused} />}
       {resending && <ResendDialog o={o} onClose={() => setResending(false)} onDone={set} onRefused={refused} />}
     </div>
   );
@@ -205,8 +216,25 @@ function Items({ o }: { o: AdminOrderDetail }) {
   );
 }
 
+function OrderReturns({ o }: { o: AdminOrderDetail }) {
+  if (o.returns.length === 0) return null;
+  return (
+    <section aria-labelledby="returns-h" className={card}>
+      <h2 id="returns-h" className={h2}>Returns</h2>
+      <ul className="divide-y divide-surface-100 text-sm">
+        {o.returns.map((r) => (
+          <li key={r.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
+            <span><Link to={`/returns/${r.id}`} className="font-medium text-brand-700 underline-offset-2 hover:underline">Return #{r.id}</Link> <span className="text-ink-700">· {reasonLabel(r.reason)} · {r.units} unit{r.units === 1 ? '' : 's'} · {when(r.createdAt)}</span></span>
+            <ReturnPill status={r.status} />
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 function Payments({ o }: { o: AdminOrderDetail }) {
-  if (o.paymentMethod === 'COD' && o.payments.length === 0 && o.refunds.length === 0) return null;
+  if (o.paymentMethod === 'COD' && o.payments.length === 0 && o.refunds.length === 0 && o.exceptions.length === 0) return null;   // a COD remittance mismatch still shows
   return (
     <section aria-labelledby="pay-h" className={card}>
       <h2 id="pay-h" className={h2}>Payments</h2>
@@ -487,6 +515,95 @@ function CancelDialog({ o, onClose, onDone, onRefused }: { o: AdminOrderDetail; 
         <div className="flex justify-end gap-3 pt-2">
           <button type="button" className={quiet} onClick={onClose}>Keep the order</button>
           <button type="submit" className={`${btn} bg-danger-700 text-white disabled:opacity-80`} disabled={isSubmitting}>{isSubmitting ? 'Cancelling…' : 'Cancel order'}</button>
+        </div>
+      </form>
+    </FormDialog>
+  );
+}
+
+type RtoForm = { notifyCustomer: boolean; items: { orderItemId: number; sellableQty: string; damagedQty: string }[] };
+const rtoForm = convertedForm<RtoForm, typeof rtoReceivedBody>(
+  (v) => wholeProblems(v.items.flatMap((i, n): [(string | number)[], string][] => [[['items', n, 'sellableQty'], i.sellableQty], [['items', n, 'damagedQty'], i.damagedQty]]), 'Use whole units'),
+  (v) => ({ notifyCustomer: v.notifyCustomer, items: v.items.map((i) => ({ orderItemId: i.orderItemId, sellableQty: i.sellableQty.trim() === '' ? Number.NaN : Number(i.sellableQty), damagedQty: i.damagedQty.trim() === '' ? Number.NaN : Number(i.damagedQty) })) }),
+  rtoReceivedBody,
+);
+
+function RtoReceivedDialog({ o, onClose, onDone, onRefused }: { o: AdminOrderDetail; onClose: () => void; onDone: (d: AdminOrderDetail) => void; onRefused: (e: unknown) => void }) {
+  const { api } = useAuth();
+  const [problem, setProblem] = useState<string | null>(null);
+  const { register, handleSubmit, setError, formState: { errors, isSubmitting } } = useForm<RtoForm, unknown, ReturnType<typeof rtoForm.parse>>({
+    resolver: zodResolver(rtoForm), defaultValues: { notifyCustomer: true, items: o.items.map((i) => ({ orderItemId: i.id, sellableQty: String(i.quantity), damagedQty: '0' })) },
+  });
+  const itemsRefundable = o.items.reduce((s, i) => s + i.netAmount, 0) - o.refunds.filter((r) => !['FAILED', 'CANCELLED'].includes(r.status)).reduce((s, r) => s + r.amount, 0);
+  const money = o.paymentMethod === 'COD' ? 'No cash was collected, so there is nothing to refund.'
+    : `The items (up to ${formatINR(Math.max(0, itemsRefundable))}) are refunded automatically; the shipping charge isn’t.`;
+  const save = handleSubmit(async (body) => {
+    setProblem(null);
+    try { onDone(await api.request<AdminOrderDetail>('POST', `/admin/orders/${o.id}/rto-received`, { body })); toast.success(`${o.orderNumber} received back and cancelled`); onClose(); }
+    catch (e) {
+      if (applyServerErrors(e, setError, o.items.flatMap((_, n) => [`items.${n}.sellableQty`, `items.${n}.damagedQty`] as const))) return;
+      if (e instanceof ApiError && e.code === 'INVALID_TRANSITION') { onRefused(e); onClose(); return; }
+      setProblem(errorMessage(e));
+    }
+  });
+  return (
+    <FormDialog open onOpenChange={(v) => { if (!v) onClose(); }} title="The parcel is back" description={<>Count every unit: sellable ones go back into stock now. The order is then cancelled and any coupon use restored. {money}</>}>
+      <form noValidate onSubmit={(e) => { void save(e); }} className="space-y-4">
+        {o.items.map((i, n) => (
+          <fieldset key={i.id} className="grid gap-3 sm:grid-cols-2">
+            <legend className="mb-1 text-sm font-medium text-ink-900">{i.name} ({i.label}): {i.quantity} sent</legend>
+            <TextField id={`rto-s-${n}`} label={`Sellable: ${i.name}`} inputMode="numeric" {...register(`items.${n}.sellableQty`)} error={errors.items?.[n]?.sellableQty?.message} />
+            <TextField id={`rto-d-${n}`} label={`Damaged: ${i.name}`} inputMode="numeric" {...register(`items.${n}.damagedQty`)} error={errors.items?.[n]?.damagedQty?.message} />
+          </fieldset>
+        ))}
+        <label className="flex items-center gap-3 text-sm text-ink-900"><input type="checkbox" className="h-5 w-5 accent-brand-700" {...register('notifyCustomer')} />Email the customer</label>
+        {problem && <FormAlert>{problem}</FormAlert>}
+        <div className="flex justify-end gap-3 pt-1">
+          <button type="button" className={quiet} onClick={onClose}>Back</button>
+          <button type="submit" className={primary} disabled={isSubmitting}>{isSubmitting ? 'Saving…' : 'Restock and cancel order'}</button>
+        </div>
+      </form>
+    </FormDialog>
+  );
+}
+
+type LostForm = z.input<typeof lostOrderBody>;
+
+function LostDialog({ o, onClose, onDone, onRefused }: { o: AdminOrderDetail; onClose: () => void; onDone: (d: AdminOrderDetail) => void; onRefused: (e: unknown) => void }) {
+  const { api } = useAuth();
+  const [problem, setProblem] = useState<string | null>(null);
+  const { register, handleSubmit, setError, formState: { errors, isSubmitting } } = useForm<LostForm, unknown, ReturnType<typeof lostOrderBody.parse>>({
+    resolver: zodResolver(lostOrderBody), defaultValues: { resolution: 'REFUND', note: '', notifyCustomer: true },
+  });
+  const refund = o.paymentMethod === 'COD' ? 'cancel the order (no cash was collected)' : 'cancel the order and refund everything paid, shipping included';
+  const save = handleSubmit(async (body) => {
+    setProblem(null);
+    try { onDone(await api.request<AdminOrderDetail>('POST', `/admin/orders/${o.id}/lost`, { body })); toast.success(`${o.orderNumber} marked lost`); onClose(); }
+    catch (e) {
+      if (applyServerErrors(e, setError, ['resolution', 'note'])) return;
+      if (e instanceof ApiError && e.code === 'INVALID_TRANSITION') { onRefused(e); onClose(); return; }
+      setProblem(errorMessage(e));
+    }
+  });
+  const err = errors.note?.message;
+  return (
+    <FormDialog open onOpenChange={(v) => { if (!v) onClose(); }} title={`Parcel for ${o.orderNumber} lost?`} description="The courier has confirmed it can’t find the parcel. The stock already left at dispatch; the loss is recorded.">
+      <form noValidate onSubmit={(e) => { void save(e); }} className="space-y-4">
+        <fieldset className="space-y-2 text-sm">
+          <legend className="font-medium text-ink-900">What happens now</legend>
+          <label className="flex items-center gap-3"><input type="radio" value="REFUND" className="h-4 w-4 accent-brand-700" {...register('resolution')} />Refund: {refund}</label>
+          <label className="flex items-center gap-3"><input type="radio" value="RESHIP" className="h-4 w-4 accent-brand-700" {...register('resolution')} />Reship: keep the order and send a replacement</label>
+        </fieldset>
+        <div>
+          <label htmlFor="lost-note" className="block text-sm font-medium text-ink-900">Courier claim or reference</label>
+          <textarea id="lost-note" rows={2} className="mt-1 block w-full rounded-md border border-border-input p-2 text-sm" aria-invalid={err ? true : undefined} aria-describedby={err ? 'lost-note-error' : undefined} {...register('note')} />
+          {err && <p id="lost-note-error" className="mt-1 text-sm text-danger-700">{err}</p>}
+        </div>
+        <label className="flex items-center gap-3 text-sm text-ink-900"><input type="checkbox" className="h-5 w-5 accent-brand-700" {...register('notifyCustomer')} />Email the customer</label>
+        {problem && <FormAlert>{problem}</FormAlert>}
+        <div className="flex justify-end gap-3 pt-1">
+          <button type="button" className={quiet} onClick={onClose}>Back</button>
+          <button type="submit" className={`${btn} bg-danger-700 text-white disabled:opacity-80`} disabled={isSubmitting}>{isSubmitting ? 'Saving…' : 'Mark lost'}</button>
         </div>
       </form>
     </FormDialog>

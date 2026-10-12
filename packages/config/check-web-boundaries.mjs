@@ -14,7 +14,8 @@ export function findViolations(root) {
     for (const name of readdirSync(dir)) {
       if (SKIP.has(name)) continue;
       const full = join(dir, name);
-      if (statSync(full).isDirectory()) { walk(full); continue; }
+      // Build output: `.next` and any other Next.js distDir such as `.next-e2e` (the Playwright build).
+      if (statSync(full).isDirectory()) { if (!name.startsWith('.next')) walk(full); continue; }
       if (!CODE.test(name)) continue;
       const rel = relative(root, full).split(sep).join('/');
       if (/(^|\/)app\/(.*\/)?api\//.test(rel) || /(^|\/)pages\/api\//.test(rel)) out.push({ file: rel, rule: 'route-handler', message: 'API routes are not allowed in apps/web' });

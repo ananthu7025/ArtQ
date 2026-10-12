@@ -12,7 +12,9 @@ const run = (env: Record<string, string | undefined>) => {
 
 describe('demo seed guards (no database is touched)', () => {
   it('no DATABASE_URL → refuses', () => {
-    const r = run({});
+    // Empty rather than absent: importing @prisma/client loads apps/api/.env for variables that are not set at all, so
+    // an absent DATABASE_URL would pick up the developer's local database and make this test depend on its state.
+    const r = run({ DATABASE_URL: '' });
     expect(r.code).not.toBe(0);
     expect(r.out).toContain('DATABASE_URL is required');
   });

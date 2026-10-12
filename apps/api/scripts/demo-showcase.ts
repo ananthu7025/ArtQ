@@ -140,6 +140,30 @@ export async function seedShowcase(d: ShowcaseDeps): Promise<ShowcaseReport> {
     }
   }
 
+  // Placeholder pages for the footer links (task 6.2), clearly marked, only while a page is missing; the owner replaces
+  // the wording (decision D-5 and the accountant's input) in CMS & Messages.
+  const placeholder = (what: string) => `<p><strong>Placeholder:</strong> replace this with ArtQ’s ${what} in CMS &amp; Messages → Pages.</p>`;
+  const PAGES: [string, string, string][] = [
+    ['about', 'About Our Craft', `${placeholder('story')}<p>Handcrafted resin art and wooden frames, bringing natural beauty into your everyday spaces.</p>`],
+    ['terms', 'Terms & Conditions', placeholder('terms and conditions')],
+    ['privacy-policy', 'Privacy Policy', placeholder('privacy policy')],
+    ['shipping-policy', 'Shipping Policy', `${placeholder('shipping policy')}<p>We ship across India; most orders arrive in 4 to 7 days.</p>`],
+    ['return-policy', 'Return & Refund Policy', `${placeholder('return and refund policy')}<p>Damaged, wrong, defective or missing items can be reported within 48 hours of delivery, with photos.</p>`],
+    ['cancellation-policy', 'Cancellation Policy', `${placeholder('cancellation policy')}<p>Orders can be cancelled until they are packed; prepaid orders are refunded in full.</p>`],
+  ];
+  for (const [slug, title, content] of PAGES) {
+    if (!(await prisma.cmsPage.findUnique({ where: { slug } }))) await prisma.cmsPage.create({ data: { slug, title, content } });
+  }
+  if ((await prisma.faq.count()) === 0) {
+    const faqs = [
+      ['SHIPPING', 'How long does delivery take?', 'Most orders arrive in 4 to 7 days across India. You get a tracking link by email when your order ships.'],
+      ['PAYMENTS', 'Can I pay cash on delivery?', 'Yes, for orders between ₹200 and ₹5,000 to pincodes where the courier accepts cash. A small COD fee applies.'],
+      ['RETURNS', 'What if my order arrives damaged?', 'Report it from your order page within 48 hours of delivery, with photos. We replace or refund damaged, wrong, defective or missing items.'],
+      ['ORDERS', 'Can I cancel my order?', 'Yes, until it is packed. Open the order from your account or the link in your order email.'],
+    ] as const;
+    for (const [i, [group, question, answer]] of faqs.entries()) await prisma.faq.create({ data: { group, question, answer, sortOrder: i } });
+  }
+
   // A hero image (no demo video), only while there are no slides.
   if ((await prisma.homeSlide.count()) === 0) {
     await prisma.homeSlide.create({ data: { ctaText: 'Shop now', ctaLink: '/shop', mediaId: await image('hero', '', '#005f5a', 1920, 1080, true), sortOrder: 0 } });

@@ -28,5 +28,8 @@ await prisma.coupon.createMany({ data: [
   { code: 'WELCOME10', title: 'Welcome offer', type: 'PERCENT', value: 10, maxDiscount: 20_000, usageLimitPerCustomer: null, isPublic: true },
   { code: 'BULK500', title: 'Bulk order', type: 'FLAT', value: 50_000, minOrderValue: 50_000_000, usageLimitPerCustomer: null, isPublic: true },
 ], skipDuplicates: true });
+// SEO (task 6.4): an old shop address that moves, and an owner's search listing for the FAQ page.
+await prisma.redirect.createMany({ data: [{ fromPath: '/collections/e2e-resins', toPath: '/shop' }], skipDuplicates: true });
+await prisma.seoOverride.createMany({ data: [{ path: '/faqs', metaTitle: 'Resin art questions answered' }], skipDuplicates: true });
 await prisma.$disconnect();
 console.log('storefront e2e data ready');

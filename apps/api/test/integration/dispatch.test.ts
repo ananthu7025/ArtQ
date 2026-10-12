@@ -85,7 +85,7 @@ describe('ship', () => {
     const res = await ship(o.orderId, { awbNumber: 'dtdc-0001', notifyCustomer: true }, STAFF);
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ fulfilmentStatus: 'SHIPPED', shipment: { courierName: 'DTDC', awbNumber: 'DTDC-0001', trackingUrl: 'https://track.test/x', weightG: 1400, status: 'SHIPPED' },
-      invoices: [{ kind: 'TAX_INVOICE', number: expect.stringMatching(new RegExp(`^AQ/${FY}/\\d{6}$`)), grandTotal: o.total }], actions: ['out-for-delivery', 'deliver'] });
+      invoices: [{ kind: 'TAX_INVOICE', number: expect.stringMatching(new RegExp(`^AQ/${FY}/\\d{6}$`)), grandTotal: o.total }], actions: ['out-for-delivery', 'deliver', 'rto', 'lost'] });
     expect(res.body.history.at(-1)).toMatchObject({ dimension: 'FULFILMENT', from: 'PACKED', to: 'SHIPPED', actor: 'ADMIN' });
     expect(await stock(v1)).toEqual({ onHand: s1.onHand - 2, reserved: s1.reserved - 2 });
     expect(await stock(v2)).toEqual({ onHand: s2.onHand - 1, reserved: s2.reserved - 1 });

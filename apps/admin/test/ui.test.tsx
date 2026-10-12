@@ -12,6 +12,9 @@ import { AdminApi, type Page } from '../src/api/client';
 import { App } from '../src/App';
 import { DataTable, useTableParams } from '../src/components/DataTable';
 import { StepUpDialog, VersionConflictDialog } from '../src/components/dialogs';
+import { ALL_NAV_ITEMS } from '../src/nav';
+import { ModulePlaceholder } from '../src/pages/simple';
+import { BUILT } from '../src/router';
 import { expectFieldError } from './field';
 import { err, fakeServer, type Handler } from './fake-server';
 
@@ -95,7 +98,13 @@ describe('shell and navigation', () => {
     expect(links).toEqual(['Dashboard', 'Orders', 'Customers', 'Products', 'Restock Requests', 'Inventory', 'Returns & Refunds', 'Imports']);
     expect(within(sidebar).getByRole('link', { name: 'Customers' }).getAttribute('aria-current')).toBe('page');
     expect(within(sidebar).getByRole('link', { name: 'Orders' }).getAttribute('aria-current')).toBeNull();
-    expect(await screen.findByText(/delivered by task 5.9/)).toBeTruthy();   // a module not built yet shows its placeholder
+    expect(await screen.findByRole('heading', { name: 'Customers' })).toBeTruthy();
+  });
+
+  it('every module in the menu is built (6.5 built the last one); the placeholder still names its task', () => {
+    expect(ALL_NAV_ITEMS.filter((i) => !BUILT[i.path]).map((i) => i.path)).toEqual([]);
+    render(<ModulePlaceholder item={{ label: 'Later', path: '/later', perms: [], task: '9.9' }} />);
+    expect(screen.getByText('This module is delivered by task 9.9 (docs/tasklist.md).')).toBeTruthy();
   });
 
   it('a module the role cannot use shows "No access" even when typed into the address bar', async () => {

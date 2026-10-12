@@ -34,6 +34,13 @@ export class UnknownTemplateError extends Error {
   constructor(name: string) { super(`unknown email template "${name}"`); this.name = 'UnknownTemplateError'; }
 }
 
+type ReturnData = { id: number; reason: string; note: string | null; items: { name: string; label: string; quantity: number }[] };
+const ret = (d: Record<string, unknown>) => { const r = d.return as ReturnData | null | undefined; if (!r || !Array.isArray(r.items)) throw new TypeError('template data "return" is missing'); return r; };
+const units = (r: ReturnData) => r.items.filter((i) => i.quantity > 0).map((i) => `${i.quantity} × ${i.name}${i.label ? ` (${i.label})` : ''}`).join(', ');
+
+/** "View your order": the tracking link built at send time (task 5.7), when the order email has one. */
+const track = (d: Record<string, unknown>) => (typeof d.trackingLink === 'string' ? { label: 'View your order', href: d.trackingLink } : undefined);
+
 const str = (v: unknown, name: string) => {
   if (typeof v !== 'string' && typeof v !== 'number') throw new TypeError(`template data "${name}" is missing`);
   return String(v);
@@ -43,7 +50,8 @@ const TEMPLATES: Record<string, (d: Record<string, unknown>) => Rendered> = {
   otp: (d) => {
     const code = str(d.code, 'code');
     const mins = str(d.expiresInMinutes ?? 10, 'expiresInMinutes');
-    const what = d.purpose === 'SIGNUP_VERIFY' ? 'verify your email' : d.purpose === 'EMAIL_CHANGE' ? 'confirm your new email address' : 'log in';
+    const what = d.purpose === 'SIGNUP_VERIFY' ? 'verify your email' : d.purpose === 'EMAIL_CHANGE' ? 'confirm your new email address'
+      : d.purpose === 'GUEST_ORDER_ACCESS' ? `manage your order ${typeof d.orderNumber === 'string' ? d.orderNumber : ''}`.trim() : 'log in';
     return {
       subject: `${code} is your ArtQ code`,
       text: `Use ${code} to ${what}. It expires in ${mins} minutes. If you did not ask for it, ignore this email.`,
@@ -109,7 +117,7 @@ const TEMPLATES: Record<string, (d: Record<string, unknown>) => Rendered> = {
     const t = totals(d.totals);
     const intro = [`Hi ${str(d.firstName, 'firstName')}, thank you for your order ${n}.`, cod ? `Please keep ${formatINR(t.total)} ready to pay when it arrives (cash or UPI).` : 'Your payment is confirmed.'];
     const outro = [`We usually deliver in ${str(d.estimate, 'estimate')}. We’ll email you again when it ships.`, ...(d.setPasswordLink ? ['Want to track this order and check out faster next time? Set a password for your ArtQ account (the link works for 7 days).'] : [])];
-    const action = typeof d.setPasswordLink === 'string' ? { label: 'Set a password', href: d.setPasswordLink } : undefined;
+    const action = typeof d.setPasswordLink === 'string' ? { label: 'Set a password', href: d.setPasswordLink } : track(d);
     return {
       subject: `Order ${n} placed`,
       text: orderText(intro, lines(d.lines), t, strs(d.address, 'address'), [...outro, ...(action ? [action.href] : [])]),
@@ -119,7 +127,8 @@ const TEMPLATES: Record<string, (d: Record<string, unknown>) => Rendered> = {
   order_confirmed: (d) => {
     const n = str(d.orderNumber, 'orderNumber');
     const intro = [`Hi ${str(d.firstName, 'firstName')}, we’ve confirmed your order ${n} and are getting it ready.`, `We usually deliver in ${str(d.estimate, 'estimate')}. We’ll email you again when it ships.`];
-    return { subject: `Order ${n} confirmed`, text: intro.join(' '), html: layout(`Order ${n} confirmed`, intro) };
+    const t = track(d);
+    return { subject: `Order ${n} confirmed`, text: [...intro, ...(t ? [`View your order: ${t.href}`] : [])].join(' '), html: layout(`Order ${n} confirmed`, intro, t) };
   },
   order_shipped: (d) => {
     const n = str(d.orderNumber, 'orderNumber');
@@ -132,7 +141,8 @@ const TEMPLATES: Record<string, (d: Record<string, unknown>) => Rendered> = {
   order_delivered: (d) => {
     const n = str(d.orderNumber, 'orderNumber');
     const intro = [`Hi ${str(d.firstName, 'firstName')}, your order ${n} has been delivered.`, 'We hope you enjoy creating with it. If anything is wrong with your order, reply to this email and we’ll help.'];
-    return { subject: `Order ${n} delivered`, text: intro.join(' '), html: layout(`Order ${n} delivered`, intro) };
+    const t = track(d);
+    return { subject: `Order ${n} delivered`, text: [...intro, ...(t ? [`Something wrong? Report it from your order page within 48 hours: ${t.href}`] : [])].join(' '), html: layout(`Order ${n} delivered`, [...intro, ...(t ? ['Something wrong? Report it from your order page within 48 hours of delivery.'] : [])], t ? { label: 'View your order', href: t.href } : undefined) };
   },
   order_expired: (d) => {
     const n = str(d.orderNumber, 'orderNumber');
@@ -145,6 +155,13 @@ const TEMPLATES: Record<string, (d: Record<string, unknown>) => Rendered> = {
   order_cancelled: (d) => {
     const n = str(d.orderNumber, 'orderNumber');
     const refund = typeof d.refundAmount === 'number' && d.refundAmount > 0 ? formatINR(d.refundAmount) : null;
+    if (d.reason === 'RTO') {
+      const lines = [`Your order ${n} came back to us without being delivered, so we’ve cancelled it.`,
+        refund ? `${refund} for the items is being refunded to your original payment method (the shipping charge isn’t refunded). Refunds usually reach your account in 5–7 working days.`
+          : d.paymentMethod === 'COD' ? 'You don’t need to pay anything.' : 'Anything you paid for the items is refunded to your original payment method.',
+        'If you still want it, you’re welcome to order again.'];
+      return { subject: `Order ${n} returned to us and cancelled`, text: lines.join(' '), html: layout(`Order ${n} cancelled`, lines) };
+    }
     const money = refund ? `${refund} is being refunded to your original payment method. Refunds usually reach your account in 5–7 working days.`
       : d.paymentMethod === 'COD' ? 'You don’t need to pay anything.' : 'If you paid for it, the money is refunded to your original payment method.';
     return { subject: `Order ${n} cancelled`, text: `Your order ${n} was cancelled. ${money}`, html: layout(`Order ${n} cancelled`, [`Your order ${n} was cancelled.`, money]) };
@@ -161,6 +178,81 @@ const TEMPLATES: Record<string, (d: Record<string, unknown>) => Rendered> = {
     const amount = formatINR(Number(str(d.amount, 'amount')));
     return { subject: `Refund of ${amount} processed`, text: `We’ve refunded ${amount} for order ${n} to your original payment method. It can take 5–7 working days to show in your account.`, html: layout(`Refund of ${amount} processed`, [`We’ve refunded ${amount} for order ${n} to your original payment method.`, 'It can take 5–7 working days to show in your account.']) };
   },
+  return_requested: (d) => {
+    const n = str(d.orderNumber, 'orderNumber');
+    const r = ret(d);
+    const intro = [`Hi ${str(d.firstName, 'firstName')}, we’ve received your return request #${r.id} for order ${n}.`, `Items: ${units(r)}.`, 'We’ll look at it and email you within 2 working days.'];
+    return { subject: `Return request for order ${n} received`, text: intro.join(' '), html: layout('We’ve received your return request', intro) };
+  },
+  return_approved: (d) => {
+    const n = str(d.orderNumber, 'orderNumber');
+    const r = ret(d);
+    const next = r.reason === 'MISSING_ITEM' ? 'We’ll refund the missing item to you shortly.' : 'Please pack the items securely. We’ll arrange the pickup or tell you where to send them; once they arrive and are checked, we refund you.';
+    const intro = [`Hi ${str(d.firstName, 'firstName')}, your return #${r.id} for order ${n} is approved.`, `Approved: ${units(r)}.`, next, ...(r.note ? [`Note from us: ${r.note}`] : [])];
+    return { subject: `Return approved for order ${n}`, text: intro.join(' '), html: layout('Your return is approved', intro) };
+  },
+  return_rejected: (d) => {
+    const n = str(d.orderNumber, 'orderNumber');
+    const r = ret(d);
+    const intro = [`Hi ${str(d.firstName, 'firstName')}, we’re sorry, we can’t accept return #${r.id} for order ${n}.`, ...(r.note ? [`Why: ${r.note}`] : []), 'If you think this is a mistake, reply to this email and we’ll take another look.'];
+    return { subject: `About your return for order ${n}`, text: intro.join(' '), html: layout('About your return request', intro) };
+  },
+  return_received: (d) => {
+    const n = str(d.orderNumber, 'orderNumber');
+    const r = ret(d);
+    const intro = [`Hi ${str(d.firstName, 'firstName')}, your returned items for order ${n} (return #${r.id}) have arrived.`, 'We’ll check them and refund you; we’ll email you when the refund is on its way.'];
+    return { subject: `Return for order ${n} received`, text: intro.join(' '), html: layout('Your return has arrived', intro) };
+  },
+  order_lost: (d) => {
+    const n = str(d.orderNumber, 'orderNumber');
+    const refund = typeof d.refundAmount === 'number' && d.refundAmount > 0 ? formatINR(d.refundAmount) : null;
+    const next = d.resolution === 'RESHIP' ? 'We’re sending you a replacement and will email you its tracking details.'
+      : refund ? `We’ve cancelled the order and ${refund} is being refunded to your original payment method. Refunds usually reach your account in 5–7 working days.`
+      : 'We’ve cancelled the order. You don’t need to pay anything.';
+    const lines = [`We’re sorry: the courier has lost the parcel for your order ${n}.`, next];
+    return { subject: `About your order ${n}`, text: lines.join(' '), html: layout(`About your order ${n}`, lines) };
+  },
+  newsletter_welcome: (d) => {
+    const link = typeof d.unsubscribeLink === 'string' ? d.unsubscribeLink : null;
+    const lines = ['Thank you for subscribing to ArtQ. We’ll write when new moulds, resins and colours arrive, and about offers now and then.', 'We never share your email.'];
+    const out = link ? `Changed your mind? Unsubscribe: ${link}` : 'Changed your mind? Reply to this email to unsubscribe.';
+    return { subject: 'You’re subscribed to ArtQ', text: [...lines, out].join(' '), html: layout('You’re subscribed', [...lines, ...(link ? [] : [out])], link ? { label: 'Unsubscribe', href: link } : undefined) };
+  },
+  message_received: (d) => {
+    const first = str(d.name, 'name').trim().split(/\s+/)[0];
+    const custom = d.kind === 'CUSTOM_WORK';
+    const lines = [`Hi ${first}, thank you for ${custom ? 'your custom work request' : 'your message'}.`, custom ? 'We’ll look at your idea and photos and reply with options and a price, usually within 2 working days.' : 'We usually reply within 1 working day.', 'You can simply reply to this email if you want to add anything.'];
+    return { subject: custom ? 'We’ve received your custom work request' : 'We’ve received your message', text: lines.join(' '), html: layout(custom ? 'Request received' : 'Message received', lines) };
+  },
+  admin_message: (d) => {
+    const custom = d.kind === 'CUSTOM_WORK';
+    const from = `${str(d.name, 'name')} <${str(d.email, 'email')}>${typeof d.phone === 'string' ? `, ${d.phone}` : ''}`;
+    const subject = custom ? 'Custom work request' : str(d.subject ?? 'Message', 'subject');
+    const body = str(d.message, 'message');
+    return { subject: `[ArtQ] ${custom ? 'Custom work' : 'Contact'}: ${subject}`.slice(0, 200), text: `From ${from}${typeof d.orderNumber === 'string' ? ` (order ${d.orderNumber})` : ''}:\n\n${body}\n\nReply from CMS & Messages in the admin panel.`,
+      html: layout(custom ? 'New custom work request' : 'New message', [`From ${from}${typeof d.orderNumber === 'string' ? ` (order ${d.orderNumber})` : ''}`, subject, body, 'Open CMS & Messages in the admin panel to reply.']) };
+  },
+  admin_ops_alert: (d) => {
+    const sev = str(d.severity, 'severity');
+    const title = str(d.title, 'title');
+    const detail = str(d.detail, 'detail');
+    return { subject: `[ArtQ ${sev}] ${title}`, text: `${detail} Open Jobs & Webhooks or Payment Exceptions in the admin panel. (${str(d.key, 'key')})`,
+      html: layout(`${sev}: ${title}`, [detail, 'Open Jobs & Webhooks or Payment Exceptions in the admin panel.']) };
+  },
+  admin_cod_overdue: (d) => {
+    const count = str(d.count, 'count');
+    const total = formatINR(Number(str(d.total, 'total')));
+    const days = str(d.days, 'days');
+    return { subject: `[ArtQ] COD cash overdue: ${count} order(s), ${total}`, text: `${count} delivered cash-on-delivery order(s) worth ${total} have waited more than ${days} days for the courier's payout. Check COD Remittances in the admin panel.`,
+      html: layout('COD cash overdue', [`${count} delivered cash-on-delivery order(s) worth ${total} have waited more than ${days} days for the courier’s payout.`, 'Check COD Remittances in the admin panel and chase the courier.']) };
+  },
+  back_in_stock: (d) => {
+    const product = str(d.product, 'product');
+    const label = typeof d.label === 'string' && d.label ? ` (${d.label})` : '';
+    const link = typeof d.link === 'string' ? d.link : null;
+    const lines = [`Good news: ${product}${label} is back in stock.`, 'Stock is limited, so order soon if you’d like it. You asked us to tell you; we won’t email you about it again.'];
+    return { subject: `${product} is back in stock`, text: [...lines, ...(link ? [link] : [])].join(' '), html: layout('It’s back in stock', lines, link ? { label: 'Shop now', href: link } : undefined) };
+  },
   set_password_link: (d) => {
     const link = str(d.link, 'link');
     return { subject: 'Set a password for your ArtQ account', text: `Set a password to track your orders and check out faster: ${link} (the link works for 7 days).`, html: layout('Set a password', ['Set a password to track your orders and check out faster. The link works for 7 days.'], { label: 'Set a password', href: link }) };
@@ -176,8 +268,8 @@ const TEMPLATES: Record<string, (d: Record<string, unknown>) => Rendered> = {
     const order = d.order_id === null || d.order_id === undefined ? 'no order' : `order id ${str(d.order_id, 'order_id')}`;
     return {
       subject: `[ArtQ] Payment exception: ${type}`,
-      text: `A payment exception was raised: ${type} (${order}). Review it in Payments → Exceptions.`,
-      html: layout('Payment exception', [`Type: ${type}`, `Related: ${order}`, 'Review it in Payments → Exceptions in the admin panel.']),
+      text: `A payment exception was raised: ${type} (${order}). Review it in Payment Exceptions.`,
+      html: layout('Payment exception', [`Type: ${type}`, `Related: ${order}`, 'Review it in Payment Exceptions in the admin panel.']),
     };
   },
 };
