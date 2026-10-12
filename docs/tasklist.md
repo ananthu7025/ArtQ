@@ -236,7 +236,8 @@ Reconciliation, refund safety, authorization and inventory correctness are **MVP
   **Done 2026-10-10:** Settings (Super Admin; saving asks for the password): store details (GSTIN must start with the state's code; printed on invoices), payments (online / COD, COD fee and order limits, how long an unpaid online order holds stock; at least one way to pay), the return window, how shipping is taxed on invoices, staff email addresses (warned when empty: no staff emails are sent). Only settings that change something today are shown; a save merges into the stored value, so the others keep theirs; audited before/after; the storefront's public settings follow. Audit Logs: filters by action, record type (from the log), record id, person and India dates; an entry opens with who, when, IP, browser, session and the changed fields side by side; CSV export of the filtered log (password re-check, as it holds IP addresses; newest 10,000; audited). Staff & Permissions: a table of what each role can do, generated from the permissions the API enforces (labels in `@artq/shared`, one per permission). Every menu module is now built (the placeholder test now checks that none is left). Tests: API integration (7), shared (10), admin (7 + nav), Playwright (settings saved after the password → the change in the audit log → CSV).
 
 ## Phase 7: Hardening & launch (12.5 d) → **M4**
-- [ ] **7.1 Acceptance suite** (4.5 d): implement AT-01…AT-24 (below) in CI (integration with Testcontainers + Playwright on staging).
+- [x] **7.1 Acceptance suite** (4.5 d): implement AT-01…AT-24 (below) in CI (integration with Testcontainers + Playwright on staging).
+  **Done 2026-10-10:** AT-01…AT-13 already had tests from tasks 1.10–5.7; AT-15…AT-24 are new in `apps/api/test/acceptance/`, each written against its pass criteria through the real routes (checkout, signed webhooks, the browser's verify, the reconcilers, the admin refund / cancel / staff APIs, BullMQ workers) on real PostgreSQL + Redis with the stub Razorpay, on one shared harness (`test/helpers/acceptance-app.ts`). `acceptance/index.test.ts` reads the table below and fails if an AT has no test carrying its id (AT-14 is the staging drill in 7.6). The acceptance files are type-checked (`tsconfig.acceptance.json` in `pnpm typecheck`) and run in `pnpm test` and in the compose job (`test:compose:integration`). Found while building: none of the new tests exposed a defect in the code (the takeover at checkout answers 202 "payment starting" rather than create a second provider order; the AT-20 row now says so). Not done here: the Playwright run **on staging**, which waits for staging (4.0); the same Playwright suites run in CI against the compose stack.
 - [ ] **7.2 Performance** (1.5 d): Lighthouse, bundle, `EXPLAIN` on listing/search, k6 (100 rps listing, 20 rps checkout quote).
 - [ ] **7.3 Security review** (1.5 d): auth/session, CSRF/Origin, IDOR (orders, attachments, addresses), SSRF, upload validation, permission matrix, secrets.
 - [ ] **7.4 Accessibility & browsers** (1 d): storefront **and admin** (contrast, keyboard, reachable nav).
@@ -269,13 +270,28 @@ Reconciliation, refund safety, authorization and inventory correctness are **MVP
 | **AT-17** | Redis loses an outbox job after `PUBLISHED`; a stale duplicate job also arrives | Integration (real Redis) | Delivery republished as next generation after timeout; effect once; delivery COMPLETED (C07) |
 | **AT-18** | Webhook worker stalls past its lease, another worker reclaims and completes, the first resumes | Integration | Stale complete/fail/renew rejected; domain change once; event PROCESSED (C08) |
 | **AT-19** | Multi-variant checkouts + releases + inventory imports + catalogue variant edits + taxonomy renames + search worker at concurrency ≥ 20 | Integration | No deadlocks (40P01); reservation/aggregate drift empty; search vectors current after the queue drains (C09) |
-| **AT-20** | Same idempotency key + identical body reused against a different order (cancel, payment retry, refund, return); request A stalls past its lease, B takes over, A resumes | API | Cross-resource: 422 `IDEMPOTENCY_KEY_REUSED`. Takeover: one order/refund (resumed), A's mutations roll back and A gets 409 `REQUEST_SUPERSEDED`, later retries replay B; concurrent takeovers → one owner (C10) |
+| **AT-20** | Same idempotency key + identical body reused against a different order (cancel, payment retry, refund, return); request A stalls past its lease, B takes over, A resumes | API | Cross-resource: 422 `IDEMPOTENCY_KEY_REUSED`. Takeover: one order/refund (resumed), A's mutations roll back and A gets 409 `REQUEST_SUPERSEDED`, later retries replay B; concurrent takeovers → one owner (C10). At checkout, while A's Razorpay call is still in flight B answers 202 `PAYMENT_STARTING` (never a second provider order); the reconciler adopts A's provider order by receipt and retries settle on it |
 | **AT-21** | Role change and block with live storefront + admin sessions | API | Role change: admin session 401 on next request, storefront session keeps working; block: both 401 (C13) |
 | **AT-22** | Webhook for a capture arrives before TX2 saves the provider order id; then TX2/reconciler saves it; webhook redelivery, verify and reconciler race | Integration (provider stub) | First call UNLINKED (no order effects); after mapping exactly one APPLIED, effects once, exception resolved; conflicting order/amount reports never attach; unmatched payments stay visible (C14) |
 | **AT-23** | Payment first observed fully refunded / partially refunded; CAPTURED then REFUNDED; older CAPTURED after REFUNDED; concurrent observations | Integration (provider stub) | Fully refunded → VOID, no fulfilment, no second refund; partial → HELD + review, only remainder refundable; later/older observations side-effect free; unexplained provider refund → RECON_MISMATCH (C15) |
 | **AT-24** | AUTHORIZED → provider voids/refunds → expiry; HELD/APPLIED payment refunded further in the Razorpay dashboard, then staff request a refund or retry a failed one | Integration (provider stub) | Order returns PROCESSING → UNPAID and expires once (stock and coupon released once); while provider refunds are unexplained, new refunds and retries get 409 `REFUND_RECONCILIATION_REQUIRED`; reconciliation records outside refunds once without double-counting ArtQ's own, then capacity reflects them (C16) |
 
-Each row maps to database.md §8 and architecture.md §7–§8. Where a row cites a C-check, the **database-level** behaviour already has an executable check in `tools/doc-validation`. The AT itself (through HTTP, the services, Razorpay test mode and the browser) is **not implemented** until task 7.1.
+Each row maps to database.md §8 and architecture.md §7–§8.
+
+**Where each AT is tested** (task 7.1; `apps/api/test/acceptance/index.test.ts` keeps this complete):
+
+| ID | Tests |
+|----|-------|
+| AT-01, AT-02, AT-03 | `api/test/integration/checkout-initiate.test.ts`; AT-02 also `idempotency.test.ts` |
+| AT-04 … AT-07 | `api/test/integration/payments-reconcile.test.ts`; AT-04 also `webhooks.test.ts` |
+| AT-08 | `api/test/integration/refunds.test.ts` |
+| AT-09 | `api/test/integration/coupon-lifecycle.test.ts` |
+| AT-10 | `api/test/integration/permissions.test.ts`, `catalog.test.ts`, `inventory.test.ts`, `imports.test.ts` |
+| AT-11 | `web/e2e/account.spec.ts` (+ API part in `api/test/integration/auth.test.ts`) |
+| AT-12 | `api/test/integration/customer-orders.test.ts`, `web/e2e/order-access.spec.ts` |
+| AT-13 | `api/test/integration/inventory.test.ts` |
+| AT-14 | Ops drill on staging (task 7.6) |
+| AT-15 … AT-24 | `api/test/acceptance/at15-…` to `at24-…` (AT-17 and AT-18 share one file) | Where a row cites a C-check, the **database-level** behaviour already has an executable check in `tools/doc-validation`. The AT itself (through HTTP, the services, Razorpay test mode and the browser) is **not implemented** until task 7.1.
 
 ---
 

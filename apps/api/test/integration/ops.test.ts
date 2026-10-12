@@ -142,6 +142,7 @@ describe('jobs & webhooks', () => {
   it('summary: queue depths, inbox and outbox counts, search queue, last runs, alerts', async () => {
     await prisma.$executeRaw`INSERT INTO webhook_events (provider, event_id, event_type, payload, status, attempts, received_at) VALUES ('razorpay', ${`evt_${uniq()}`}, 'payment.captured', '{}', 'DEAD', 10, now() - interval '1 hour')`;
     await redis.set(lastRunKey('refunds-reconcile'), JSON.stringify({ at: '2026-10-09T10:00:00.000Z', ok: true, result: '{"checked":0}' }));
+    await redis.del(lastRunKey('cod-overdue'));   // the shared compose Redis may hold a real worker's run; this case needs "never ran"
     await queue.add('noop', {}, { removeOnComplete: false });
     const s = (await get('/ops/summary')).body;
     expect(s.webhooks.DEAD).toBeGreaterThanOrEqual(1);

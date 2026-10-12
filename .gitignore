@@ -15,3 +15,6 @@ apps/web/.next-e2e/
 apps/web/test-results/
 apps/web/playwright-report/
 .next-env.d.ts.keep
+
+# Private server notes (host, SSH, admin passwords): never committed
+artq-server.md

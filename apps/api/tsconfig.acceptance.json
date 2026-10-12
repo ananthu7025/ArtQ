@@ -1,0 +1,6 @@
+{
+  "//": "Type-checks the acceptance suite (task 7.1) and the helpers it uses; the rest of test/ runs untyped under Vitest.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "rootDir": ".", "noEmit": true },
+  "include": ["test/acceptance", "test/helpers/acceptance-app.ts"]
+}
