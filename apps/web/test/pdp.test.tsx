@@ -48,7 +48,7 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 const axeClean = async (el: Element) => expect((await axe.run(el, { rules: { 'color-contrast': { enabled: false }, region: { enabled: false } } })).violations.map((x) => `${x.id}: ${x.nodes.map((n) => n.target.join(' ')).join(', ')}`)).toEqual([]);
-const page = (sku: string | null = null) => render(<ShopProvider><ProductView product={PRODUCT} initialSku={sku} returnWindowHours={48} /><WhatsAppButton number="+91 98470 12345" /></ShopProvider>);
+const page = (sku: string | null = null) => render(<ShopProvider><ProductView product={PRODUCT} initialSku={sku} /><WhatsAppButton number="+91 98470 12345" /></ShopProvider>);
 
 describe('buy box', () => {
   it('cached prices first, then live stock: starts on the cheapest size in stock; price, MRP, % off, taxes note; axe clean', async () => {
@@ -115,6 +115,53 @@ describe('buy box', () => {
     await u.click(screen.getByRole('button', { name: 'Save Mica Pigment to wishlist' }));
     expect(screen.getByRole('button', { name: 'Remove Mica Pigment from wishlist' }).getAttribute('aria-pressed')).toBe('true');
     expect(screen.getByRole('link', { name: /WhatsApp/ }).getAttribute('href')).toBe(`https://wa.me/919847012345?text=${encodeURIComponent('Hi ArtQ, I have a question about Mica Pigment')}`);
+  });
+
+  it('trust badges: shows secure payments and ships across India; returns statement is removed', () => {
+    page();
+    expect(screen.getByText('Secure payments')).toBeTruthy();
+    expect(screen.getByText('Ships across India')).toBeTruthy();
+    expect(screen.queryByText(/Returns within/)).toBeNull();
+  });
+
+  it('resin PDP: "Includes Both Part A & Part B" notice shown on 2:1 and 3:1 resin, but not on UV resin or pigments', () => {
+    const resin21: ProductDetail = {
+      ...PRODUCT,
+      id: 1,
+      slug: '2-1-epoxy-resin',
+      name: 'ArtQ Ultra Clear 2:1 Epoxy Resin',
+      category: { slug: '2-1-epoxy-resin', name: '2:1 Epoxy Resin' },
+    };
+    const resin31: ProductDetail = {
+      ...PRODUCT,
+      id: 2,
+      slug: '3-1-epoxy-resin',
+      name: 'ArtQ 3:1 Epoxy Resin',
+      category: { slug: '3-1-epoxy-resin', name: '3:1 Epoxy Resin' },
+    };
+    const uvResin: ProductDetail = {
+      ...PRODUCT,
+      id: 3,
+      slug: 'uv-resin',
+      name: 'ArtQ UV Resin',
+      category: { slug: 'uv-resin', name: 'UV Resin' },
+    };
+
+    const { unmount: u1 } = render(<ShopProvider><ProductView product={resin21} initialSku={null} /></ShopProvider>);
+    expect(screen.getByText('Includes Both Part A & Part B')).toBeTruthy();
+    u1();
+
+    const { unmount: u2 } = render(<ShopProvider><ProductView product={resin31} initialSku={null} /></ShopProvider>);
+    expect(screen.getByText('Includes Both Part A & Part B')).toBeTruthy();
+    u2();
+
+    const { unmount: u3 } = render(<ShopProvider><ProductView product={uvResin} initialSku={null} /></ShopProvider>);
+    expect(screen.queryByText('Includes Both Part A & Part B')).toBeNull();
+    u3();
+
+    const { unmount: u4 } = render(<ShopProvider><ProductView product={PRODUCT} initialSku={null} /></ShopProvider>);
+    expect(screen.queryByText('Includes Both Part A & Part B')).toBeNull();
+    u4();
   });
 });
 

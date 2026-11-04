@@ -73,7 +73,7 @@ export async function seedShowcase(d: ShowcaseDeps): Promise<ShowcaseReport> {
       AND EXISTS (SELECT 1 FROM product_variants v WHERE v.product_id = p.id AND v.is_active AND v.deleted_at IS NULL)
       AND NOT EXISTS (SELECT 1 FROM product_variants v WHERE v.product_id = p.id AND v.is_active AND v.deleted_at IS NULL
                         AND (v.price IS NULL OR v.net_quantity IS NULL OR v.net_unit IS NULL))
-    ORDER BY t.sort_order, t.id, p.id`;
+    ORDER BY t.sort_order, t.id, NULLIF(p.sort_order, 0) ASC NULLS LAST, p.id`;
   const perType = new Map<string, number>();
   const chosen = candidates.filter((c) => { const n = perType.get(c.type_name) ?? 0; if (n >= 2) return false; perType.set(c.type_name, n + 1); return true; }).slice(0, 12);
 

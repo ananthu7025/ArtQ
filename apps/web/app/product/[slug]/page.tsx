@@ -10,7 +10,6 @@ import { RecentlyViewed } from '../../../components/product/RecentlyViewed';
 import { FormAlert } from '../../../components/form/fields';
 import { loadLayout, loadProduct, loadRelated } from '../../../lib/api';
 import { jsonLdScript, plainText, productJsonLd, withSeo } from '../../../lib/seo';
-import { formatINR } from '@artq/shared';
 
 type Props = { params: Promise<{ slug: string }>; searchParams: Promise<Record<string, string | string[] | undefined>> };
 
@@ -44,8 +43,8 @@ export default async function ProductPage({ params, searchParams }: Props) {
   if (product === 'unavailable') {
     return <div className="mx-auto max-w-xl px-4 py-20 text-center"><FormAlert>We couldn’t load this product right now. Please try again in a moment.</FormAlert></div>;
   }
-  const [related, { settings }] = await Promise.all([loadRelated(slug), loadLayout()]);
-  const { shipping, payment, order } = settings;
+  const [related] = await Promise.all([loadRelated(slug), loadLayout()]);
+
   return (
     <>
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLdScript(productJsonLd(product)) }} />
@@ -58,7 +57,7 @@ export default async function ProductPage({ params, searchParams }: Props) {
             <li className="flex items-center gap-1"><span aria-hidden>›</span><span aria-current="page" className="text-ink-900">{product.name}</span></li>
           </ol>
         </nav>
-        <ProductView product={product} initialSku={variant} returnWindowHours={order.returnWindowHours} />
+        <ProductView product={product} initialSku={variant} />
         <div className="mt-10 max-w-3xl">
           {product.description && <Section title="Description" open><div className="prose-artq" dangerouslySetInnerHTML={{ __html: product.description }} /></Section>}
           {product.productDetails.length > 0 && <Section title="Product details"><ul className="list-disc space-y-1 pl-5">{product.productDetails.map((d) => <li key={d}>{d}</li>)}</ul></Section>}
@@ -69,14 +68,6 @@ export default async function ProductPage({ params, searchParams }: Props) {
             </Section>
           )}
           {product.howToUse && <Section title="How to use"><p className="whitespace-pre-line">{product.howToUse}</p></Section>}
-          <Section title="Shipping & returns">
-            <ul className="list-disc space-y-1 pl-5">
-              <li>Free shipping on orders above {formatINR(shipping.freeThreshold)}; otherwise charged by weight and destination at checkout.</li>
-              <li>Usually delivered in {shipping.estimatedDays.min}–{shipping.estimatedDays.max} days.</li>
-              {payment.codEnabled && <li>Cash on delivery for orders from {formatINR(payment.codMin)} to {formatINR(payment.codMax)} (fee {formatINR(payment.codFee)}), where available.</li>}
-              <li>Returns accepted within {order.returnWindowHours} hours of delivery. <Link href="/return-policy" className="text-brand-700 underline">Return policy</Link></li>
-            </ul>
-          </Section>
           {product.techniques.length > 0 && (
             <nav aria-label="Techniques" className="mt-6">
               <p className="mb-2 text-sm font-semibold text-ink-900">Use it for</p>

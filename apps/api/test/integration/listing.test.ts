@@ -88,6 +88,7 @@ describe('✅ same-variant filters', () => {
 
 describe('taxonomy, flags, search, sorting, paging', () => {
   let resin: { typeId: number; categoryId: number }, frames: { typeId: number; categoryId: number };
+  let prodA: LiveProduct, prodB: LiveProduct, prodC: LiveProduct;
   beforeAll(async () => {
     await wipe();
     const typeR = await prisma.productType.create({ data: { name: 'Resins', slug: 'resins', sortOrder: 1 } });
@@ -99,6 +100,7 @@ describe('taxonomy, flags, search, sorting, paging', () => {
     const a = await liveProduct(prisma, { ...resin, name: 'Ultra Clear Epoxy', variants: [{ price: 99_900 }], publishedAt: day(1), isNewArrival: true });
     const b = await liveProduct(prisma, { ...resin, name: 'Deep Pour Resin', variants: [{ price: 1_49_900 }], publishedAt: day(3), isTrending: true });
     const c = await liveProduct(prisma, { ...frames, name: 'teak square frame', variants: [{ price: 49_900 }], publishedAt: day(2) });
+    prodA = a; prodB = b; prodC = c;
     await liveProduct(prisma, { ...resin, name: 'Hidden Draft Resin', status: 'DRAFT' });
     await prisma.product.update({ where: { id: c.productId }, data: { isFeatured: true } });
     const coasters = await prisma.technique.create({ data: { name: 'Coasters', slug: 'coasters' } });
@@ -135,6 +137,22 @@ describe('taxonomy, flags, search, sorting, paging', () => {
     expect(names(await list('sort=name_asc'))).toEqual(['Deep Pour Resin', 'teak square frame', 'Ultra Clear Epoxy']);   // case-insensitive
     expect(names(await list('sort=price_desc'))).toEqual(['Deep Pour Resin', 'Ultra Clear Epoxy', 'teak square frame']);
     expect(names(await list('sort=best_selling'))).toEqual(['Deep Pour Resin', 'Ultra Clear Epoxy', 'teak square frame']);
+  });
+
+  it('default featured sort respects products.sort_order ASC (1, 2, 3...) before tiebreakers; 0 is unranked (NULLS LAST)', async () => {
+    await prisma.product.update({ where: { id: prodA.productId }, data: { sortOrder: 1 } });
+    await prisma.product.update({ where: { id: prodB.productId }, data: { sortOrder: 2 } });
+    await prisma.product.update({ where: { id: prodC.productId }, data: { sortOrder: 0 } });
+
+    expect(names(await list())).toEqual(['Ultra Clear Epoxy', 'Deep Pour Resin', 'teak square frame']);
+
+    await prisma.product.update({ where: { id: prodB.productId }, data: { sortOrder: 1 } });
+    await prisma.product.update({ where: { id: prodA.productId }, data: { sortOrder: 2 } });
+    expect(names(await list())).toEqual(['Deep Pour Resin', 'Ultra Clear Epoxy', 'teak square frame']);
+
+    await prisma.product.update({ where: { id: prodA.productId }, data: { sortOrder: 0 } });
+    await prisma.product.update({ where: { id: prodB.productId }, data: { sortOrder: 0 } });
+    expect(names(await list())[0]).toBe('teak square frame');
   });
 
   it('search: word prefixes, any case/accents; relevance is the default sort with a search; ILIKE fallback for symbols', async () => {

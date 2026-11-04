@@ -30,8 +30,8 @@ test.describe('desktop', () => {
     const ld = JSON.parse((await page.locator('script[type="application/ld+json"]').textContent())!) as { '@type': string; name: string; offers: { priceCurrency: string } }[];
     expect(ld[0]).toMatchObject({ '@type': 'Product', name, offers: { priceCurrency: 'INR' } });
     expect(ld[1]!['@type']).toBe('BreadcrumbList');
-    await page.getByText('Shipping & returns').click();
-    await expect(page.getByText(/Returns accepted within 48 hours of delivery/)).toBeVisible();
+    await expect(page.getByText('Shipping & returns')).toHaveCount(0);
+    await expect(page.getByText(/Returns within \d+ hours of delivery/)).toHaveCount(0);
     await axeClean(page);
   });
 
@@ -96,7 +96,7 @@ test.describe('phone', () => {
     await expect(page.getByText(/^(In stock|Only a few left)$/)).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
     await axeClean(page);
-    await page.getByText('Shipping & returns').scrollIntoViewIfNeeded();
+    await page.getByText('Description').scrollIntoViewIfNeeded();
     await page.mouse.wheel(0, 400);
     const bar = page.locator('div.fixed.bottom-0').filter({ has: page.getByRole('button', { name: 'Add to cart' }) });
     await expect(bar).toBeVisible();

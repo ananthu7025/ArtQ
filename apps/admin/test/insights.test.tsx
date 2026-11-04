@@ -21,9 +21,11 @@ const dash = (o: Partial<Dashboard> = {}): Dashboard => ({
   topProducts: [{ productId: 11, name: 'Epoxy Resin', units: 9, revenue: 449_100 }], ...o,
 });
 const row = (o: Partial<AdminCustomerRow> = {}): AdminCustomerRow => ({ id: 3, name: 'Hema Rajan', email: 'hema@example.com', phone: '+919847012345', status: 'ACTIVE', emailVerified: true, orders: 2, spent: 214_000, createdAt: '2026-09-01T06:00:00Z', lastLoginAt: '2026-10-08T06:00:00Z', ...o });
-const detail = (o: Partial<AdminCustomerDetail> = {}): AdminCustomerDetail => ({ ...row(), contactMasked: false, marketingOptIn: true, adminNotes: null, wishlistCount: 4,
+const detail = (o: Partial<AdminCustomerDetail> = {}): AdminCustomerDetail => ({
+  ...row(), contactMasked: false, marketingOptIn: true, adminNotes: null, wishlistCount: 4,
   addresses: [{ id: 1, label: 'HOME', fullName: 'Hema Rajan', lines: ['12 Rose Villa', 'Kochi, Kerala 682011'], phone: '+919847012345', isDefault: true }],
-  recentOrders: [{ id: 7, orderNumber: 'AQ10234', createdAt: '2026-10-05T06:00:00Z', total: 107_000, status: 'CONFIRMED', paymentStatus: 'PAID', fulfilmentStatus: 'DELIVERED' }], ...o });
+  recentOrders: [{ id: 7, orderNumber: 'AQ10234', createdAt: '2026-10-05T06:00:00Z', total: 107_000, status: 'CONFIRMED', paymentStatus: 'PAID', fulfilmentStatus: 'DELIVERED' }], ...o
+});
 const group = (o: Partial<RestockGroup> = {}): RestockGroup => ({ variantId: 101, sku: 'RES-500', label: '500 ml', product: { id: 11, name: 'Epoxy Resin', status: 'ACTIVE' }, pending: 3, oldestAt: '2026-09-20T06:00:00Z', available: 4, notifiedToday: false, ...o });
 const page = <T,>(rows: T[]) => [200, { data: rows, meta: { page: 1, limit: 25, total: rows.length, totalPages: 1 } }] as [number, unknown];
 
@@ -90,7 +92,8 @@ describe('customers', () => {
     expect(await screen.findByRole('heading', { name: 'Hema Rajan' })).toBeTruthy();
     expect(screen.getByRole('link', { name: 'AQ10234' }).getAttribute('href')).toBe('/orders/7');
     await axe.run(container).then((r) => expect(r.violations.filter((v) => v.id !== 'color-contrast').map((v) => v.id)).toEqual([]));
-    await u.type(screen.getByLabelText('Not shown to the customer'), 'x'.repeat(2001));
+    await u.click(screen.getByLabelText('Not shown to the customer'));
+    await u.paste('x'.repeat(2001));
     await u.click(screen.getByRole('button', { name: 'Save note' }));
     await waitFor(() => expectFieldError('Not shown to the customer', 'Use at most 2,000 characters'));
     expect(sent(server, 'PATCH', '/admin/customers/3')).toHaveLength(0);        // checked by the shared rule first

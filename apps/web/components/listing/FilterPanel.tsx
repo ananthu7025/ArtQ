@@ -12,7 +12,7 @@ import { TextField } from '../form/fields';
 
 type ListKey = 'type' | 'category' | 'technique' | 'size' | 'color' | 'thickness';
 export const GROUPS: { key: ListKey; facet: keyof Omit<ProductList['facets'], 'price'>; label: string }[] = [
-  { key: 'type', facet: 'types', label: 'Product type' }, { key: 'category', facet: 'categories', label: 'Category' }, { key: 'technique', facet: 'techniques', label: 'Technique' },
+  { key: 'type', facet: 'types', label: 'Product type' }, { key: 'category', facet: 'categories', label: 'Category' },
   { key: 'size', facet: 'sizes', label: 'Size' }, { key: 'color', facet: 'colors', label: 'Colour' }, { key: 'thickness', facet: 'thicknesses', label: 'Thickness' },
 ];
 const SHOWN = 8;

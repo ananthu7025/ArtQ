@@ -4,7 +4,7 @@
 // be added (architecture.md §6.1). The chosen variant is kept in the address as ?variant=<sku>. Below 1024 px a bar
 // with the price and "Add to cart" sticks to the bottom once the main button has scrolled away.
 import { formatINR, type ProductDetail, type PublicVariant } from '@artq/shared';
-import { Heart, Minus, Plus, RotateCcw, ShieldCheck, Truck } from 'lucide-react';
+import { Heart, Minus, Plus, ShieldCheck, Truck } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 import { clientRequest } from '../../lib/api';
@@ -15,7 +15,7 @@ import { OptionPicker, startVariant, stockMap, useVariantPicker, type Stock } fr
 import { Gallery } from './Gallery';
 import { PincodeCheck } from './PincodeCheck';
 
-export function ProductView({ product, initialSku, returnWindowHours }: { product: ProductDetail; initialSku: string | null; returnWindowHours: number }) {
+export function ProductView({ product, initialSku }: { product: ProductDetail; initialSku: string | null }) {
   const router = useRouter();
   const { addToCart, wishlist, toggleWishlist, setWhatsappTopic } = useShop();
   const [stock, setStock] = useState<Stock | null>(null);
@@ -27,6 +27,13 @@ export function ProductView({ product, initialSku, returnWindowHours }: { produc
   const addButton = useRef<HTMLButtonElement>(null);
   const picker = useVariantPicker(product, stock, startVariant(product, null, initialSku));
   const { selected, live } = picker;
+  const includesBothParts = Boolean(
+    product.slug === '2-1-epoxy-resin' ||
+    product.slug === '3-1-epoxy-resin' ||
+    product.category?.slug === '2-1-epoxy-resin' ||
+    product.category?.slug === '3-1-epoxy-resin' ||
+    (/\b(2:1|3:1)\b/i.test(product.name) && /resin/i.test(product.name))
+  );
 
   useEffect(() => {
     let alive = true;
@@ -96,7 +103,7 @@ export function ProductView({ product, initialSku, returnWindowHours }: { produc
           </p>
         </div>
         {failed && <div className="mt-3"><FormAlert>Prices and stock are temporarily unavailable. Please try again in a moment.</FormAlert></div>}
-        <div className="mt-5 space-y-5"><OptionPicker picker={picker} onChoose={onChoose} /></div>
+        <div className="mt-5 space-y-5"><OptionPicker picker={picker} onChoose={onChoose} includesBothParts={includesBothParts} /></div>
         {!soldOut && (
           <div className="mt-5 flex items-center gap-3">
             <span id="pdp-qty" className="text-[13px] font-medium text-ink-900">Quantity</span>
@@ -122,9 +129,9 @@ export function ProductView({ product, initialSku, returnWindowHours }: { produc
             </div>
           )}
         <div className="mt-6"><PincodeCheck /></div>
-        <ul className="mt-6 grid grid-cols-3 gap-2 text-center text-xs text-ink-700">
+        <ul className="mt-6 grid grid-cols-2 gap-2 text-center text-xs text-ink-700">
           <li className="flex flex-col items-center gap-1"><ShieldCheck aria-hidden size={22} className="text-brand-700" />Secure payments</li>
-          <li className="flex flex-col items-center gap-1"><RotateCcw aria-hidden size={22} className="text-brand-700" />Returns within {returnWindowHours} hours of delivery</li>
+
           <li className="flex flex-col items-center gap-1"><Truck aria-hidden size={22} className="text-brand-700" />Ships across India</li>
         </ul>
       </div>

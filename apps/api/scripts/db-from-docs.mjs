@@ -33,11 +33,11 @@ const SQL_HEADER = (section) => `-- GENERATED from docs/database.md ${section} b
 
 /** Returns the validated fenced blocks keyed by marker name. Throws if a required block is missing or duplicated. */
 export function extractBlocks(md) {
-  const re = /<!-- validate:([\w.-]+) -->\s*\n```(\w+)\n([\s\S]*?)```/g;
+  const re = /<!-- validate:([\w.-]+) -->\s*\r?\n```(\w+)\r?\n([\s\S]*?)```/g;
   const out = {};
   for (const m of md.matchAll(re)) {
     if (out[m[1]] !== undefined) throw new Error(`docs/database.md: duplicate <!-- validate:${m[1]} --> block`);
-    out[m[1]] = m[3];
+    out[m[1]] = m[3].replace(/\r\n/g, '\n');
   }
   for (const k of ['schema.prisma', '0002.sql', '0003.sql']) {
     if (out[k] === undefined) throw new Error(`docs/database.md: missing <!-- validate:${k} --> block`);
@@ -82,7 +82,7 @@ export function expectedFiles(md = readFileSync(DOC, 'utf8')) {
 /** Relative paths whose committed content differs from the doc (missing files count as drift). */
 export function drift(root = API, files = expectedFiles()) {
   return Object.entries(files)
-    .filter(([rel, content]) => !existsSync(join(root, rel)) || readFileSync(join(root, rel), 'utf8') !== content)
+    .filter(([rel, content]) => !existsSync(join(root, rel)) || readFileSync(join(root, rel), 'utf8').replace(/\r\n/g, '\n') !== content.replace(/\r\n/g, '\n'))
     .map(([rel]) => rel);
 }
 

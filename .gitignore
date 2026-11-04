@@ -18,3 +18,4 @@ apps/web/playwright-report/
 
 # Private server notes (host, SSH, admin passwords): never committed
 artq-server.md
+.bin/

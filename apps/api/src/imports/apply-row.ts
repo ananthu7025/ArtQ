@@ -70,6 +70,7 @@ export async function applyRow(db: Db, payload: RowPayload, ctx: ApplyContext): 
   const productData = {
     name: p.name, description: p.description, productDetails: p.details, specificationsCare: p.care, howToUse: p.howToUse,
     metaTitle: p.metaTitle, metaDescription: p.metaDescription, dataFlags: p.flags, typeId: type, categoryId: category,
+    ...(p.sortOrder !== undefined && p.sortOrder !== null ? { sortOrder: p.sortOrder } : {}),
     ...(p.isTrending !== null ? { isTrending: p.isTrending } : {}), ...(p.isNewArrival !== null ? { isNewArrival: p.isNewArrival } : {}),
   };
   if (!product) {
