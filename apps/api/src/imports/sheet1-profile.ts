@@ -49,7 +49,7 @@ const W = {
 type Product = {
   key: string; name: string; type: string; category: string; techniques: string[]; sku: (size: string, row: Cells) => string;
   description?: string; productFlags?: string[]; variantFlags?: (size: string, row: Cells) => string[]; color?: (row: Cells) => string | null;
-  size?: (raw: string) => string; detailsExtra?: (row: Cells) => string[]; weight?: (s: Size) => number | null; family?: string;
+  size?: (raw: string) => string; detailsExtra?: (row: Cells) => string[]; weight?: (s: Size) => number | null; family?: string; sortOrder?: number;
 };
 type Cells = Record<string, Cell>;
 
@@ -88,6 +88,7 @@ const teak = (kind: 'frame' | 'double' | 'hex'): Product => ({
   key: { frame: 'teak-wood-frame', double: 'teak-wood-double-frame', hex: 'teak-wood-hexagon-frame' }[kind],
   name: { frame: 'Teak Wood Frame with Plywood Base', double: 'Teak Wood Double Frame (Plywood Base)', hex: 'Teak Wood Hexagon Frame' }[kind],
   type: 'Wooden Frames', category: 'Teakwood Frames', techniques: ['Photo Framing', 'Resin Art', FLOWER], size: teakSize,
+  sortOrder: { frame: 1, double: 2, hex: 3 }[kind],
   sku: (size, row) => `TWF-${teakDepth(row) === '0.5 inch' ? '05IN' : '1IN'}-${kind === 'hex' ? `HEX${parseInt(size, 10)}` : sz(size)}${kind === 'double' ? '-DF' : ''}`,
   // catalog.md §4 #6: 0.5" 8×10 costs more than 10×10; 0.5" 9×12 double costs more than the 1" one.
   variantFlags: (size, row) => (teakDepth(row) === '0.5 inch' && ((kind === 'frame' && sz(size) === '8X10') || (kind === 'double' && sz(size) === '9X12')) ? ['PRICE_REVIEW'] : []),
@@ -112,12 +113,12 @@ function productFor(name: string, row: Cells): Product | null {
     color: () => null, detailsExtra: (r) => (clean(r.color) ? [`Colours included: ${clean(r.color)!.replace(/,\s*$/, '')}`] : []), weight: W.kit,
   });
   const table: Record<string, () => Product> = {
-    '2:1 Epoxy Resin': () => ({ key: '2-1-epoxy-resin', name: 'ArtQ Ultra Clear 2:1 Epoxy Resin', type: 'Resins', category: '2:1 Epoxy Resin', techniques: [...RESIN_TECH, 'Deep Pour Casting', FLOWER], sku: by('RES-21'), weight: W.resin }),
-    '3:1 Epoxy Resin': () => ({ key: '3-1-epoxy-resin', name: 'ArtQ 3:1 Epoxy Resin', type: 'Resins', category: '3:1 Epoxy Resin', techniques: RESIN_TECH, sku: by('RES-31'), weight: W.resin }),
+    '2:1 Epoxy Resin': () => ({ key: '2-1-epoxy-resin', name: 'ArtQ Ultra Clear 2:1 Epoxy Resin', type: 'Resins', category: '2:1 Epoxy Resin', techniques: [...RESIN_TECH, 'Deep Pour Casting', FLOWER], sku: by('RES-21'), weight: W.resin, sortOrder: 1 }),
+    '3:1 Epoxy Resin': () => ({ key: '3-1-epoxy-resin', name: 'ArtQ 3:1 Epoxy Resin', type: 'Resins', category: '3:1 Epoxy Resin', techniques: RESIN_TECH, sku: by('RES-31'), weight: W.resin, sortOrder: 2 }),
     // catalog.md §4 #6: UV Resin 50 gm ₹180 vs ₹170 (sheet 2) vs ₹250 (reference site).
-    'UV Resin': () => ({ key: 'uv-resin', name: 'ArtQ UV Resin', type: 'Resins', category: 'UV Resin', techniques: ['Jewellery Making', 'Resin Art'], sku: by('RES-UV'), variantFlags: (s) => (sz(s) === '50G' ? ['PRICE_CONFLICT'] : []), weight: W.resin }),
+    'UV Resin': () => ({ key: 'uv-resin', name: 'ArtQ UV Resin', type: 'Resins', category: 'UV Resin', techniques: ['Jewellery Making', 'Resin Art'], sku: by('RES-UV'), variantFlags: (s) => (sz(s) === '50G' ? ['PRICE_CONFLICT'] : []), weight: W.resin, sortOrder: 3 }),
     // catalog.md §4 #13: meta title says "Plywood Base" for an acrylic-base frame.
-    'Mahogany Frames with Acrylic Base': () => ({ key: 'round-mahogany-frame', name: 'Round Mahogany Frame with Acrylic Base', type: 'Wooden Frames', category: 'Round Mahogany Frames', techniques: ['Photo Framing', 'Resin Art'], sku: (s) => `MHF-RND-${sz(s)}`, productFlags: ['COPY_REVIEW'], weight: W.round }),
+    'Mahogany Frames with Acrylic Base': () => ({ key: 'round-mahogany-frame', name: 'Round Mahogany Frame with Acrylic Base', type: 'Wooden Frames', category: 'Round Mahogany Frames', techniques: ['Photo Framing', 'Resin Art'], sku: (s) => `MHF-RND-${sz(s)}`, productFlags: ['COPY_REVIEW'], weight: W.round, sortOrder: 4 }),
     'Pregnant Mom Frame': () => multiwood('pregnant-mom-frame', 'Pregnant Mom Frame', 'Pregnant Mom Frames', 'MW-MOM'),
     'Butterfly Frame': () => multiwood('butterfly-frame', 'Butterfly Frame', 'Butterfly Frames', 'MW-BFLY'),
     'Cloud Frame': () => multiwood('cloud-frame', 'Cloud Frame', 'Cloud Frames', 'MW-CLOUD'),
@@ -176,7 +177,7 @@ export function sheet1Drafts(rows: RawRow[]): DraftRow[] {
       product: {
         name: p?.name ?? name, description: spell(description) ?? p?.description ?? null,
         details: [...detailItems, ...(p?.detailsExtra?.(cells) ?? [])], care: list(spell(care)), techniques: p?.techniques ?? [], images: [],
-        metaTitle: spell(metaTitle), metaDescription: spell(metaDescription), isTrending: null, isNewArrival: null, flags: p?.productFlags ?? [],
+        metaTitle: spell(metaTitle), metaDescription: spell(metaDescription), isTrending: null, isNewArrival: null, flags: p?.productFlags ?? [], sortOrder: p?.sortOrder ?? null,
       },
       variant: {
         sku: p && size ? p.sku(size, cells) : p && !size ? p.sku('', cells) : null,

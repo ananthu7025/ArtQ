@@ -39,7 +39,7 @@ export async function startPostgres(): Promise<Service> {
   if (process.env.TEST_DATABASE_URL) return { url: process.env.TEST_DATABASE_URL, stop: async () => {} };
   const dir = mkdtempSync(join(tmpdir(), 'artq-api-pg-'));
   const port = await freePort();
-  const pg = new EmbeddedPostgres({ databaseDir: join(dir, 'data'), user: 'postgres', password: 'postgres', port, persistent: false, onLog: () => {} });
+  const pg = new EmbeddedPostgres({ databaseDir: join(dir, 'data'), user: 'postgres', password: 'postgres', port, persistent: false, onLog: () => {}, initdbFlags: ['-E', 'UTF8', '--locale=C'] });
   await pg.initialise();
   await pg.start();
   await pg.createDatabase('artq_test');

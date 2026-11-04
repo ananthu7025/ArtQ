@@ -67,6 +67,23 @@ try {
   const ordered = [...types].sort((a, b) => rank(a.name) - rank(b.name) || a.sortOrder - b.sortOrder || a.id - b.id);
   for (const [i, t] of ordered.entries()) if (t.sortOrder !== i) await prisma.productType.update({ where: { id: t.id }, data: { sortOrder: i } });
 
+  // 2b. Product sort orders (resins and wooden frames per client feedback)
+  const PRODUCT_SORT_ORDERS: Record<string, number> = {
+    '2-1-epoxy-resin': 1,
+    '3-1-epoxy-resin': 2,
+    'uv-resin': 3,
+    'teak-wood-frame': 1,
+    'teak-wood-double-frame': 2,
+    'teak-wood-hexagon-frame': 3,
+    'round-mahogany-frame': 4,
+  };
+  for (const [slug, sortOrder] of Object.entries(PRODUCT_SORT_ORDERS)) {
+    await prisma.product.updateMany({
+      where: { OR: [{ slug }, { importKey: slug }] },
+      data: { sortOrder },
+    });
+  }
+
   // The section order as first seeded (before product.md §5.1's order became the default): move it, unless changed.
   const OLD_DEFAULT = ['hero', 'types', 'trending', 'new-arrivals', 'techniques', 'reels', 'testimonials', 'instagram'];
   const sections = await prisma.setting.findUnique({ where: { key: 'HOME_SECTIONS' } });

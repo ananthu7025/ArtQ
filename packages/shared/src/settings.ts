@@ -78,7 +78,7 @@ export const DEFAULT_SETTINGS: { [K in SettingKey]: SettingValue<K> } = {
   INSTAGRAM_MOMENTS: { enabled: false, handle: null },
   SOCIAL: { instagram: null, facebook: null, youtube: null, whatsapp: null },
   SHIPPING: { freeThreshold: 100_000, packagingWeightG: 150, volumetricDivisor: 5000, heavyCapG: 10_000, heavyCapEnabled: true, defaultServiceable: true, defaultCod: true, estimatedDays: { min: 4, max: 7 }, airOnlyPincodePrefixes: ['744', '68255'] },
-  PAYMENT: { razorpayEnabled: true, codEnabled: true, codFee: 4000, codMin: 20_000, codMax: 500_000, pendingExpiryMinutes: 30, autoRefundExcessCapture: true },
+  PAYMENT: { razorpayEnabled: true, codEnabled: false, codFee: 4000, codMin: 20_000, codMax: 500_000, pendingExpiryMinutes: 30, autoRefundExcessCapture: true },
   ORDER: { customerCancelUntil: 'UNFULFILLED', returnWindowHours: 48, completeAfterDays: 7 },
   TAX: { pricesIncludeTax: true, shippingTaxRule: 'CA_DECISION', invoiceAt: 'DISPATCH' },
   NOTIFY: { adminEmails: [], dailySummary: true, lowStockEmail: true },

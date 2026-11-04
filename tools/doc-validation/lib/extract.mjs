@@ -11,9 +11,9 @@ export const FIX = join(ROOT, '.fixtures');
 
 export function extract() {
   const md = readFileSync(join(DOCS, 'database.md'), 'utf8');
-  const re = /<!-- validate:([\w.-]+) -->\s*\n```(\w+)\n([\s\S]*?)```/g;
+  const re = /<!-- validate:([\w.-]+) -->\s*\r?\n```(\w+)\r?\n([\s\S]*?)```/g;
   const out = {};
-  for (const m of md.matchAll(re)) out[m[1]] = m[3];
+  for (const m of md.matchAll(re)) out[m[1]] = m[3].replace(/\r\n/g, '\n');
   for (const k of ['schema.prisma', '0002.sql', '0003.sql']) {
     if (!out[k]) throw new Error(`docs/database.md: missing <!-- validate:${k} --> block`);
   }

@@ -18,7 +18,7 @@ export type DraftRow = {
   product: {
     name: string; description: string | null; details: string[]; care: string[]; howToUse?: string | null;
     techniques: string[]; images: string[]; metaTitle: string | null; metaDescription: string | null;
-    isTrending: boolean | null; isNewArrival: boolean | null; flags: string[];
+    isTrending: boolean | null; isNewArrival: boolean | null; flags: string[]; sortOrder?: number | null;
   };
   variant: {
     sku: string | null; size: string | null; color: string | null; thickness: string | null; imageUrl: string | null;
@@ -43,7 +43,7 @@ export type CatalogRow = {
   product: {
     name: string; slug: string; description: string | null; details: string[]; care: string[]; howToUse: string | null;
     techniques: string[]; images: string[]; metaTitle: string | null; metaDescription: string | null;
-    isTrending: boolean | null; isNewArrival: boolean | null; flags: string[];
+    isTrending: boolean | null; isNewArrival: boolean | null; flags: string[]; sortOrder?: number | null;
   };
   variant: {
     sku: string; size: string | null; netQuantity: number | null; netUnit: NetUnit | null; color: string | null; thickness: string | null;
@@ -170,7 +170,7 @@ export function finalizeRows(drafts: DraftRow[]): CatalogRow[] {
         name: clean(d.product.name) ?? productKey, slug: productKey, description: desc, details: d.product.details, care: d.product.care,
         howToUse: clean(d.product.howToUse ?? null), techniques: d.product.techniques, images: d.product.images,
         metaTitle: clean(d.product.metaTitle)?.slice(0, 160) ?? null, metaDescription: clean(d.product.metaDescription)?.slice(0, 320) ?? null,
-        isTrending: d.product.isTrending, isNewArrival: d.product.isNewArrival, flags: productFlags,
+        isTrending: d.product.isTrending, isNewArrival: d.product.isNewArrival, flags: productFlags, sortOrder: d.product.sortOrder ?? null,
       },
       variant: {
         sku, size, netQuantity, netUnit, color: clean(d.variant.color)?.slice(0, 60) ?? null, thickness: clean(d.variant.thickness)?.slice(0, 40) ?? null,

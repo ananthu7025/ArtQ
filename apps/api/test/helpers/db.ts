@@ -43,7 +43,7 @@ export type TestDb = { url: string; name: string; prisma: PrismaClient; drop: ()
 export async function createEmptyDatabase(serverUrl: string): Promise<{ url: string; name: string; drop: () => Promise<void> }> {
   const name = `artq_t_${randomBytes(6).toString('hex')}`;
   const admin = new PrismaClient({ datasourceUrl: withDatabase(serverUrl, 'postgres') });
-  try { await admin.$executeRawUnsafe(`CREATE DATABASE ${name}`); } finally { await admin.$disconnect(); }
+  try { await admin.$executeRawUnsafe(`CREATE DATABASE ${name} ENCODING 'UTF8'`); } finally { await admin.$disconnect(); }
   return { url: withDatabase(serverUrl, name), name, drop: () => dropDatabase(serverUrl, name) };
 }
 
@@ -65,7 +65,7 @@ export async function createMigratedDatabase(serverUrl: string): Promise<TestDb>
         `SELECT shobj_description(oid, 'pg_database') = 'migrated' AS ok FROM pg_database WHERE datname = $1`, tpl);
       if (!ready[0]?.ok) {
         await admin.$executeRawUnsafe(`DROP DATABASE IF EXISTS ${tpl} WITH (FORCE)`);
-        await admin.$executeRawUnsafe(`CREATE DATABASE ${tpl}`);
+        await admin.$executeRawUnsafe(`CREATE DATABASE ${tpl} ENCODING 'UTF8'`);
         migrateDeploy(withDatabase(serverUrl, tpl));
         await admin.$executeRawUnsafe(`COMMENT ON DATABASE ${tpl} IS 'migrated'`);
       }

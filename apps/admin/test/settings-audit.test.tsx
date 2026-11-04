@@ -27,7 +27,7 @@ function setup(path: string, extra: Record<string, Handler> = {}, role: Role = '
 }
 const sent = (s: ReturnType<typeof setup>['server'], method: string, path: string) => s.calls.filter((c) => c.method === method && c.path === path);
 const view = (o: Partial<AdminSettingsView> = {}): AdminSettingsView => ({
-  STORE_INFO: { ...DEFAULT_SETTINGS.STORE_INFO, phone: '+91 98470 12345' }, PAYMENT: DEFAULT_SETTINGS.PAYMENT, ORDER: DEFAULT_SETTINGS.ORDER, TAX: DEFAULT_SETTINGS.TAX, NOTIFY: DEFAULT_SETTINGS.NOTIFY,
+  STORE_INFO: { ...DEFAULT_SETTINGS.STORE_INFO, phone: '+91 98470 12345' }, PAYMENT: { ...DEFAULT_SETTINGS.PAYMENT, razorpayEnabled: true, codEnabled: true }, ORDER: DEFAULT_SETTINGS.ORDER, TAX: DEFAULT_SETTINGS.TAX, NOTIFY: DEFAULT_SETTINGS.NOTIFY,
   states: [{ code: '29', name: 'Karnataka' }, { code: '32', name: 'Kerala' }],
   updated: { STORE_INFO: { at: '2026-10-09T06:00:00Z', by: 'Anu' }, PAYMENT: null, ORDER: null, TAX: null, NOTIFY: null }, ...o,
 });

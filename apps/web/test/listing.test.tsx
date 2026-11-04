@@ -68,6 +68,7 @@ describe('ListingView', () => {
     expect(screen.getByRole('status').textContent).toBe('30 products');
     expect(screen.getAllByRole('article')).toHaveLength(24);
     expect(aside().getByRole('group', { name: 'Product type' })).toBeTruthy();
+    expect(aside().queryByRole('group', { name: 'Technique' })).toBeNull();
     expect(aside().getByRole('checkbox', { name: 'Gold, 4 products' })).toBeTruthy();
     const sizes = aside().getByRole('group', { name: 'Size' });
     expect(within(sizes).getAllByRole('checkbox')).toHaveLength(8);

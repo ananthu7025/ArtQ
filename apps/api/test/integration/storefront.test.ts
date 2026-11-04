@@ -104,7 +104,7 @@ describe('GET /v1/settings/public', () => {
     expect(res.status).toBe(200);
     expect(res.body.announcement).toEqual({ enabled: true, messages: ['Shipping all over India', 'Free shipping on orders above ₹1000'] });
     expect(res.body.shipping).toEqual({ freeThreshold: 100_000, estimatedDays: { min: 4, max: 7 } });
-    expect(res.body.payment).toEqual({ codEnabled: true, codFee: 4000, codMin: 20_000, codMax: 500_000 });
+    expect(res.body.payment).toEqual({ codEnabled: false, codFee: 4000, codMin: 20_000, codMax: 500_000 });
     expect(res.body.store).toEqual({ name: 'ArtQ', phone: null, email: null, whatsapp: null });
     expect(res.headers['cache-control']).toBe(PUBLIC_CACHE);
   });

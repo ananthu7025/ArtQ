@@ -56,7 +56,7 @@ function orderBy(sort: string, tsq: string | null): Prisma.Sql {
     case 'name_asc': return Prisma.sql`lower(p.name) ASC, p.id ASC`;
     case 'best_selling': return Prisma.sql`coalesce(s.sold, 0) DESC, p.is_featured DESC, p.published_at DESC NULLS LAST, p.id DESC`;
     case 'relevance': return tsq ? Prisma.sql`ts_rank(p.search_vector, to_tsquery('simple', ${tsq})) DESC, p.is_featured DESC, p.id DESC` : Prisma.sql`p.is_featured DESC, p.id DESC`;
-    default: return Prisma.sql`p.is_featured DESC, p.is_trending DESC, p.is_new_arrival DESC, p.published_at DESC NULLS LAST, p.id DESC`;
+    default: return Prisma.sql`NULLIF(p.sort_order, 0) ASC NULLS LAST, p.is_featured DESC, p.is_trending DESC, p.is_new_arrival DESC, p.published_at DESC NULLS LAST, p.id DESC`;
   }
 }
 

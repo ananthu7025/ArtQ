@@ -51,12 +51,15 @@ export function useVariantPicker(product: ProductDetail | null, stock: Stock | n
 
 export type Picker = ReturnType<typeof useVariantPicker>;
 
-export function OptionPicker({ picker, onChoose }: { picker: Picker; onChoose?: (v: PublicVariant | undefined) => void }) {
+export function OptionPicker({ picker, onChoose, includesBothParts = false }: { picker: Picker; onChoose?: (v: PublicVariant | undefined) => void; includesBothParts?: boolean }) {
   return (
     <>
       {picker.offered.map((d) => (
         <fieldset key={d.key}>
           <legend className="mb-2 text-[13px] font-medium text-ink-900">{d.label}{picker.pick[d.key] ? `: ${picker.pick[d.key]}` : ''}</legend>
+          {d.key === 'size' && includesBothParts && (
+            <p className="mb-2 text-sm font-semibold text-brand-700">Includes Both Part A &amp; Part B</p>
+          )}
           <div className="flex flex-wrap gap-2">
             {picker.values(d.key).map((value) => {
               const on = picker.pick[d.key] === value;
