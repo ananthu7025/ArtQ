@@ -19,3 +19,8 @@ apps/web/playwright-report/
 # Private server notes (host, SSH, admin passwords): never committed
 artq-server.md
 .bin/
+
+# local-only files (server guide, handbook, Razorpay key export)
+docs/production-handbook.md
+docs/server.md
+rzp-key*.csv
