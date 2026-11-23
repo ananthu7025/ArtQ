@@ -7,7 +7,7 @@ import * as Dialog from '@radix-ui/react-dialog';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Lock, X } from 'lucide-react';
 import { useState } from 'react';
-import { useForm } from 'react-hook-form';
+import { useForm, useWatch } from 'react-hook-form';
 import { Link } from 'react-router';
 import { z } from 'zod';
 import { ApiError } from '../../api/client';
@@ -18,6 +18,8 @@ import { applyServerErrors, FormAlert, SelectField, TextField } from '../../comp
 export type Variant = {
   id: number; sku: string; label: string; size: string | null; color: string | null; weightG: number | null; weightSource: 'MEASURED' | 'ESTIMATED' | null;
   price: number | null; mrp: number | null; onHand: number; reserved: number; available: number; isActive: boolean; version: number;
+  /** Open import flags (e.g. PRICE_MISSING, SIZE_CONFLICT). Any flag on an active variant blocks publishing. */
+  dataFlags?: string[];
 };
 type ProductDetail = { id: number; name: string; status: string; variants: Variant[] };
 
@@ -33,6 +35,7 @@ function variantForm(canPrice: boolean, version: number) {
     weightG: variantContent.shape.weightG,
     weightSource: variantContent.shape.weightSource,
     isActive: z.boolean(),
+    dataFlags: variantContent.shape.dataFlags,   // the flags that remain: an admin can only resolve (remove) them
     price: z.string(),
     mrp: z.string(),
   }).superRefine((v, ctx) => {
@@ -52,13 +55,14 @@ function VariantRowEditor({ v, canPrice, onDone, onConflict }: { v: Variant; can
   const { api } = useAuth();
   const qc = useQueryClient();
   const [error, setError] = useState<{ message: string; fixes?: { check: string; fix: string }[] } | null>(null);
-  const { register, handleSubmit, setError: setFieldError, formState: { errors, isSubmitting, dirtyFields } } = useForm<FormIn, unknown, FormOut>({
+  const { register, handleSubmit, setValue, control, setError: setFieldError, formState: { errors, isSubmitting, dirtyFields } } = useForm<FormIn, unknown, FormOut>({
     resolver: zodResolver(variantForm(canPrice, v.version)),
-    defaultValues: { label: v.label, color: v.color ?? '', weightG: v.weightG, weightSource: v.weightSource, isActive: v.isActive, price: fromPaise(v.price), mrp: fromPaise(v.mrp) },
+    defaultValues: { label: v.label, color: v.color ?? '', weightG: v.weightG, weightSource: v.weightSource, isActive: v.isActive, dataFlags: v.dataFlags ?? [], price: fromPaise(v.price), mrp: fromPaise(v.mrp) },
   });
+  const flags = useWatch({ control, name: 'dataFlags' }) ?? [];
   const submit = handleSubmit(async (values) => {
     setError(null);
-    const content = Object.fromEntries((['label', 'color', 'weightG', 'weightSource', 'isActive'] as const).filter((k) => dirtyFields[k]).map((k) => [k, values[k]]));
+    const content = Object.fromEntries((['label', 'color', 'weightG', 'weightSource', 'isActive', 'dataFlags'] as const).filter((k) => dirtyFields[k]).map((k) => [k, values[k]]));
     try {
       let version = v.version;
       if (Object.keys(content).length) version = (await api.request<Variant>('PATCH', `/admin/variants/${v.id}`, { body: { ...content, version } })).version;
@@ -70,7 +74,7 @@ function VariantRowEditor({ v, canPrice, onDone, onConflict }: { v: Variant; can
       onDone();
     } catch (e) {
       if (e instanceof ApiError && e.code === 'VERSION_CONFLICT') { onConflict(); return; }
-      if (applyServerErrors(e, setFieldError, ['label', 'color', 'weightG', 'weightSource', 'isActive', 'price', 'mrp'])) return;
+      if (applyServerErrors(e, setFieldError, ['label', 'color', 'weightG', 'weightSource', 'isActive', 'dataFlags', 'price', 'mrp'])) return;
       const fixes = e instanceof ApiError ? (e.details as { failures?: { check: string; fix: string }[] } | undefined)?.failures : undefined;
       setError({ message: e instanceof Error ? e.message : 'Something went wrong', ...(fixes ? { fixes } : {}) });
     }
@@ -89,6 +93,21 @@ function VariantRowEditor({ v, canPrice, onDone, onConflict }: { v: Variant; can
         <TextField id={id('mrp')} label="MRP (₹, optional)" inputMode="decimal" {...register('mrp')} error={errors.mrp?.message} />
       </>}
       <label className="flex items-center gap-2 text-sm text-ink-900 sm:col-span-2"><input type="checkbox" className="h-4 w-4 accent-brand-700" {...register('isActive')} /> Active (sold on the storefront)</label>
+      <div className="sm:col-span-2">
+        <h4 className="text-sm font-medium text-ink-900">Import flags</h4>
+        {flags.length === 0 ? <p className="text-sm text-ink-700">No open import flags.</p> : (
+          <>
+            <p className="text-sm text-ink-700">Check the value each flag points at, fix it above if needed, then resolve the flag and save. A product can&apos;t be published while an active variant has an open flag.</p>
+            <ul className="mt-1 flex flex-wrap gap-2">
+              {flags.map((f) => (
+                <li key={f} className="inline-flex items-center gap-2 rounded-full bg-warning-bg px-3 py-1 text-sm text-warning-ink">
+                  {f}<button type="button" className="font-semibold underline" onClick={() => setValue('dataFlags', flags.filter((x) => x !== f), { shouldDirty: true })} aria-label={`Mark ${f} as resolved on ${v.sku}`}>Resolve</button>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+      </div>
       {error && (
         <div className="sm:col-span-2"><FormAlert>{error.message}{error.fixes && <ul className="mt-1 list-disc pl-5">{error.fixes.map((f) => <li key={f.check}>{f.check}: {f.fix}</li>)}</ul>}</FormAlert></div>
       )}
@@ -134,6 +153,11 @@ export function VariantDrawer({ productId, onClose, canWrite, canPrice }: { prod
                       <div><dt className="text-ink-700">Available</dt><dd className={v.available === 0 ? 'font-semibold text-danger-700' : 'text-ink-900'}>{v.available} <Link to={`/inventory?q=${encodeURIComponent(v.sku)}`} className="text-brand-700 underline">Inventory</Link></dd></div>
                     </dl>
                   </div>
+                  {(v.dataFlags?.length ?? 0) > 0 && editing !== v.id && (
+                    <ul className="mt-2 flex flex-wrap gap-2" aria-label={`Open import flags on ${v.sku}`}>
+                      {v.dataFlags!.map((f) => <li key={f} className="rounded-full bg-warning-bg px-3 py-1 text-sm text-warning-ink">{f}</li>)}
+                    </ul>
+                  )}
                   {canWrite && editing !== v.id && <button type="button" className="mt-2 h-11 rounded-md border border-border-input px-4 font-medium text-ink-900 hover:bg-surface-100" onClick={() => setEditing(v.id)} aria-label={`Edit ${v.sku}`}>Edit</button>}
                   {editing === v.id && <div className="mt-3"><VariantRowEditor v={v} canPrice={canPrice} onDone={() => setEditing(null)} onConflict={() => setConflict(true)} /></div>}
                 </li>
