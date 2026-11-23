@@ -7,7 +7,7 @@ import { pincodeField } from './storefront-schemas.js';
 const MONEY_MAX = 1_000_000;   // ₹10,000 per shipment
 const rate = (what: string) => z.number({ error: `Enter ${what}` }).int('Use whole paise').min(0, 'Use 0 or more').max(MONEY_MAX, 'At most ₹10,000');
 
-export const SLABS_MAX = 20;
+export const SLABS_MAX = 40;   // the India Post contractual tariff has 37 weight bands (500 g … 35 kg)
 /** One weight band: up to `maxWeightG` grams costs `rate`. */
 export const slabBody = z.strictObject({
   maxWeightG: z.number({ error: 'Enter a weight in grams' }).int('Use whole grams').min(1, 'Use at least 1 g').max(100_000, 'At most 100 kg'),
