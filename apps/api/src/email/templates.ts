@@ -134,7 +134,7 @@ const TEMPLATES: Record<string, (d: Record<string, unknown>) => Rendered> = {
     const n = str(d.orderNumber, 'orderNumber');
     const ship = (d.shipment ?? null) as { courier?: string; awb?: string; trackingUrl?: string | null } | null;
     if (!ship?.courier || !ship.awb) throw new TypeError('order_shipped: shipment is required');
-    const intro = [`Hi ${str(d.firstName, 'firstName')}, your order ${n} is on its way with ${ship.courier}.`, `Tracking number: ${ship.awb}.`, `It usually arrives in ${str(d.estimate, 'estimate')}. Your tax invoice is available from us on request.`];
+    const intro = [`Hi ${str(d.firstName, 'firstName')}, your order ${n} is on its way with ${ship.courier}.`, `Tracking number: ${ship.awb}.`, `It usually arrives in ${str(d.estimate, 'estimate')}. Your invoice is available from us on request.`];
     const action = ship.trackingUrl ? { label: 'Track your parcel', href: ship.trackingUrl } : undefined;
     return { subject: `Order ${n} shipped`, text: [...intro, ...(action ? [action.href] : [])].join(' '), html: layout(`Order ${n} shipped`, intro, action) };
   },

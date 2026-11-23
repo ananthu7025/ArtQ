@@ -378,7 +378,7 @@ export class CatalogService {
       const [p] = await tx.$queryRaw<{ hsnCode: string | null; gstRate: Prisma.Decimal | null; taxApprovedAt: Date | null }[]>`
         SELECT hsn_code AS "hsnCode", gst_rate AS "gstRate", tax_approved_at AS "taxApprovedAt" FROM products WHERE id = ${id} AND deleted_at IS NULL FOR NO KEY UPDATE`;
       if (!p) throw notFound('Product');
-      await tx.product.update({ where: { id }, data: { hsnCode: body.hsnCode, gstRate: body.gstRate, taxApprovedAt: new Date(), taxApprovedBy: actor.userId, updatedBy: actor.userId } });
+      await tx.product.update({ where: { id }, data: { hsnCode: body.hsnCode || null, gstRate: body.gstRate, taxApprovedAt: new Date(), taxApprovedBy: actor.userId, updatedBy: actor.userId } });
       await this.afterChange(tx, id);
       await actor.audit(tx, {
         action: 'product.tax_approve', entity: 'product', entityId: id,

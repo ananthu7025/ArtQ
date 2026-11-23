@@ -15,7 +15,7 @@ export function teakFrame(over: Partial<ProductPayload> = {}): ProductPayload {
     ],
     images: [{ id: 1, mediaId: 101, alt: 'Front', sortOrder: 0, isCover: true, media: { id: 101, status: 'READY', renditions: { 160: 'https://cdn.test/101-160.webp' } } }],
     relations: [],
-    readiness: { ready: false, failures: [{ code: 'no_tax', check: 'Tax classification', fix: 'Enter the HSN code and GST rate and approve them.' }, { code: 'stock_uncounted', check: 'Physical inventory', fix: 'Count the stock of every active variant (Inventory → Recount).' }] },
+    readiness: { ready: false, failures: [{ code: 'no_tax', check: 'Tax classification', fix: 'Enter the GST rate (0 if you charge no GST) and approve it. The HSN code is optional.' }, { code: 'stock_uncounted', check: 'Physical inventory', fix: 'Count the stock of every active variant (Inventory → Recount).' }] },
     version: 5, updatedAt: '2026-10-02T10:42:00Z', updatedBy: { id: 9, name: 'Anu', email: 'anu@artq.in' },
     ...over,
   };

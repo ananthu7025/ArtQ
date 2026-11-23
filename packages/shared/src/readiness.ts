@@ -5,7 +5,7 @@
 export const READINESS = {
   taxonomy: { check: 'Type & category', fix: 'Choose a product type and a category of that type.' },
   no_description: { check: 'Description', fix: 'Write a description for the product.' },
-  no_tax: { check: 'Tax classification', fix: 'Enter the HSN code and GST rate and approve them.' },
+  no_tax: { check: 'Tax classification', fix: 'Enter the GST rate (0 if you charge no GST) and approve it. The HSN code is optional.' },
   has_flags: { check: 'Data flags', fix: 'Resolve the import flags on the product (for example a description copied from elsewhere).' },
   no_image: { check: 'Image', fix: 'Add a cover image and wait until it has finished processing.' },
   no_active_variant: { check: 'Variants', fix: 'Turn on at least one variant.' },

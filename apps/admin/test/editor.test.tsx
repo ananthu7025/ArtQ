@@ -246,16 +246,36 @@ describe('tax', () => {
     const u = userEvent.setup();
     const { server } = setup({ extra: { 'POST /admin/products/1/tax-approval': () => [200, teakFrame({ hsnCode: '4414', gstRate: 5, taxApprovedAt: '2026-10-02T11:00:00Z' })] } });
     await ready();
-    await u.type(screen.getByLabelText('HSN code'), '441');
+    await u.type(screen.getByLabelText('HSN code (optional)'), '441');
     await u.type(screen.getByLabelText('GST rate (%)'), '41');
     await u.click(screen.getByRole('button', { name: 'Approve tax' }));
-    await waitFor(() => expectFieldError('HSN code', 'Enter an HSN code of 4, 6 or 8 digits'));
+    await waitFor(() => expectFieldError('HSN code (optional)', 'Enter an HSN code of 4, 6 or 8 digits'));
     expectFieldError('GST rate (%)', 'GST rate cannot be more than 40 %');
-    await u.type(screen.getByLabelText('HSN code'), '4');
+    await u.type(screen.getByLabelText('HSN code (optional)'), '4');
     await u.clear(screen.getByLabelText('GST rate (%)')); await u.type(screen.getByLabelText('GST rate (%)'), '5');
     await u.click(screen.getByRole('button', { name: 'Approve tax' }));
     await screen.findByText('Tax approved');
     expect(calls(server, 'POST', '/admin/products/1/tax-approval')[0]!.body).toEqual({ hsnCode: '4414', gstRate: 5 });
+  });
+
+  it('GST 0 with the HSN left blank is valid (seller not registered for GST)', async () => {
+    const u = userEvent.setup();
+    const { server } = setup({ extra: { 'POST /admin/products/1/tax-approval': () => [200, teakFrame({ hsnCode: null, gstRate: 0, taxApprovedAt: '2026-10-02T11:00:00Z' })] } });
+    await ready();
+    await u.clear(screen.getByLabelText('HSN code (optional)'));
+    await u.clear(screen.getByLabelText('GST rate (%)')); await u.type(screen.getByLabelText('GST rate (%)'), '0');
+    await u.click(screen.getByRole('button', { name: 'Approve tax' }));
+    await waitFor(() => expect(calls(server, 'POST', '/admin/products/1/tax-approval')).toHaveLength(1));
+    expect(calls(server, 'POST', '/admin/products/1/tax-approval')[0]!.body).toEqual({ hsnCode: '', gstRate: 0 });
+  });
+
+  it('the GST rate is still required even though HSN is optional', async () => {
+    const u = userEvent.setup();
+    setup();
+    await ready();
+    await u.clear(screen.getByLabelText('GST rate (%)'));
+    await u.click(screen.getByRole('button', { name: 'Approve tax' }));
+    await waitFor(() => expectFieldError('GST rate (%)', 'Enter the GST rate'));
   });
 });
 

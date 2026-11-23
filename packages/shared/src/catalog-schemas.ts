@@ -99,9 +99,13 @@ export const productImagesBody = z.strictObject({
 });
 export type ProductImages = z.infer<typeof productImagesBody>;
 
-/** Tax approval (catalog:publish). HSN: 4, 6 or 8 digits. GST %: the accountant's rate (D-1); the database allows 0–40. */
+/**
+ * Tax approval (catalog:publish). GST %: the accountant's rate (D-1); the database allows 0–40, and 0 is how "no GST"
+ * (a seller not registered for GST) is recorded. HSN is optional: empty means none, otherwise 4, 6 or 8 digits.
+ */
 export const taxApprovalBody = z.strictObject({
-  hsnCode: z.string().trim().regex(/^(\d{4}|\d{6}|\d{8})$/, 'Enter an HSN code of 4, 6 or 8 digits'),
+  hsnCode: z.string().trim().regex(/^(\d{4}|\d{6}|\d{8})$/, 'Enter an HSN code of 4, 6 or 8 digits')
+    .or(z.literal('')).optional(),
   gstRate: z.number({ error: 'Enter the GST rate' }).min(0, 'GST rate cannot be negative').max(40, 'GST rate cannot be more than 40 %')
     .refine((r) => Math.abs(r * 100 - Math.round(r * 100)) < 1e-9, 'Use at most two decimals'),
 });
