@@ -34,10 +34,10 @@ export function TaxSection({ product, canApprove }: { product: ProductPayload; c
   return (
     <form noValidate onSubmit={(e) => { void submit(e); }} className="space-y-3" aria-label="Tax">
       <p className="text-sm text-ink-700">
-        {product.taxApprovedAt ? <span className="inline-flex items-center gap-1 text-success-700"><Check aria-hidden size={16} /> Approved {dateTime.format(new Date(product.taxApprovedAt))}</span> : 'Not approved yet. Use the HSN code and GST rate your accountant gives you (GST rates changed in September 2025).'}
+        {product.taxApprovedAt ? <span className="inline-flex items-center gap-1 text-success-700"><Check aria-hidden size={16} /> Approved {dateTime.format(new Date(product.taxApprovedAt))}</span> : 'Not approved yet. Enter the GST rate your accountant gives you. If you charge no GST (not registered), enter 0. The HSN code is optional.'}
       </p>
       <div className="grid gap-3 sm:grid-cols-2">
-        <TextField id="tax-hsn" label="HSN code" inputMode="numeric" disabled={!canApprove} {...register('hsnCode')} error={errors.hsnCode?.message} />
+        <TextField id="tax-hsn" label="HSN code (optional)" inputMode="numeric" disabled={!canApprove} {...register('hsnCode')} error={errors.hsnCode?.message} />
         <TextField id="tax-gst" label="GST rate (%)" inputMode="decimal" disabled={!canApprove} {...register('gstRate', { setValueAs: (v) => (v === '' || v === null || v === undefined ? undefined : Number(v)) })} error={errors.gstRate?.message} />
       </div>
       {error && <FormAlert>{error}</FormAlert>}

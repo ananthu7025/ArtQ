@@ -112,7 +112,7 @@ describe('table, tabs and filters', () => {
     await u.click(within(rowOf('Silver Mica')).getByRole('button', { name: '2 publication checks failing for Silver Mica' }));
     expect(await screen.findByText('Not ready to publish')).toBeTruthy();
     expect(screen.getByText(/Add a cover image/)).toBeTruthy();
-    expect(screen.getByText(/HSN code and GST rate/)).toBeTruthy();
+    expect(screen.getByText(/GST rate \(0 if you charge no GST\)/)).toBeTruthy();
   });
 
   it('type tabs: All + 5 types + More + Unassigned with counts; picking one filters the request', async () => {

@@ -278,8 +278,30 @@ describe('tax approval (POST /products/:id/tax-approval)', () => {
     expect([a.before, a.after]).toEqual([{ hsnCode: null, gstRate: null, approved: false }, { hsnCode: '3907', gstRate: 18 }]);
   });
 
+  it('HSN is optional: GST 0 % with no HSN is approved, stored as null, and the product can then be published', async () => {
+    const p = await readyDraft(['tax']);
+    const res = await call('post', `/products/${p.id}/tax-approval`, ADMIN, { gstRate: 0 });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ hsnCode: null, gstRate: 0 });
+    expect((await publish(p.id)).status).toBe(200);          // the database check products_active_gate_ck accepts it too
+  });
+
+  it('an empty HSN clears a previously set one', async () => {
+    const p = await readyDraft(['tax']);
+    expect((await call('post', `/products/${p.id}/tax-approval`, ADMIN, { hsnCode: '3907', gstRate: 5 })).status).toBe(200);
+    const res = await call('post', `/products/${p.id}/tax-approval`, ADMIN, { hsnCode: '', gstRate: 0 });
+    expect(res.body).toMatchObject({ hsnCode: null, gstRate: 0 });
+  });
+
+  it('the rate and its approval are still required: no rate → not publishable (no_tax)', async () => {
+    const p = await readyDraft(['tax']);
+    expect(codes(await publish(p.id))).toContain('no_tax');
+    expect((await call('post', `/products/${p.id}/tax-approval`, ADMIN, { hsnCode: '3907' })).status).toBe(400);   // HSN alone is not enough
+  });
+
   it.each([
     [{ hsnCode: '3907', gstRate: 0 }, 200], [{ hsnCode: '390730', gstRate: 40 }, 200], [{ hsnCode: '39073010', gstRate: 0.25 }, 200],
+    [{ gstRate: 0 }, 200], [{ hsnCode: '', gstRate: 18 }, 200], [{ hsnCode: '   ', gstRate: 18 }, 400],
     [{ hsnCode: '390', gstRate: 18 }, 400], [{ hsnCode: '39073', gstRate: 18 }, 400], [{ hsnCode: '3907301', gstRate: 18 }, 400], [{ hsnCode: '39AB', gstRate: 18 }, 400],
     [{ hsnCode: '3907', gstRate: 40.01 }, 400], [{ hsnCode: '3907', gstRate: -1 }, 400], [{ hsnCode: '3907', gstRate: 18.255 }, 400],
     [{ hsnCode: '3907' }, 400], [{ hsnCode: '3907', gstRate: 18, approvedBy: 1 }, 400],
