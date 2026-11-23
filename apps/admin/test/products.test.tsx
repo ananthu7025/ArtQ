@@ -297,3 +297,93 @@ describe('variant drawer (ADMIN)', () => {
     expect(alert.textContent).toContain('Variants: Turn on at least one variant.');
   });
 });
+
+describe('variant drawer: import flags (Resolve)', () => {
+  const FLAGGED = { ...DETAIL, variants: [{ ...DETAIL.variants[0]!, dataFlags: ['STOCK_AMBIGUOUS', 'WEIGHT_ESTIMATED'] }] };
+  const open = async (u: ReturnType<typeof userEvent.setup>) => {
+    await within(await table()).findByText('Ocean Pour Kit');
+    await u.click(within(rowOf('Ocean Pour Kit')).getByRole('button', { name: 'Variants of Ocean Pour Kit' }));
+    return screen.findByRole('dialog', { name: 'Variants of Ocean Pour Kit' });
+  };
+  const flagged = (extra: Record<string, Handler> = {}) => ({ 'GET /admin/products/1': () => [200, FLAGGED] as [number, unknown], ...extra });
+
+  it('lists each open flag on the variant row, before any edit', async () => {
+    const u = userEvent.setup();
+    setup({ role: 'ADMIN', extra: flagged() });
+    const drawer = await open(u);
+    const list = within(drawer).getByRole('list', { name: 'Open import flags on OCEAN-1KG' });
+    expect(within(list).getAllByRole('listitem').map((li) => li.textContent)).toEqual(['STOCK_AMBIGUOUS', 'WEIGHT_ESTIMATED']);
+  });
+
+  it('a variant with no flags shows none and has nothing to resolve', async () => {
+    const u = userEvent.setup();
+    setup({ role: 'ADMIN' });
+    const drawer = await open(u);
+    expect(within(drawer).queryByRole('list', { name: /Open import flags/ })).toBeNull();
+    await u.click(within(drawer).getByRole('button', { name: 'Edit OCEAN-1KG' }));
+    expect(within(drawer).getByText('No open import flags.')).toBeTruthy();
+    expect(within(drawer).queryByRole('button', { name: /as resolved/ })).toBeNull();
+  });
+
+  it('Resolve removes one flag, and Save sends only the flags that remain, with the version', async () => {
+    const u = userEvent.setup();
+    const { server } = setup({ role: 'ADMIN', extra: flagged({ 'PATCH /admin/variants/11': (c) => [200, { ...FLAGGED.variants[0], ...(c.body as object), version: 5 }] }) });
+    const drawer = await open(u);
+    await u.click(within(drawer).getByRole('button', { name: 'Edit OCEAN-1KG' }));
+    const form = within(drawer).getByRole('form', { name: 'Edit OCEAN-1KG' });
+    await u.click(within(form).getByRole('button', { name: 'Mark WEIGHT_ESTIMATED as resolved on OCEAN-1KG' }));
+    expect(within(form).queryByRole('button', { name: 'Mark WEIGHT_ESTIMATED as resolved on OCEAN-1KG' })).toBeNull();
+    expect(within(form).getByRole('button', { name: 'Mark STOCK_AMBIGUOUS as resolved on OCEAN-1KG' })).toBeTruthy();
+    await u.click(within(form).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(last(server, 'PATCH', '/admin/variants/11')).toBeTruthy());
+    expect(last(server, 'PATCH', '/admin/variants/11')!.body).toEqual({ dataFlags: ['STOCK_AMBIGUOUS'], version: 4 });
+  });
+
+  it('resolving every flag sends an empty list (not omitted)', async () => {
+    const u = userEvent.setup();
+    const { server } = setup({ role: 'ADMIN', extra: flagged({ 'PATCH /admin/variants/11': (c) => [200, { ...FLAGGED.variants[0], ...(c.body as object), version: 5 }] }) });
+    const drawer = await open(u);
+    await u.click(within(drawer).getByRole('button', { name: 'Edit OCEAN-1KG' }));
+    const form = within(drawer).getByRole('form', { name: 'Edit OCEAN-1KG' });
+    await u.click(within(form).getByRole('button', { name: 'Mark STOCK_AMBIGUOUS as resolved on OCEAN-1KG' }));
+    await u.click(within(form).getByRole('button', { name: 'Mark WEIGHT_ESTIMATED as resolved on OCEAN-1KG' }));
+    expect(within(form).getByText('No open import flags.')).toBeTruthy();
+    await u.click(within(form).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(last(server, 'PATCH', '/admin/variants/11')).toBeTruthy());
+    expect(last(server, 'PATCH', '/admin/variants/11')!.body).toEqual({ dataFlags: [], version: 4 });
+  });
+
+  it('saving without touching the flags does not send them', async () => {
+    const u = userEvent.setup();
+    const { server } = setup({ role: 'ADMIN', extra: flagged({ 'PATCH /admin/variants/11': (c) => [200, { ...FLAGGED.variants[0], ...(c.body as object), version: 5 }] }) });
+    const drawer = await open(u);
+    await u.click(within(drawer).getByRole('button', { name: 'Edit OCEAN-1KG' }));
+    const form = within(drawer).getByRole('form', { name: 'Edit OCEAN-1KG' });
+    const label = within(form).getByLabelText('Label');
+    await u.clear(label); await u.type(label, '1 kg tub');
+    await u.click(within(form).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(last(server, 'PATCH', '/admin/variants/11')).toBeTruthy());
+    expect(last(server, 'PATCH', '/admin/variants/11')!.body).toEqual({ label: '1 kg tub', version: 4 });
+  });
+
+  it('a server refusal is shown, and the flag stays resolved in the form for another try', async () => {
+    const u = userEvent.setup();
+    setup({ role: 'ADMIN', extra: flagged({ 'PATCH /admin/variants/11': () => err(422, 'FLAGS_ADD_FORBIDDEN', 'Data flags can be resolved here, not added') }) });
+    const drawer = await open(u);
+    await u.click(within(drawer).getByRole('button', { name: 'Edit OCEAN-1KG' }));
+    const form = within(drawer).getByRole('form', { name: 'Edit OCEAN-1KG' });
+    await u.click(within(form).getByRole('button', { name: 'Mark STOCK_AMBIGUOUS as resolved on OCEAN-1KG' }));
+    await u.click(within(form).getByRole('button', { name: 'Save' }));
+    expect((await within(drawer).findByRole('alert')).textContent).toContain('Data flags can be resolved here, not added');
+    expect(within(form).queryByRole('button', { name: 'Mark STOCK_AMBIGUOUS as resolved on OCEAN-1KG' })).toBeNull();
+  });
+
+  it('STAFF (read-only) sees the flags but has no way to resolve them', async () => {
+    const u = userEvent.setup();
+    setup({ role: 'STAFF', extra: flagged() });
+    const drawer = await open(u);
+    expect(within(drawer).getByRole('list', { name: 'Open import flags on OCEAN-1KG' })).toBeTruthy();
+    expect(within(drawer).queryByRole('button', { name: 'Edit OCEAN-1KG' })).toBeNull();
+    expect(within(drawer).queryByRole('button', { name: /as resolved/ })).toBeNull();
+  });
+});
