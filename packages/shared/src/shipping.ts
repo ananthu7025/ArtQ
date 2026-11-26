@@ -14,7 +14,7 @@ export type ShippingLine = {
 };
 
 export type ShippingSettings = {
-  freeThreshold: Paise;          // SHIPPING.freeThreshold (₹1,000)
+  freeThreshold: Paise;          // SHIPPING.freeThreshold: free shipping from this order value; 0 = no free shipping
   packagingWeightG: number;      // SHIPPING.packagingWeightG (150)
   volumetricDivisor: number;     // SHIPPING.volumetricDivisor (5000)
   heavyCapG: number;             // SHIPPING.heavyCapG (10,000)
@@ -122,8 +122,10 @@ export function shippingCharge(input: ShippingInput): ShippingQuote | ShippingEr
 
   // 5–6. Free shipping and the heavy cap
   const afterCoupon = input.subtotal - input.couponDiscount;
-  const eligible = afterCoupon >= settings.freeThreshold || input.freeShippingCoupon;
-  const remainingForFree = eligible ? 0 : settings.freeThreshold - afterCoupon;
+  // A threshold of 0 means the store has no free shipping by order value (only a free-shipping coupon can waive it).
+  const freeByValue = settings.freeThreshold > 0 && afterCoupon >= settings.freeThreshold;
+  const eligible = freeByValue || input.freeShippingCoupon;
+  const remainingForFree = eligible || settings.freeThreshold === 0 ? 0 : settings.freeThreshold - afterCoupon;
   let shipping: Paise;
   let heavySurcharge = 0;
   if (!eligible) shipping = rate;

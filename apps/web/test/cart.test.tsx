@@ -84,6 +84,18 @@ describe('cart page', () => {
     await axeClean(container);
   });
 
+  it('no free shipping (threshold 0): no free-shipping text at all; a free-shipping coupon still shows its own banner', async () => {
+    routes['GET /cart'] = () => json(view({ items: [item({ id: 1 })], totals: totals({ itemCount: 1, freeShippingThreshold: 0, freeShippingRemaining: 0 }) }));
+    const first = page();
+    expect(await screen.findByRole('heading', { name: /Your cart \(1 item\)/ })).toBeTruthy();
+    expect(screen.queryByText(/free shipping/i)).toBeNull();
+    expect(screen.queryByText(/more for/i)).toBeNull();
+    first.unmount();
+    routes['GET /cart'] = () => json(view({ items: [item({ id: 1 })], totals: totals({ itemCount: 1, freeShippingThreshold: 0, freeShippingRemaining: 0, shipping: { ...totals().shipping, freeApplied: true } }) }));
+    page();
+    expect(await screen.findByText('FREE shipping', { exact: false })).toBeTruthy();
+  });
+
   it('quantity: + and − send the new quantity; + stops at what is available; a stock error shows on the line', async () => {
     const u = userEvent.setup();
     routes['GET /cart'] = () => json(view({ items: [item({ id: 1, quantity: 2, maxQuantity: 3 })] }));

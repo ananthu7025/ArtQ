@@ -2,10 +2,14 @@
 import { formatINR, type CartView, type ShippingProblem } from '@artq/shared';
 import { Truck } from 'lucide-react';
 
-/** "Add ₹151 more for FREE shipping" with a bar; "You get FREE shipping" once eligible (after any coupon). */
+/**
+ * "Add ₹151 more for FREE shipping" with a bar; "You get FREE shipping" once eligible (after any coupon).
+ * Nothing at all when the store has no free shipping (threshold 0) and no free-shipping coupon is applied.
+ */
 export function FreeShippingProgress({ totals }: { totals: CartView['totals'] }) {
   if (totals.itemCount === 0) return null;
   const free = totals.shipping.freeApplied;
+  if (!free && totals.freeShippingThreshold === 0) return null;
   const done = free ? 1 : Math.max(0, Math.min(1, 1 - totals.freeShippingRemaining / totals.freeShippingThreshold));
   return (
     <div className="rounded-md bg-brand-50 px-3 py-2.5 text-sm text-brand-800">

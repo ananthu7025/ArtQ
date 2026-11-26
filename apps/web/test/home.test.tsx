@@ -94,23 +94,82 @@ describe('Home sections', () => {
     expect(screen.getByRole('heading', { level: 1 }).className).toContain('sr-only');
   });
 
+  const dot = (n: number) => screen.getByRole('button', { name: `Show slide ${n}` });
+  const current = () => [1, 2].find((n) => dot(n).getAttribute('aria-current') === 'true');
+
   it('hero: slides rotate every intervalMs; Pause stops it; a dot jumps to a slide; hovering holds it', async () => {
     vi.useFakeTimers();
     const { container } = render(<HomeSections home={HOME} />);
-    const slide = (n: number) => container.querySelector(`[aria-label="${n} of 2"]`) as HTMLElement;
-    expect(slide(1).hidden).toBe(false);
+    expect(current()).toBe(1);
     act(() => { vi.advanceTimersByTime(6000); });
-    expect(slide(2).hidden).toBe(false);
-    expect(within(slide(2)).getByText('Diwali Collection')).toBeTruthy();
+    expect(current()).toBe(2);
+    expect(within(container.querySelector('[aria-label="2 of 2"]') as HTMLElement).getByText('Diwali Collection')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Pause the featured slides' }));
     act(() => { vi.advanceTimersByTime(20_000); });
-    expect(slide(2).hidden).toBe(false);
-    fireEvent.click(screen.getByRole('button', { name: 'Show slide 1' }));
-    expect(slide(1).hidden).toBe(false);
+    expect(current()).toBe(2);
+    fireEvent.click(dot(1));
+    expect(current()).toBe(1);
     fireEvent.click(screen.getByRole('button', { name: 'Play the featured slides' }));
     fireEvent.pointerEnter(container.querySelector('[aria-roledescription="carousel"]')!);
     act(() => { vi.advanceTimersByTime(20_000); });
-    expect(slide(1).hidden).toBe(false);
+    expect(current()).toBe(1);
+  });
+
+  it('hero slider: more than one slide gets a sliding track, arrows (wrapping), centred dots; only the current slide is reachable', () => {
+    const { container } = render(<HomeSections home={HOME} />);
+    expect(container.querySelector('[data-slider]')).not.toBeNull();
+    const slide = (n: number) => container.querySelector(`[aria-label="${n} of 2"]`) as HTMLElement;
+    expect(slide(1).getAttribute('aria-hidden')).toBeNull();
+    expect(slide(2).getAttribute('aria-hidden')).toBe('true');
+    expect(slide(2).hasAttribute('inert')).toBe(true);
+    expect(slide(1).hasAttribute('inert')).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Next slide' }));
+    expect(current()).toBe(2);
+    expect(slide(1).hasAttribute('inert')).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Next slide' }));
+    expect(current()).toBe(1);                                                        // after the last comes the first
+    fireEvent.click(screen.getByRole('button', { name: 'Previous slide' }));
+    expect(current()).toBe(2);                                                        // before the first comes the last
+    expect(dot(1).parentElement!.className).toContain('justify-center');
+  });
+
+  it('hero slider: the track slides to the chosen slide; a swipe moves the current slide; the page\'s own scroll events do not pull it back', () => {
+    vi.useFakeTimers();
+    const scrollTo = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, 'scrollTo', { configurable: true, value: scrollTo });
+    Object.defineProperty(HTMLElement.prototype, 'clientWidth', { configurable: true, get: () => 400 });
+    try {
+      const { container } = render(<HomeSections home={HOME} />);
+      const track = container.querySelector('[data-slider]') as HTMLElement;
+      fireEvent.click(dot(2));
+      expect(scrollTo).toHaveBeenLastCalledWith({ left: 400, behavior: 'smooth' });
+      fireEvent.scroll(track);                                                        // in-between position (still 0): ignored
+      expect(current()).toBe(2);
+      act(() => { vi.advanceTimersByTime(800); });                                    // the move is over
+      Object.defineProperty(track, 'scrollLeft', { configurable: true, value: 0, writable: true });
+      fireEvent.scroll(track);                                                        // the user swiped back to the first slide
+      expect(current()).toBe(1);
+      track.scrollLeft = 390;                                                         // swiped almost to the second
+      fireEvent.scroll(track);
+      expect(current()).toBe(2);
+    } finally {
+      delete (HTMLElement.prototype as { scrollTo?: unknown }).scrollTo;
+      delete (HTMLElement.prototype as { clientWidth?: unknown }).clientWidth;
+    }
+  });
+
+  it('hero: a single slide is a still picture, with no arrows, dots or sliding track; reduced motion does not autoplay', () => {
+    const one = { ...HOME, hero: { ...HOME.hero, slides: [HOME.hero.slides[1]!] } };
+    const { container, unmount } = render(<HomeSections home={one} />);
+    expect(container.querySelector('[data-slider]')).toBeNull();
+    for (const name of ['Next slide', 'Previous slide', 'Show slide 1', 'Pause the featured slides']) expect(screen.queryByRole('button', { name })).toBeNull();
+    expect(screen.getByText('Diwali Collection')).toBeTruthy();
+    unmount();
+    vi.useFakeTimers();
+    setMotion(true);
+    render(<HomeSections home={HOME} />);
+    act(() => { vi.advanceTimersByTime(30_000); });
+    expect(current()).toBe(1);
   });
 
   it('hero video: added and played in the browser; not added at all under reduced motion (poster only)', () => {

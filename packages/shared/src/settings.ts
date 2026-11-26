@@ -71,7 +71,7 @@ export const PUBLIC_SETTING_KEYS: readonly SettingKey[] = ['STORE_INFO', 'ANNOUN
 /** Launch defaults (database.md §3.13). Unknown business values are null until the client supplies them. */
 export const DEFAULT_SETTINGS: { [K in SettingKey]: SettingValue<K> } = {
   STORE_INFO: { name: 'ArtQ', legalName: null, gstin: null, address: null, stateCode: '32', phone: null, email: null, whatsapp: null },
-  ANNOUNCEMENT_BAR: { enabled: true, messages: ['Shipping all over India', 'Free shipping on orders above ₹1000'] },
+  ANNOUNCEMENT_BAR: { enabled: true, messages: ['Shipping all over India'] },
   // product.md §5.1 order. 'reels' is "Trending now"; 'trending' is its fallback product grid (shown only without reels).
   HOME_SECTIONS: { order: ['hero', 'types', 'new-arrivals', 'reels', 'trending', 'techniques', 'testimonials', 'instagram'], hidden: [] },
   HERO: { slideIntervalMs: 6000 },

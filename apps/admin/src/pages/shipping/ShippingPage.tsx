@@ -69,7 +69,7 @@ function RatesTab() {
   return (
     <Loaded>{(data) => (
       <div className="space-y-5">
-        <p className="max-w-3xl text-sm text-ink-700">Each order is charged by its chargeable weight (actual or volumetric, plus packaging): the first slab it fits in, then the zone’s extra rate for each kg beyond the last slab. Orders over the free-shipping threshold ship free up to the heavy cap (Settings).</p>
+        <p className="max-w-3xl text-sm text-ink-700">Each order is charged by its chargeable weight (actual or volumetric, plus packaging): the first slab it fits in, then the zone’s extra rate for each kg beyond the last slab. If a free-shipping threshold is set (Settings), orders over it ship free up to the heavy cap; with the threshold at 0 every order pays its shipping.</p>
         {data.zones.map((z) => <ZoneCard key={`${z.id}-${z.slabs.length}-${z.name}`} zone={z} />)}
         {adding ? <ZoneCard zone={null} onDone={() => setAdding(false)} /> : <button type="button" className={`${btn} border border-border-input`} onClick={() => setAdding(true)}><Plus size={16} aria-hidden className="mr-1" />Add zone</button>}
         <StateMapping data={data} />
@@ -204,7 +204,7 @@ function SettingsFormView({ settings }: { settings: ShippingAdminView['settings'
       <section aria-labelledby="s-free" className={card}>
         <h2 id="s-free" className="mb-4 font-semibold text-ink-900">Free shipping</h2>
         <div className="grid gap-4 sm:grid-cols-2">
-          <TextField id="s-threshold" label="Free shipping from (₹)" inputMode="decimal" hint="Order value after any coupon." {...register('freeThreshold')} error={errors.freeThreshold?.message} />
+          <TextField id="s-threshold" label="Free shipping from (₹)" inputMode="decimal" hint="Order value after any coupon. Enter 0 for no free shipping." {...register('freeThreshold')} error={errors.freeThreshold?.message} />
           <TextField id="s-cap" label="Free up to (grams)" inputMode="numeric" hint="Heavier free orders pay the zone’s extra rate per kg above this." {...register('heavyCapG')} error={errors.heavyCapG?.message} />
         </div>
         <div className="mt-4"><Check id="s-cap-on" label="Apply the weight limit to free shipping" {...register('heavyCapEnabled')} /></div>
