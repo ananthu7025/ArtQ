@@ -10,7 +10,7 @@ if (new URL(url).pathname !== '/artq_e2e') throw new Error(`refusing to seed ${n
 
 export const STOREFRONT_FIXTURE = {
   hiddenType: 'Retired Range',
-  announcement: ['Shipping all over India', 'Free shipping on orders above ₹1000', 'E2E festival offer'],
+  announcement: ['Shipping all over India', 'Handmade in India', 'E2E festival offer'],
   whatsapp: '+91 98470 12345',
   instagram: 'https://instagram.com/artq',
 } as const;

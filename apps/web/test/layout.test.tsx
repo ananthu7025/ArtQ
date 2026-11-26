@@ -204,7 +204,7 @@ describe('Header', () => {
 describe('AnnouncementBar', () => {
   it('messages separated by "•", read once (the moving copy is hidden); Pause stops it and says so', async () => {
     const u = userEvent.setup();
-    const { container } = render(<AnnouncementBar enabled messages={['Shipping all over India', 'Free shipping on orders above ₹1000']} />);
+    const { container } = render(<AnnouncementBar enabled messages={['Shipping all over India', 'Handmade in India']} />);
     const region = screen.getByRole('region', { name: 'Announcements' });
     expect(region.className).toContain('bg-brand-800');
     expect(within(region).getAllByText('Shipping all over India')).toHaveLength(2);

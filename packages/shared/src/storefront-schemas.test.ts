@@ -37,7 +37,7 @@ describe('searchForm', () => {
 
 describe('toPublicSettings', () => {
   it('defaults: what the storefront shows before the owner changes anything; no GSTIN/address/private keys', () => {
-    expect(DEFAULT_PUBLIC_SETTINGS.announcement.messages).toEqual(['Shipping all over India', 'Free shipping on orders above ₹1000']);
+    expect(DEFAULT_PUBLIC_SETTINGS.announcement.messages).toEqual(['Shipping all over India']);
     expect(Object.keys(DEFAULT_PUBLIC_SETTINGS.store).sort()).toEqual(['email', 'name', 'phone', 'whatsapp']);
     expect(JSON.stringify(DEFAULT_PUBLIC_SETTINGS)).not.toMatch(/gstin|adminEmails|shippingTaxRule|packagingWeightG/);
   });

@@ -227,7 +227,7 @@ export class CartService {
     const quote = priced.shipping;
     if (quote && !quote.ok) shipProblem = quote.error;
     const amount = quote?.ok ? quote.shipping : null;
-    const freeApplied = quote?.ok ? quote.freeShippingApplied : priced.subtotal > 0 && (couponView?.freeShipping === true || priced.subtotal - couponDiscount >= ship.freeThreshold);
+    const freeApplied = quote?.ok ? quote.freeShippingApplied : priced.subtotal > 0 && (couponView?.freeShipping === true || (ship.freeThreshold > 0 && priced.subtotal - couponDiscount >= ship.freeThreshold));
     const view: CartView = {
       items, coupon: couponView, warnings,
       totals: {

@@ -77,6 +77,24 @@ describe('free-shipping eligibility', () => {
   });
 });
 
+describe('no free shipping by value: freeThreshold 0', () => {
+  const none = { ...SETTINGS, freeThreshold: 0 };
+  it.each([
+    ['a small order pays', 30_000, 0],
+    ['a large order pays too (₹10,000)', 1_000_000, 0],
+    ['an empty-value order pays', 0, 0],
+  ] as const)('%s the zone rate and nothing is "remaining for free"', (_d, subtotal, couponDiscount) => {
+    const r = ok(quote({ lines: [line(850)], subtotal, couponDiscount, settings: none }));
+    expect(r).toMatchObject({ freeShippingApplied: false, shipping: 7000, remainingForFree: 0 });
+  });
+  it('a FREE_SHIPPING coupon still waives it (the coupon is its own decision)', () => {
+    expect(ok(quote({ lines: [line(850)], subtotal: 30_000, freeShippingCoupon: true, settings: none }))).toMatchObject({ freeShippingApplied: true, shipping: 0, remainingForFree: 0 });
+  });
+  it('the threshold set to ₹1 is still a real threshold (only 0 turns it off)', () => {
+    expect(ok(quote({ lines: [line(850)], subtotal: 100, settings: { ...SETTINGS, freeThreshold: 100 } })).freeShippingApplied).toBe(true);
+  });
+});
+
 describe('heavy cap (free shipping covers 10 kg)', () => {
   it.each([
     // description, zone, line weight, qty, heavyCapEnabled, expected shipping
