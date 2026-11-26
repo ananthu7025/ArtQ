@@ -24,9 +24,9 @@ const iconBtn = `inline-flex ${iconBox}`;
 
 export function Logo() {
   return (
-    <Link href="/" className="flex flex-col items-center leading-none text-ink-900">
-      <span className="font-display text-[22px] font-semibold tracking-[0.25em] md:text-[26px]">ARTQ</span>
-      <span className="font-eyebrow mt-0.5 text-[8px] uppercase tracking-[0.3em] text-ink-700 md:text-[9px]">Wood moulds &amp; resins</span>
+    <Link href="/" className="flex items-center">
+      {/* The ArtQ logo (public/logo.png, 256×199 trimmed from ART_Q_01.png); height fixed so the header never shifts. */}
+      <img src="/logo.png" alt="ARTQ" width={256} height={199} className="h-10 w-auto md:h-11" />
       <span className="sr-only">, home</span>
     </Link>
   );

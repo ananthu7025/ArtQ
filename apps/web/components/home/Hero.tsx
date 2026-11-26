@@ -57,11 +57,15 @@ export function Hero({ slides, intervalMs }: { slides: HomeHeroSlide[]; interval
             <SlideVideo slide={s} playing={active && !paused} />
             <div aria-hidden className="absolute inset-0 bg-[linear-gradient(180deg,rgba(17,24,39,0.15),rgba(17,24,39,0.6))]" />
             <div className="relative flex min-h-[60vh] flex-col items-center justify-center px-4 text-center md:min-h-[70vh]">
-              {i === 0 ? <h1 className="font-display text-[44px] font-semibold tracking-[0.08em] md:text-[88px]">{s.heading ?? 'ARTQ'}</h1>
-                : <p className="font-display text-[44px] font-semibold tracking-[0.08em] md:text-[88px]">{s.heading ?? 'ARTQ'}</p>}
-              <p className="font-eyebrow mt-2 text-[15px] uppercase tracking-[0.3em] md:text-[17px]">{s.subheading ?? 'Wood moulds & resins'}</p>
+              {/* Only the heading and subheading the admin wrote are shown: no default "ARTQ / Wood moulds & resins" on top of the
+                  slide's own picture. The first slide keeps a hidden h1 so the page outline is unchanged. */}
+              {s.heading
+                ? (i === 0 ? <h1 className="font-display text-[44px] font-semibold tracking-[0.08em] md:text-[88px]">{s.heading}</h1>
+                  : <p className="font-display text-[44px] font-semibold tracking-[0.08em] md:text-[88px]">{s.heading}</p>)
+                : i === 0 && <h1 className="sr-only">ARTQ</h1>}
+              {s.subheading && <p className="font-eyebrow mt-2 text-[15px] uppercase tracking-[0.3em] md:text-[17px]">{s.subheading}</p>}
               {s.ctaText && s.ctaLink && (
-                <Link href={s.ctaLink} className="mt-8 inline-flex h-12 items-center rounded-md bg-white px-6 text-sm font-semibold uppercase tracking-[0.06em] text-brand-800 hover:bg-brand-50">{s.ctaText}</Link>
+                <Link href={s.ctaLink} className={`inline-flex h-10 items-center justify-center rounded-md bg-white px-5 text-xs font-semibold uppercase tracking-[0.06em] text-brand-800 hover:bg-brand-50 ${s.heading || s.subheading ? 'mt-6' : ''}`}>{s.ctaText}</Link>
               )}
             </div>
           </div>

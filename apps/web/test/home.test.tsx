@@ -68,6 +68,20 @@ describe('Home sections', () => {
     }
   });
 
+  it('a slide with no heading or subheading shows no default "ARTQ / Wood moulds & resins" text, only its CTA, compact and centred', () => {
+    const { container } = render(<HomeSections home={HOME} />);
+    const first = container.querySelector('[aria-label="1 of 2"]') as HTMLElement;
+    expect(first.textContent).toBe('ARTQShop resins');                               // the hidden h1 and the button, nothing else
+    expect(within(first).getByRole('heading', { level: 1 }).className).toContain('sr-only');
+    expect(within(first).queryByText('Wood moulds & resins')).toBeNull();
+    const cta = within(first).getByRole('link', { name: 'Shop resins' });
+    expect(cta.className).toContain('h-10');
+    expect(cta.className).toContain('px-5');
+    expect(cta.className).not.toContain('mt-');                                       // no gap above: the block is centred by the flex column
+    expect(cta.parentElement!.className).toContain('items-center');
+    expect(cta.parentElement!.className).toContain('justify-center');
+  });
+
   it('API down / nothing configured: the brand hero with its h1 and a Shop link', () => {
     render(<HomeSections home={EMPTY_HOME} />);
     expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('ARTQ');
