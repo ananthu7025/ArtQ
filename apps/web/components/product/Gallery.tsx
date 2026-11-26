@@ -26,11 +26,23 @@ export function Gallery({ name, images, video, focus }: { name: string; images: 
     if (i >= 0) setIndex(i);
   }
   // Keep the swipe track on the current photo (a swipe already is; buttons, thumbnails and variants move it).
+  // While the page itself is scrolling the track, the scroll events it causes must not feed back into `index`:
+  // they report in-between positions and used to send a chosen variant's photo back to the wrong picture.
+  const moving = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     const t = track.current;
     const el = t?.children[index] as HTMLElement | undefined;
-    if (t && el && Math.abs(t.scrollLeft - el.offsetLeft) > 2) t.scrollTo?.({ left: el.offsetLeft, behavior: 'smooth' });
+    if (!t || !el || !t.scrollTo || Math.abs(t.scrollLeft - el.offsetLeft) <= 2) return;
+    if (moving.current) clearTimeout(moving.current);
+    moving.current = setTimeout(() => { moving.current = null; }, 600);
+    t.scrollTo({ left: el.offsetLeft, behavior: 'smooth' });
   }, [index]);
+  useEffect(() => () => { if (moving.current) clearTimeout(moving.current); }, []);
+  const onTrackScroll = (t: HTMLDivElement) => {
+    if (moving.current) return;
+    const i = Math.round(t.scrollLeft / Math.max(1, t.clientWidth));
+    if (i !== index) setIndex(i);
+  };
 
   if (items.length === 0) return <ImgPlaceholder label={`${name}: no photo yet`} className="aspect-square w-full rounded-lg" />;
   const current = items[index]!;
@@ -38,7 +50,7 @@ export function Gallery({ name, images, video, focus }: { name: string; images: 
   return (
     <section aria-label={`${name} photos`} className="min-w-0">
       <div className="relative">
-        <div ref={track} onScroll={(e) => { const t = e.currentTarget; const i = Math.round(t.scrollLeft / Math.max(1, t.clientWidth)); if (i !== index) setIndex(i); }}
+        <div ref={track} onScroll={(e) => onTrackScroll(e.currentTarget)}
           className="flex aspect-square snap-x snap-mandatory overflow-x-auto overflow-y-hidden rounded-lg bg-surface-100 [scrollbar-width:none]">
           {items.map((it, i) => (
             <div key={`${it.kind}-${it.media.id}`} className="relative h-full w-full shrink-0 snap-start" aria-hidden={i !== index || undefined}>

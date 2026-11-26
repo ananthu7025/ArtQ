@@ -190,6 +190,31 @@ describe('gallery', () => {
     rerender(<Gallery name="Plain" images={[]} video={null} />);
     expect(screen.getByRole('img', { name: 'Plain: no photo yet' })).toBeTruthy();
   });
+
+  it('the scroll events of the page\'s own smooth scroll do not send the chosen variant\'s photo back; a swipe works again afterwards', () => {
+    vi.useFakeTimers();
+    const scrollTo = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, 'scrollTo', { configurable: true, value: scrollTo });
+    Object.defineProperty(HTMLElement.prototype, 'offsetLeft', { configurable: true, get() { return Array.from((this as HTMLElement).parentElement?.children ?? []).indexOf(this as HTMLElement) * 100; } });
+    try {
+      const { container, rerender } = render(<Gallery name="Mica Pigment" images={PRODUCT.images} video={null} />);
+      const track = container.querySelector('.snap-x') as HTMLElement;
+      rerender(<Gallery name="Mica Pigment" images={PRODUCT.images} video={null} focus={img(3)} />);
+      expect(scrollTo).toHaveBeenCalledWith({ left: 200, behavior: 'smooth' });
+      // The browser reports positions on the way (still at the first photo): the chosen photo stays chosen.
+      fireEvent.scroll(track);
+      expect(screen.getByRole('button', { name: 'Show photo 3' }).getAttribute('aria-current')).toBe('true');
+      expect(scrollTo).toHaveBeenCalledTimes(1);   // and the scroll is not restarted towards another photo
+      // Once the move is over, a swipe is followed again (the track is at the first photo here).
+      act(() => { vi.advanceTimersByTime(700); });
+      fireEvent.scroll(track);
+      expect(screen.getByRole('button', { name: 'Show photo 1' }).getAttribute('aria-current')).toBe('true');
+    } finally {
+      delete (HTMLElement.prototype as { scrollTo?: unknown }).scrollTo;
+      delete (HTMLElement.prototype as { offsetLeft?: unknown }).offsetLeft;
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('pincode check', () => {

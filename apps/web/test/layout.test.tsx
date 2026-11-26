@@ -44,7 +44,12 @@ describe('Header', () => {
     expect(screen.getByRole('link', { name: 'Cart, 3 items' }).getAttribute('href')).toBe('/cart');
     expect(screen.getByRole('link', { name: 'Wishlist, 0 items' }).getAttribute('href')).toBe('/wishlist');   // 0 shows, like the reference
     expect(screen.getByRole('link', { name: 'Log in or sign up' }).getAttribute('href')).toBe('/login');
-    expect(screen.getByRole('link', { name: /ARTQ.*home/ }).getAttribute('href')).toBe('/');
+    const logo = screen.getByRole('link', { name: /ARTQ.*home/ });
+    expect(logo.getAttribute('href')).toBe('/');
+    const logoImg = within(logo).getByRole('img', { name: 'ARTQ' });                  // the ArtQ logo image, not text
+    expect(logoImg.getAttribute('src')).toBe('/logo.png');
+    expect(logoImg.getAttribute('width')).toBe('256');
+    expect(logoImg.getAttribute('height')).toBe('199');
     await axeClean(container);
   });
 
